@@ -21,8 +21,9 @@ export const mentionHighlightKey = new PluginKey("mentionHighlight");
  * composer hides the leading `@` (width:0). Clicks that look like "start of
  * the chip" often land *inside* the name; typing then mutates the display
  * name and drops the decoration — the persistent auto-tag regression (#2707).
- * This extension snaps an empty caret out of the interior of agent mentions
- * and rewrites text input so it lands after the chip instead.
+ * This extension snaps an empty caret out of the interior of agent mentions,
+ * rewrites text input so it lands after the chip, and treats Backspace/Delete
+ * on the chip as an atomic remove (whole `@Name` + trailing space).
  */
 export const MentionHighlightExtension = Extension.create({
   name: "mentionHighlight",
@@ -137,6 +138,27 @@ export const MentionHighlightExtension = Extension.create({
             view.dispatch(tr);
             return true;
           },
+          // Backspace/Delete must not nibble the display name char-by-char
+          // (that also kills the decoration). Treat the chip as atomic.
+          handleKeyDown(view, event) {
+            if (event.key !== "Backspace" && event.key !== "Delete") {
+              return false;
+            }
+            const agentNames = extension.storage.agentNames as string[];
+            if (agentNames.length === 0) return false;
+            const { empty, from } = view.state.selection;
+            if (!empty) return false;
+            const range = agentMentionChipDeleteRange(
+              view.state.doc,
+              from,
+              agentNames,
+              event.key,
+            );
+            if (!range) return false;
+            const tr = view.state.tr.delete(range.from, range.to);
+            view.dispatch(tr);
+            return true;
+          },
         },
       }),
     ];
@@ -165,9 +187,20 @@ export function findAgentMentionRanges(
 }
 
 /**
+ * Expand a mention end position by one trailing space when present (the
+ * space autocomplete / persistent hydration always inserts after `@Name`).
+ */
+export function withTrailingSpace(doc: PMNode, mentionTo: number): number {
+  if (mentionTo < doc.content.size) {
+    const next = doc.textBetween(mentionTo, mentionTo + 1, "\n", "\0");
+    if (next === " ") return mentionTo + 1;
+  }
+  return mentionTo;
+}
+
+/**
  * If `pos` lies strictly inside an agent mention, snap it just after the
- * mention, consuming a single trailing space when present (the space
- * autocomplete / persistent hydration always inserts after `@Name`).
+ * mention, consuming a single trailing space when present.
  *
  * Edge positions stay put:
  * - `from` (before `@`) so Backspace still works as expected
@@ -182,16 +215,48 @@ export function snapCaretOutOfAgentMention(
   if (agentNames.length === 0) return pos;
   for (const { from, to } of findAgentMentionRanges(doc, agentNames)) {
     if (pos > from && pos < to) {
-      let snapped = to;
-      // Prefer the trailing space that insertResolvedMention always adds.
-      if (snapped < doc.content.size) {
-        const next = doc.textBetween(snapped, snapped + 1, "\n", "\0");
-        if (next === " ") snapped += 1;
-      }
-      return snapped;
+      return withTrailingSpace(doc, to);
     }
   }
   return pos;
+}
+
+/**
+ * Range to delete when Backspace/Delete should treat an agent chip as atomic
+ * (`@Name` + optional trailing space). Returns null when the key should use
+ * default text editing.
+ *
+ * - Interior of the name → either key removes the whole chip
+ * - Backspace at the end of the name or just after its trailing space → chip
+ * - Delete at the start of the chip (before `@`) → chip
+ */
+export function agentMentionChipDeleteRange(
+  doc: PMNode,
+  pos: number,
+  agentNames: string[],
+  key: "Backspace" | "Delete",
+): { from: number; to: number } | null {
+  if (agentNames.length === 0) return null;
+  for (const { from, to } of findAgentMentionRanges(doc, agentNames)) {
+    const chipTo = withTrailingSpace(doc, to);
+
+    // Strictly inside the `@Name` span — never nibble individual letters.
+    if (pos > from && pos < to) {
+      return { from, to: chipTo };
+    }
+
+    if (key === "Backspace") {
+      // Caret at end of name, or right after the trailing space.
+      if (pos === to || pos === chipTo) {
+        return { from, to: chipTo };
+      }
+    }
+
+    if (key === "Delete" && pos === from) {
+      return { from, to: chipTo };
+    }
+  }
+  return null;
 }
 
 /**

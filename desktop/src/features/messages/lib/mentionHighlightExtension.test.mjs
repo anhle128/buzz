@@ -5,10 +5,12 @@ import { getSchema } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 
 import {
+  agentMentionChipDeleteRange,
   buildHighlightPatterns,
   findAgentMentionRanges,
   findHighlightMatches,
   snapCaretOutOfAgentMention,
+  withTrailingSpace,
 } from "./mentionHighlightExtension.ts";
 
 // Schema mirrors the composer for document-absolute position tests.
@@ -241,4 +243,83 @@ test("snapCaretOutOfAgentMention handles multiple agent chips", () => {
   const interior = bob.from + 2;
   const snapped = snapCaretOutOfAgentMention(d, interior, ["Ada", "Bob"]);
   assert.equal(snapped, bob.to + 1); // consume trailing space after @Bob
+});
+
+// ── Atomic Backspace/Delete on agent chips (#2707) ────────────────────
+
+test("withTrailingSpace consumes a single trailing space", () => {
+  const d = doc(para(t("@Ada more")));
+  // "@Ada" is 1..5; trailing space at 5 → 6
+  assert.equal(withTrailingSpace(d, 5), 6);
+  assert.equal(withTrailingSpace(d, 6), 6); // already past space
+});
+
+test("agentMentionChipDeleteRange: interior Backspace/Delete remove whole chip", () => {
+  const d = doc(para(t("@Ada hello")));
+  // "@Ada" 1..5, chip with space 1..6
+  for (const key of /** @type {const} */ (["Backspace", "Delete"])) {
+    for (const pos of [2, 3, 4]) {
+      assert.deepEqual(
+        agentMentionChipDeleteRange(d, pos, ["Ada"], key),
+        { from: 1, to: 6 },
+        `${key} at interior ${pos}`,
+      );
+    }
+  }
+});
+
+test("agentMentionChipDeleteRange: Backspace at end of name or after space", () => {
+  const d = doc(para(t("@Ada hello")));
+  // end of name (5) and after trailing space (6)
+  assert.deepEqual(agentMentionChipDeleteRange(d, 5, ["Ada"], "Backspace"), {
+    from: 1,
+    to: 6,
+  });
+  assert.deepEqual(agentMentionChipDeleteRange(d, 6, ["Ada"], "Backspace"), {
+    from: 1,
+    to: 6,
+  });
+  // Deep in following text: default editing
+  assert.equal(agentMentionChipDeleteRange(d, 10, ["Ada"], "Backspace"), null);
+});
+
+test("agentMentionChipDeleteRange: Delete at start of chip only", () => {
+  const d = doc(para(t("@Ada hello")));
+  assert.deepEqual(agentMentionChipDeleteRange(d, 1, ["Ada"], "Delete"), {
+    from: 1,
+    to: 6,
+  });
+  // Delete from after the chip leaves following text alone
+  assert.equal(agentMentionChipDeleteRange(d, 6, ["Ada"], "Delete"), null);
+});
+
+test("agentMentionChipDeleteRange: Backspace between two agent chips removes the left one", () => {
+  // "@Ada @Bob" — caret after Ada's trailing space is Bob's `@`
+  const d = doc(para(t("@Ada @Bob")));
+  const ranges = findAgentMentionRanges(d, ["Ada", "Bob"]);
+  const ada = ranges[0];
+  const bob = ranges[1];
+  const afterAdaSpace = withTrailingSpace(d, ada.to);
+  assert.equal(afterAdaSpace, bob.from);
+  assert.deepEqual(
+    agentMentionChipDeleteRange(d, afterAdaSpace, ["Ada", "Bob"], "Backspace"),
+    { from: ada.from, to: afterAdaSpace },
+  );
+  // Delete at that same spot removes Bob (start of next chip)
+  assert.deepEqual(
+    agentMentionChipDeleteRange(d, afterAdaSpace, ["Ada", "Bob"], "Delete"),
+    { from: bob.from, to: withTrailingSpace(d, bob.to) },
+  );
+});
+
+test("agentMentionChipDeleteRange: chip without trailing space", () => {
+  const d = doc(para(t("@Ada")));
+  assert.deepEqual(agentMentionChipDeleteRange(d, 3, ["Ada"], "Backspace"), {
+    from: 1,
+    to: 5,
+  });
+  assert.deepEqual(agentMentionChipDeleteRange(d, 5, ["Ada"], "Backspace"), {
+    from: 1,
+    to: 5,
+  });
 });
