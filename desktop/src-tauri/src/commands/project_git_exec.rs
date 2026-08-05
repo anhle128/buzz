@@ -157,6 +157,7 @@ fn configure_git_auth(command: &mut Command, auth: &GitAuthConfig, needs_credent
         ("protocol.allow", "never".to_string()),
         ("protocol.http.allow", "always".to_string()),
         ("protocol.https.allow", "always".to_string()),
+        ("protocol.ssh.allow", "always".to_string()),
         ("protocol.ext.allow", "never".to_string()),
         (
             "protocol.file.allow",
@@ -306,15 +307,16 @@ pub(crate) fn validate_clone_url(clone_url: &str) -> Result<(), String> {
 
 fn validate_github_clone_url(clone_url: &str) -> Result<(), String> {
     let parsed = Url::parse(clone_url).map_err(|error| format!("invalid clone URL: {error}"))?;
-    if parsed.scheme() != "https"
+    let is_https = parsed.scheme() == "https" && parsed.username().is_empty();
+    let is_ssh = parsed.scheme() == "ssh" && parsed.username() == "git";
+    if !(is_https || is_ssh)
         || parsed.host_str() != Some("github.com")
         || parsed.port().is_some()
-        || !parsed.username().is_empty()
         || parsed.password().is_some()
         || parsed.query().is_some()
         || parsed.fragment().is_some()
     {
-        return Err("GitHub clone URL must use public https://github.com/owner/repository".into());
+        return Err("GitHub clone URL must use https://github.com/owner/repository or ssh://git@github.com/owner/repository".into());
     }
     let segments = parsed
         .path_segments()
@@ -341,7 +343,7 @@ pub(crate) fn validate_local_clone_url(clone_url: &str) -> Result<(), String> {
     if validate_clone_url(clone_url).is_ok() || validate_github_clone_url(clone_url).is_ok() {
         return Ok(());
     }
-    Err("clone URL must point at a Buzz repository or public GitHub repository".into())
+    Err("clone URL must point at a Buzz repository or GitHub repository".into())
 }
 
 pub(crate) fn validate_local_clone_url_for_workspace(
@@ -510,12 +512,17 @@ mod tests {
     }
 
     #[test]
-    fn local_clone_url_allows_only_public_github_https_urls() {
+    fn local_clone_url_allows_github_https_and_url_ssh_urls() {
         assert!(validate_local_clone_url("https://github.com/block/buzz").is_ok());
         assert!(validate_local_clone_url("https://github.com/block/buzz.git").is_ok());
+        assert!(validate_local_clone_url("ssh://git@github.com/block/buzz").is_ok());
+        assert!(validate_local_clone_url("ssh://git@github.com/block/buzz.git").is_ok());
         assert!(validate_local_clone_url("http://github.com/block/buzz").is_err());
         assert!(validate_local_clone_url("https://github.com/block/buzz/issues").is_err());
         assert!(validate_local_clone_url("https://user@github.com/block/buzz").is_err());
+        assert!(validate_local_clone_url("ssh://github.com/block/buzz").is_err());
+        assert!(validate_local_clone_url("ssh://git@github.com/block/buzz/issues").is_err());
+        assert!(validate_local_clone_url("git@github.com:block/buzz.git").is_err());
         assert!(validate_local_clone_url("https://github.com.evil.test/block/buzz").is_err());
         assert!(validate_local_clone_url("https://gitlab.com/block/buzz").is_err());
     }
