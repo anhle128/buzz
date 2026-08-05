@@ -86,7 +86,7 @@ The final merge request body must be exactly:
 
 ---
 
-### Task 1: Reproduce the GitHub URL rejection at the end-user boundary
+### Task 1: Lock the GitHub clone-URL boundary in Playwright
 
 **Files:**
 
@@ -95,11 +95,18 @@ The final merge request body must be exactly:
 
 **Acceptance criteria:**
 
-- The first committed change is a passing Playwright regression that drives the real Projects PR review UI with `https://github.com/anhle128/buzz` as the project and PR clone URL.
-- The test confirms that the current Merge action reaches the workspace-relay URL rejection rather than GitHub behavior.
-- The test records and asserts the exact merge invocation payload so later work cannot accidentally omit either repository URL, either branch, or the reviewed commit.
+- Before changing the harness, the task report records one pre-change run that reproduces the workspace-relay rejection for `https://github.com/anhle128/buzz`; this evidence is not committed as a mock-error assertion.
+- The committed Playwright regression drives the real Projects PR review UI and proves that the exact GitHub clone URLs reach the native merge boundary unchanged.
+- The committed test is observed RED because the first mock project still emits its original Buzz URL before the override is wired, then GREEN after the minimum harness change.
+- The test records and asserts both repository URLs, both branches, and the reviewed commit without asserting the behavior of the injected error object.
 
-**Step 1: Add only the clone-URL override needed by the existing mock event builder**
+**Step 1: Record the pre-change rejection as non-committed evidence**
+
+Run the reported flow once with the existing structured-error injection and capture the exact visible rejection plus merge payload in the task report.
+Do not commit a test whose only proof is that `__BUZZ_E2E_PROJECT_MERGE_ERROR__` returns the value assigned to it.
+Remove the temporary injection before writing the regression below.
+
+**Step 2: Declare the clone-URL override without wiring it yet**
 
 Extend the E2E global declaration near the other project overrides:
 
@@ -111,33 +118,18 @@ declare global {
 }
 ```
 
-Inside `buildMockProjectEvents`, derive one clone URL per seeded project and reuse it for both the repository announcement and its PR metadata:
+Do not change `buildMockProjectEvents` yet.
 
-```ts
-const cloneUrl =
-  projectIndex === 0
-    ? window.__BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__ ?? seed.cloneUrl
-    : seed.cloneUrl;
-```
-
-Replace only the two `seed.cloneUrl` uses that create clone tags for that project.
-Do not add a second mock project or a GitHub provider abstraction.
-
-**Step 2: Write the passing reproduction before production changes**
+**Step 3: Write the desired boundary regression and verify RED**
 
 Add a focused test beside the existing merge and conflict tests:
 
 ```ts
-test("reproduces the GitHub-backed PR merge URL rejection", async ({ page }) => {
+test("sends strict GitHub clone URLs to the native merge boundary", async ({ page }) => {
   await enableProjectsFeature(page);
   await page.addInitScript(() => {
     window.__BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__ =
       "https://github.com/anhle128/buzz";
-    window.__BUZZ_E2E_PROJECT_MERGE_ERROR__ = {
-      code: "merge_failed",
-      message: "clone URL must use the active workspace relay",
-      recovery: null,
-    };
   });
   await installMockBridge(page);
 
@@ -150,10 +142,6 @@ test("reproduces the GitHub-backed PR merge URL rejection", async ({ page }) => 
   await aliceRow.getByRole("button", { name: /^#/ }).click();
   await page.getByRole("button", { name: "Merge", exact: true }).click();
   await page.getByTestId("merge-pull-request-confirm-button").click();
-
-  await expect(
-    page.getByText("clone URL must use the active workspace relay"),
-  ).toBeVisible();
 
   await expect
     .poll(() =>
@@ -177,23 +165,41 @@ test("reproduces the GitHub-backed PR merge URL rejection", async ({ page }) => 
 });
 ```
 
-Match the existing PR-open locator and exact mock branch values if the neighboring test exposes more specific accessible names.
-Do not weaken assertions to generic toasts.
-
-**Step 3: Run the focused E2E reproduction**
-
 Run:
 
 ```bash
 pnpm -C desktop build:e2e
-pnpm -C desktop exec playwright test tests/e2e/project-pr-review.spec.ts --project=smoke --grep "reproduces the GitHub-backed PR merge URL rejection"
+pnpm -C desktop exec playwright test tests/e2e/project-pr-review.spec.ts --project=smoke --grep "sends strict GitHub clone URLs"
 ```
 
-Expected: PASS, with the GitHub clone URL present in the captured command input and the current relay-validator failure visible in the UI.
+Expected: FAIL because the payload still contains the seeded Buzz clone URL.
+Save the failing assertion in the task report.
+
+**Step 4: Wire the minimum E2E event override and verify GREEN**
+
+Inside `buildMockProjectEvents`, derive one clone URL per seeded project and reuse it for both the repository announcement and its PR metadata:
+
+```ts
+const cloneUrl =
+  projectIndex === 0
+    ? window.__BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__ ?? seed.cloneUrl
+    : seed.cloneUrl;
+```
+
+Replace only the two `seed.cloneUrl` uses that create clone tags for that project.
+Do not add a second mock project or a GitHub provider abstraction.
+
+Run:
+
+```bash
+pnpm -C desktop exec playwright test tests/e2e/project-pr-review.spec.ts --project=smoke --grep "sends strict GitHub clone URLs"
+```
+
+Expected: PASS, with the exact GitHub clone URL in both captured repository fields.
 
 If it fails because the exact accessible names differ, inspect the existing merge test and update only the locators.
 
-**Step 4: Run the complete desktop Playwright suite**
+**Step 5: Run the complete desktop Playwright suite**
 
 Run:
 
@@ -203,14 +209,14 @@ pnpm -C desktop test:e2e
 
 Expected: PASS.
 
-**Step 5: Commit the regression baseline**
+**Step 6: Commit the regression boundary**
 
 Run:
 
 ```bash
 git add desktop/src/testing/e2eBridge.ts desktop/tests/e2e/project-pr-review.spec.ts
 git diff --cached --check
-git commit -s -m "test: reproduce GitHub PR merge rejection" \
+git commit -s -m "test: cover GitHub PR merge input boundary" \
   -m "Co-authored-by: Kevin Le <anhle12892@gmail.com>"
 git log -1 --format=full
 ```
@@ -923,11 +929,10 @@ struct GitHubRule {
 }
 ```
 
-Represent the decision with:
+Represent open-state decisions with:
 
 ```rust
 enum PullDecision {
-    AlreadyMerged { merge_commit: String },
     Ready,
     Blocked(Vec<String>),
 }
@@ -936,8 +941,8 @@ enum PullDecision {
 Table-test:
 
 - Head mismatch returns `github_branch_changed` before considering any other state.
-- `MERGED` with matching head and merge commit returns `AlreadyMerged`.
-- `MERGED` without `mergedAt` or merge commit blocks finalization.
+- `MERGED` with matching head, `mergedAt`, and merge commit returns recovery immediately without querying checks or rules.
+- `MERGED` without `mergedAt` or merge commit blocks finalization without querying checks or rules.
 - `CLOSED` without merge blocks.
 - Draft blocks.
 - `CONFLICTING` and `UNKNOWN` mergeability block.
@@ -988,31 +993,11 @@ The rule endpoint must use `encode_path_segment(&input.target_branch)`.
 Use one function that accepts already-parsed view, checks, and rule result:
 
 ```rust
-fn decide_pull(
+fn decide_open_pull(
     view: &GitHubPullView,
     checks: &[GitHubCheck],
     rules: Result<&[GitHubRule], &str>,
-    expected_commit: &str,
 ) -> Result<PullDecision, ProjectPullRequestMergeError> {
-    if !view.head_ref_oid.eq_ignore_ascii_case(expected_commit) {
-        return Err(ProjectPullRequestMergeError::new(
-            "github_branch_changed",
-            "The GitHub pull request branch changed. Refresh before merging.",
-        ));
-    }
-    if view.state == "MERGED" {
-        let merge_commit = view
-            .merge_commit
-            .as_ref()
-            .filter(|_| view.merged_at.is_some())
-            .map(|commit| commit.oid.clone())
-            .ok_or_else(|| ProjectPullRequestMergeError::new(
-                "github_merge_failed",
-                "GitHub reported a merge without a verifiable merge commit.",
-            ))?;
-        return Ok(PullDecision::AlreadyMerged { merge_commit });
-    }
-
     let mut reasons = Vec::new();
     if view.state != "OPEN" {
         reasons.push("The pull request is closed without merging.".to_string());
@@ -1054,7 +1039,8 @@ fn decide_pull(
 }
 ```
 
-Do not duplicate gate decisions in the process-orchestration function.
+Check the head OID and terminal `MERGED`/closed state once before this open-only function.
+Do not duplicate open-state gate decisions in the process-orchestration function.
 
 **Step 5: Implement the atomic immediate merge**
 
@@ -1096,17 +1082,38 @@ pub(crate) fn merge_github_pull_request(
     gh.ensure_auth()?;
     let pull = ensure_pull(&gh, &input)?;
     let view = load_pull_view(&gh, &input.target, pull.number)?;
+    if !view.head_ref_oid.eq_ignore_ascii_case(&input.expected_commit) {
+        return Err(ProjectPullRequestMergeError::new(
+            "github_branch_changed",
+            "The GitHub pull request branch changed. Refresh before merging.",
+        ));
+    }
+    if view.state == "MERGED" {
+        let merge_commit = view
+            .merge_commit
+            .filter(|_| view.merged_at.is_some())
+            .map(|commit| commit.oid)
+            .ok_or_else(|| ProjectPullRequestMergeError::new(
+                "github_merge_failed",
+                "GitHub reported a merge without a verifiable merge commit.",
+            ))?;
+        return Ok(GitHubMergeOutcome {
+            message: format!("GitHub pull request #{} was already merged.", pull.number),
+            merge_commit,
+        });
+    }
+    if view.state != "OPEN" {
+        return Err(ProjectPullRequestMergeError::open_url(
+            "github_pr_blocked",
+            "The matching GitHub pull request is closed without merging.",
+            view.url,
+            vec!["Reopen or replace the pull request on GitHub.".to_string()],
+        ));
+    }
     let checks = load_required_checks(&gh, &input.target, pull.number)?;
     let rules = load_active_rules(&gh, &input.target, &input.target_branch);
 
-    match decide_pull(&view, &checks, rules.as_deref(), &input.expected_commit)? {
-        PullDecision::AlreadyMerged { merge_commit } => Ok(GitHubMergeOutcome {
-            message: format!(
-                "GitHub pull request #{} was already merged.",
-                pull.number
-            ),
-            merge_commit,
-        }),
+    match decide_open_pull(&view, &checks, rules.as_deref())? {
         PullDecision::Blocked(reasons) => Err(ProjectPullRequestMergeError::open_url(
             "github_pr_blocked",
             "GitHub does not allow an immediate merge yet.",
@@ -1127,7 +1134,8 @@ Fake-`gh` tests must assert:
 
 - No merge call when head changed.
 - No merge call for every blocked state.
-- No merge call and correct merge commit for already-merged recovery.
+- No checks, rules, or merge call and the correct merge commit for already-merged recovery.
+- No checks, rules, or merge call after a PR becomes closed-unmerged between lookup and view.
 - Merge argv contains the target PR endpoint but no title, body, or token.
 - Merge temp JSON contains exactly `sha` and `merge_method`.
 - No `gh pr merge`, `--admin`, `--auto`, or queue command appears in the captured argv log.
@@ -1508,17 +1516,17 @@ Add tests or a test-only injectable GitHub runner seam local to the module that 
 Do not add a production dependency-injection interface.
 Prefer pure function tests plus the existing E2E bridge observation points.
 
-**Step 7: Update the original regression to the new route**
+**Step 7: Extend the boundary regression for the new route**
 
-Remove the injected old `merge_failed` result from Task 1.
-Inject `github_auth_required` instead and assert:
+Keep Task 1's GitHub URL boundary assertion.
+Inject `github_auth_required` and assert:
 
-- The GitHub-specific confirmation copy appears before the invoke.
 - Confirming no longer surfaces the workspace-relay URL rejection.
 - The captured payload includes both GitHub URLs, title, body, both branches, and expected commit.
 - The stable GitHub auth error reaches the frontend parser even before the persistent card lands in Task 6.
 
 At this task boundary a toast is acceptable; Task 6 replaces it with persistent recovery UX.
+Do not assert host-specific confirmation copy in this task; Task 6 owns both that production change and its test.
 
 **Step 8: Run focused and full package tests**
 
@@ -1686,6 +1694,7 @@ const githubRecovery =
   githubError?.recovery?.action === "open_url"
     ? githubError.recovery
     : null;
+const canRetryGitHubMerge = githubError?.code !== "github_branch_changed";
 ```
 
 The pull-request ID key prevents one PR's error from rendering on another PR.
@@ -1722,9 +1731,11 @@ Render a semantic status region below the merge action:
       </ul>
     ) : null}
     <div className="mt-3 flex flex-wrap gap-2">
-      <Button type="button" variant="outline" onClick={() => void handleMerge()}>
-        Retry
-      </Button>
+      {canRetryGitHubMerge ? (
+        <Button type="button" variant="outline" onClick={() => void handleMerge()}>
+          Retry
+        </Button>
+      ) : null}
       {githubRecovery ? (
         <Button
           type="button"
@@ -1765,14 +1776,15 @@ Cover:
 1. Missing CLI shows a persistent install card and Retry.
 2. Missing auth shows the exact copyable command and Retry.
 3. Blocked recovery lists reasons, opens the exact PR URL, and Retry invokes merge again.
-4. Branch changed tells the user to refresh and does not offer a stale merge action.
+4. Branch changed tells the user to refresh and renders neither Retry nor another stale merge action.
 5. Ambiguous recovery opens the exact repository `/pulls` URL.
 6. Invalid `open_url` payload never renders an Open button.
 7. Existing Buzz conflict still renders Resolve in Terminal.
 8. GitHub confirmation copy appears only for GitHub-hosted projects.
 
-Update the original Task 1 test from expecting the old relay error to expecting the auth card.
+Extend the original Task 1 boundary test to expect the persistent auth card.
 Retain an assertion that the old relay-validator message is absent.
+Add the GitHub-specific confirmation-copy assertion here, in the same task that implements the copy.
 
 **Step 7: Add light and dark visual captures**
 
