@@ -94,7 +94,8 @@ The current result shape remains unchanged so a confirmed GitHub merge can reuse
 
 `ProjectPullRequestMergeRecovery` becomes a discriminated union with the existing `open_terminal` variant and a new `open_url` variant.
 The `open_url` variant contains a validated GitHub pull-request URL and a bounded list of human-readable blocking reasons.
-The frontend rejects any recovery URL that is not an exact `https://github.com/<owner>/<repo>/pull/<number>` URL before handing it to the installed Tauri opener plugin.
+The frontend rejects any recovery URL that is not an exact `https://github.com/<owner>/<repo>/pull/<number>` or `https://github.com/<owner>/<repo>/pulls` URL before handing it to the installed Tauri opener plugin.
+The repository pull-request list form is reserved for ambiguous lookup results where no single pull-request number is safe to select.
 
 ## Trust Boundaries and Validation
 
