@@ -4,7 +4,10 @@
 //! the identity nsec is handed to `git-credential-nostr` via environment
 //! variables so nothing key-related ever touches disk or global git config.
 
-use crate::{app_state::AppState, managed_agents::resolve_command};
+use crate::{
+    app_state::AppState, commands::project_github_pull_request::GitHubRepoRef,
+    managed_agents::resolve_command,
+};
 use nostr::{Keys, ToBech32};
 use std::io::Read;
 use std::process::{Command, Stdio};
@@ -306,10 +309,12 @@ pub(crate) fn validate_clone_url(clone_url: &str) -> Result<(), String> {
 }
 
 fn validate_github_clone_url(clone_url: &str) -> Result<(), String> {
+    if GitHubRepoRef::parse(clone_url).is_ok() {
+        return Ok(());
+    }
     let parsed = Url::parse(clone_url).map_err(|error| format!("invalid clone URL: {error}"))?;
-    let is_https = parsed.scheme() == "https" && parsed.username().is_empty();
-    let is_ssh = parsed.scheme() == "ssh" && parsed.username() == "git";
-    if !(is_https || is_ssh)
+    if parsed.scheme() != "ssh"
+        || parsed.username() != "git"
         || parsed.host_str() != Some("github.com")
         || parsed.port().is_some()
         || parsed.password().is_some()
@@ -318,25 +323,7 @@ fn validate_github_clone_url(clone_url: &str) -> Result<(), String> {
     {
         return Err("GitHub clone URL must use https://github.com/owner/repository or ssh://git@github.com/owner/repository".into());
     }
-    let segments = parsed
-        .path_segments()
-        .map(|segments| {
-            segments
-                .filter(|segment| !segment.is_empty())
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    let valid_segment = |segment: &&str| {
-        !segment.starts_with('-')
-            && !segment.contains("..")
-            && segment.chars().all(|character| {
-                character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-')
-            })
-    };
-    if segments.len() != 2 || !segments.iter().all(valid_segment) {
-        return Err("GitHub clone URL must name one owner and repository".into());
-    }
-    Ok(())
+    GitHubRepoRef::parse(&format!("https://github.com{}", parsed.path())).map(|_| ())
 }
 
 pub(crate) fn validate_local_clone_url(clone_url: &str) -> Result<(), String> {
