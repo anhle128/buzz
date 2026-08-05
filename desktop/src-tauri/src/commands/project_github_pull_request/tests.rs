@@ -8,6 +8,9 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+const LIFECYCLE_FAKE_TIMEOUT: Duration = Duration::from_secs(5);
+const PID_PUBLICATION_TIMEOUT: Duration = Duration::from_secs(3);
+
 fn merge_input() -> GitHubMergeInput {
     GitHubMergeInput {
         target: GitHubRepoRef::parse("https://github.com/acme/buzz").expect("target repo"),
@@ -136,10 +139,10 @@ fn select_pull_creates_when_no_exact_pull_exists() {
 #[cfg(unix)]
 #[test]
 fn github_pull_creation_uses_exact_api_shape_and_json_input() {
-    let (dir, binary) = fake_lifecycle_gh("[[]]", &pull_response(), 0);
+    let (dir, binary) = fake_lifecycle_gh("[[]]", &pull_response(), 0, "");
     let runner = GhRunner {
         binary,
-        timeout: Duration::from_secs(2),
+        timeout: LIFECYCLE_FAKE_TIMEOUT,
     };
     let input = merge_input();
 
@@ -178,12 +181,27 @@ fn github_pull_creation_uses_exact_api_shape_and_json_input() {
     .to_vec();
     assert_eq!(api_calls[0], &list_args);
     assert_eq!(api_calls[2], &list_args);
+    let mut post_args = api_calls[1].clone();
+    assert!(!std::path::Path::new(&post_args[7]).exists());
+    post_args[7] = "<temp-json>".to_string();
+    assert_eq!(
+        post_args,
+        [
+            "api",
+            "--method",
+            "POST",
+            "--hostname",
+            "github.com",
+            "repos/acme/buzz/pulls",
+            "--input",
+            "<temp-json>",
+        ]
+        .map(str::to_string)
+        .to_vec()
+    );
     assert!(api_calls[1]
-        .windows(2)
-        .any(|pair| pair[0] == "--method" && pair[1] == "POST"));
-    assert!(api_calls[1].iter().any(|arg| arg == "--input"));
-    assert!(!api_calls[1].contains(&input.title));
-    assert!(!api_calls[1].contains(&input.body));
+        .iter()
+        .all(|argument| !argument.contains(&input.title) && !argument.contains(&input.body)));
 
     let body: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(dir.path().join("post.json")).expect("read POST JSON"),
@@ -199,10 +217,10 @@ fn github_pull_creation_uses_exact_api_shape_and_json_input() {
 #[cfg(unix)]
 #[test]
 fn github_pull_creation_recovers_lost_post_response_without_retrying_post() {
-    let (dir, binary) = fake_lifecycle_gh("[[]]", &pull_response(), 1);
+    let (dir, binary) = fake_lifecycle_gh("[[]]", &pull_response(), 1, "");
     let runner = GhRunner {
         binary,
-        timeout: Duration::from_secs(2),
+        timeout: LIFECYCLE_FAKE_TIMEOUT,
     };
 
     let url = find_or_create_pull_request_with(&runner, &merge_input())
@@ -224,11 +242,72 @@ fn github_pull_creation_recovers_lost_post_response_without_retrying_post() {
 
 #[cfg(unix)]
 #[test]
-fn github_pull_creation_reuses_existing_open_pull_without_posting() {
-    let (dir, binary) = fake_lifecycle_gh(&pull_response(), &pull_response(), 0);
+fn github_pull_creation_reports_missing_pull_after_successful_post_without_retrying() {
+    let (dir, binary) = fake_lifecycle_gh("[[]]", "[[]]", 0, "");
     let runner = GhRunner {
         binary,
-        timeout: Duration::from_secs(2),
+        timeout: LIFECYCLE_FAKE_TIMEOUT,
+    };
+
+    let value = error_value(
+        find_or_create_pull_request_with(&runner, &merge_input())
+            .expect_err("missing pull after successful POST"),
+    );
+
+    assert_eq!(value["code"], "github_merge_failed");
+    assert_eq!(
+        value["message"],
+        "GitHub created the pull request but it could not be found. Refresh and retry."
+    );
+    let calls = fake_gh_calls(&dir);
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|args| {
+                args.windows(2)
+                    .any(|pair| pair[0] == "--method" && pair[1] == "POST")
+            })
+            .count(),
+        1
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn github_pull_creation_preserves_failed_post_error_when_relookup_is_empty() {
+    let (dir, binary) = fake_lifecycle_gh("[[]]", "[[]]", 1, "connection lost\n");
+    let runner = GhRunner {
+        binary,
+        timeout: LIFECYCLE_FAKE_TIMEOUT,
+    };
+
+    let value = error_value(
+        find_or_create_pull_request_with(&runner, &merge_input())
+            .expect_err("failed POST should take precedence"),
+    );
+
+    assert_eq!(value["code"], "github_merge_failed");
+    assert_eq!(value["message"], "connection lost\n");
+    let calls = fake_gh_calls(&dir);
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|args| {
+                args.windows(2)
+                    .any(|pair| pair[0] == "--method" && pair[1] == "POST")
+            })
+            .count(),
+        1
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn github_pull_creation_reuses_existing_open_pull_without_posting() {
+    let (dir, binary) = fake_lifecycle_gh(&pull_response(), &pull_response(), 0, "");
+    let runner = GhRunner {
+        binary,
+        timeout: LIFECYCLE_FAKE_TIMEOUT,
     };
 
     let url =
@@ -247,10 +326,10 @@ fn github_pull_creation_reuses_existing_open_pull_without_posting() {
 #[test]
 fn github_pull_creation_omits_head_repo_for_same_repository() {
     let same_repo_pull = pull_response().replace("fork/buzz", "acme/buzz");
-    let (dir, binary) = fake_lifecycle_gh("[[]]", &same_repo_pull, 0);
+    let (dir, binary) = fake_lifecycle_gh("[[]]", &same_repo_pull, 0, "");
     let runner = GhRunner {
         binary,
-        timeout: Duration::from_secs(2),
+        timeout: LIFECYCLE_FAKE_TIMEOUT,
     };
     let mut input = merge_input();
     input.source = GitHubRepoRef::parse("https://github.com/acme/buzz").expect("same source repo");
@@ -328,10 +407,11 @@ fn fake_lifecycle_gh(
     first_list: &str,
     second_list: &str,
     post_status: i32,
+    post_stderr: &str,
 ) -> (tempfile::TempDir, PathBuf) {
-    let (dir, binary) = fake_gh(
+    let script = format!(
         r#"
-root=$(dirname "$0")
+root=${{0%/gh}}
 printf '%s\t' "$@" >> "$root/calls"
 printf '\036' >> "$root/calls"
 method=
@@ -346,24 +426,30 @@ done
 case "$method" in
     GET)
         if [ -e "$root/posted" ]; then
-            cat "$root/list-second.json"
+            printf '%s' {second_list}
         else
-            cat "$root/list-first.json"
+            printf '%s' {first_list}
         fi
         ;;
     POST)
         : > "$root/posted"
-        cat "$input" > "$root/post.json"
-        exit "$(cat "$root/post-status")"
+        IFS= read -r body < "$input" || true
+        printf '%s' "$body" > "$root/post.json"
+        printf '%s' {post_stderr} >&2
+        exit {post_status}
         ;;
 esac
 "#,
+        first_list = shell_quote(first_list),
+        second_list = shell_quote(second_list),
+        post_stderr = shell_quote(post_stderr),
     );
-    std::fs::write(dir.path().join("list-first.json"), first_list).expect("write first list");
-    std::fs::write(dir.path().join("list-second.json"), second_list).expect("write second list");
-    std::fs::write(dir.path().join("post-status"), post_status.to_string())
-        .expect("write post status");
-    (dir, binary)
+    fake_gh(&script)
+}
+
+#[cfg(unix)]
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
 #[cfg(unix)]
@@ -427,7 +513,7 @@ fn kill_if_alive(pid: libc::pid_t) -> bool {
 
 #[cfg(unix)]
 fn wait_for_recorded_pid(path: &std::path::Path) -> libc::pid_t {
-    let deadline = Instant::now() + Duration::from_secs(1);
+    let deadline = Instant::now() + PID_PUBLICATION_TIMEOUT;
     while Instant::now() < deadline {
         if let Ok(value) = std::fs::read_to_string(path) {
             if let Ok(pid) = value.trim().parse() {

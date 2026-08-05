@@ -465,6 +465,7 @@ fn find_or_create_pull_request_with(
         "--input".into(),
         body.path().as_os_str().to_owned(),
     ]);
+    drop(body);
     let post_error = match post {
         Ok(output) if output.status.success() => None,
         Ok(output) => Some(ProjectPullRequestMergeError::new(
