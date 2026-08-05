@@ -491,7 +491,7 @@ test("sends strict GitHub clone URLs to the native merge boundary", async ({
           sourceCloneUrl: "https://github.com/anhle128/buzz",
           targetBranch: "main",
           sourceBranch: "feature/mock-4-1",
-          expectedCommit: expect.any(String),
+          expectedCommit: "buzz4x1000000000000000000000000000000000",
         },
       },
     });
