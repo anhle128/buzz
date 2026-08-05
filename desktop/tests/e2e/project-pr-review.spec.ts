@@ -454,6 +454,49 @@ test("PR creator/owner can toggle draft, request reviews, and approve", async ({
   await expect(page.getByTestId("chat-title")).toHaveText("general");
 });
 
+test("sends strict GitHub clone URLs to the native merge boundary", async ({
+  page,
+}) => {
+  await enableProjectsFeature(page);
+  await page.addInitScript(() => {
+    window.__BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__ =
+      "https://github.com/anhle128/buzz";
+  });
+  await installMockBridge(page);
+
+  await openBuzzProject(page);
+  await page.getByRole("button", { name: "Clone locally" }).click();
+  await expect(page.getByText("Cloned repository.")).toBeVisible();
+  await page.getByRole("tab", { name: "Pull Request" }).click();
+  const aliceRow = page
+    .getByTestId("project-pull-request-row")
+    .filter({ hasText: "alice" })
+    .first();
+  await aliceRow.getByRole("button", { name: /^#/ }).click();
+  await page.getByRole("button", { name: "Merge", exact: true }).click();
+  await page.getByTestId("merge-pull-request-confirm-button").click();
+
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        window.__BUZZ_E2E_COMMAND_PAYLOADS__?.find(
+          (entry) => entry.command === "merge_project_pull_request",
+        ),
+      ),
+    )
+    .toMatchObject({
+      payload: {
+        input: {
+          targetCloneUrl: "https://github.com/anhle128/buzz",
+          sourceCloneUrl: "https://github.com/anhle128/buzz",
+          targetBranch: "main",
+          sourceBranch: "feature/mock-4-1",
+          expectedCommit: expect.any(String),
+        },
+      },
+    });
+});
+
 test("merge conflicts offer persistent terminal recovery", async ({ page }) => {
   await enableProjectsFeature(page);
   await installMockBridge(page);
