@@ -139,6 +139,11 @@ impl GhRunner {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         crate::util::configure_no_window(&mut command);
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
 
         let mut child = command.spawn().map_err(|error| {
             if error.kind() == std::io::ErrorKind::NotFound {
@@ -150,6 +155,7 @@ impl GhRunner {
                 )
             }
         })?;
+        let pid = child.id();
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
         let stdout_thread = std::thread::spawn(move || read_pipe_bounded(stdout, GH_STREAM_LIMIT));
@@ -158,8 +164,12 @@ impl GhRunner {
         let started = Instant::now();
         let status = loop {
             match child.try_wait() {
-                Ok(Some(status)) => break status,
+                Ok(Some(status)) => {
+                    terminate_gh_tree(pid);
+                    break status;
+                }
                 Ok(None) if started.elapsed() >= self.timeout => {
+                    terminate_gh_tree(pid);
                     let _ = child.kill();
                     let _ = child.wait();
                     let _ = stdout_thread.join();
@@ -174,6 +184,7 @@ impl GhRunner {
                 }
                 Ok(None) => std::thread::sleep(Duration::from_millis(10)),
                 Err(error) => {
+                    terminate_gh_tree(pid);
                     let _ = child.kill();
                     let _ = child.wait();
                     let _ = stdout_thread.join();
@@ -196,6 +207,23 @@ impl GhRunner {
             stdout,
             stderr,
         })
+    }
+}
+
+fn terminate_gh_tree(pid: u32) {
+    #[cfg(unix)]
+    unsafe {
+        // The child owns this process group. ESRCH after leader exit is a no-op;
+        // never fall back to +pid because that PID may already have been reused.
+        libc::kill(-(pid as i32), libc::SIGKILL);
+    }
+    #[cfg(windows)]
+    {
+        let _ = crate::managed_agents::terminate_process(pid);
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = pid;
     }
 }
 
@@ -245,7 +273,7 @@ fn redact_diagnostic(raw: &str) -> String {
         .replace_all(&value, "$1[REDACTED]");
     let value = CREDENTIAL
         .get_or_init(|| {
-            Regex::new(r"(?i)\b(token|bearer)\s+(?:[:=]\s*)?[^\s,;]+")
+            Regex::new(r"(?i)\b(token|bearer)(?:\s*[:=]\s*|\s+)[^\s,;]+")
                 .expect("valid credential regex")
         })
         .replace_all(&value, "$1 [REDACTED]");

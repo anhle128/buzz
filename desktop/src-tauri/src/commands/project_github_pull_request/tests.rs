@@ -65,6 +65,29 @@ fn fake_gh(script: &str) -> (tempfile::TempDir, PathBuf) {
 }
 
 #[cfg(unix)]
+fn recorded_pid(path: &std::path::Path) -> libc::pid_t {
+    std::fs::read_to_string(path)
+        .expect("read recorded pid")
+        .trim()
+        .parse()
+        .expect("fake gh recorded a numeric pid")
+}
+
+#[cfg(unix)]
+fn process_is_alive(pid: libc::pid_t) -> bool {
+    unsafe { libc::kill(pid, 0) == 0 }
+}
+
+#[cfg(unix)]
+fn kill_if_alive(pid: libc::pid_t) -> bool {
+    let alive = process_is_alive(pid);
+    if alive {
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+    }
+    alive
+}
+
+#[cfg(unix)]
 #[test]
 fn gh_runner_preserves_direct_argv_and_closes_stdin() {
     let (_dir, binary) = fake_gh(
@@ -122,7 +145,8 @@ wait
 fn gh_runner_kills_and_reaps_a_timed_out_child() {
     let (_dir, binary) = fake_gh(
         r#"
-printf '%s' "$$" > "$1"
+/bin/sleep 8 &
+printf '%s' "$!" > "$1"
 while :; do :; done
 "#,
     );
@@ -141,16 +165,49 @@ while :; do :; done
     let value = error_value(error);
     assert_eq!(value["code"], "github_merge_failed");
     assert!(value["message"].as_str().unwrap().contains("timed out"));
-    let pid = std::fs::read_to_string(pid_file.path()).expect("read child pid");
-    let pid: u32 = pid.trim().parse().expect("fake gh recorded its pid");
-    let pid = pid.to_string();
-    assert!(!std::process::Command::new("/bin/kill")
-        .args(["-0", &pid])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .expect("check child process")
-        .success());
+    let descendant = recorded_pid(pid_file.path());
+    std::thread::sleep(Duration::from_millis(200));
+    let descendant_alive = kill_if_alive(descendant);
+    assert!(
+        !descendant_alive,
+        "descendant PID {descendant} survived timeout cleanup"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn gh_runner_cleans_descendants_before_joining_after_normal_exit() {
+    let (_dir, binary) = fake_gh(
+        r#"
+/bin/sleep 6 &
+printf '%s' "$!" > "$1"
+exit 0
+"#,
+    );
+    let pid_file = tempfile::NamedTempFile::new().expect("create descendant pid file");
+    let runner = GhRunner {
+        binary,
+        timeout: Duration::from_secs(2),
+    };
+    let started = Instant::now();
+
+    let output = runner
+        .run(&[pid_file.path().as_os_str().to_owned()])
+        .expect("fake gh leader exits successfully");
+    let elapsed = started.elapsed();
+    let descendant = recorded_pid(pid_file.path());
+    std::thread::sleep(Duration::from_millis(200));
+    let descendant_alive = kill_if_alive(descendant);
+
+    assert!(output.status.success());
+    assert!(
+        elapsed < Duration::from_secs(4),
+        "inherited output handles blocked runner for {elapsed:?}"
+    );
+    assert!(
+        !descendant_alive,
+        "descendant PID {descendant} survived normal-exit cleanup"
+    );
 }
 
 #[test]
@@ -181,6 +238,22 @@ fn gh_runner_redacts_secrets_and_caps_user_diagnostics() {
     assert!(diagnostic.contains("[REDACTED]"));
     assert!(secrets.iter().all(|secret| !diagnostic.contains(secret)));
     assert!(diagnostic.len() <= GH_DIAGNOSTIC_LIMIT);
+}
+
+#[test]
+fn gh_runner_redacts_delimiter_adjacent_credentials() {
+    let cases = [
+        ("token: TOKEN_COLON_SECRET", "TOKEN_COLON_SECRET"),
+        ("token=TOKEN_EQUALS_SECRET", "TOKEN_EQUALS_SECRET"),
+        ("Bearer: BEARER_COLON_SECRET", "BEARER_COLON_SECRET"),
+        ("Bearer=BEARER_EQUALS_SECRET", "BEARER_EQUALS_SECRET"),
+    ];
+
+    for (raw, secret) in cases {
+        let diagnostic = redact_diagnostic(raw);
+        assert!(diagnostic.contains("[REDACTED]"), "{raw}");
+        assert!(!diagnostic.contains(secret), "leaked {secret}");
+    }
 }
 
 #[test]
