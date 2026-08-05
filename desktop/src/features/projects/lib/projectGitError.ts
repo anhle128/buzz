@@ -31,7 +31,7 @@ export function projectCloneErrorPresentation(
     return {
       title: "Repository access required",
       description: github
-        ? "This repository requires GitHub authentication. Buzz currently clones public GitHub repositories without credentials."
+        ? "This repository requires GitHub authentication. Check that your GitHub SSH key or credential has repository access."
         : "Buzz could not authenticate with this repository. Check your access and try again.",
     };
   }
