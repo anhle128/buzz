@@ -1,4 +1,7 @@
-use super::{redact_diagnostic, GhRunner, GitHubRepoRef, GH_DIAGNOSTIC_LIMIT, GH_STREAM_LIMIT};
+use super::{
+    join_gh_readers_after_cleanup, redact_diagnostic, GhRunner, GitHubRepoRef, GH_DIAGNOSTIC_LIMIT,
+    GH_STREAM_LIMIT,
+};
 use crate::commands::project_git_merge_error::ProjectPullRequestMergeError;
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -88,6 +91,59 @@ fn kill_if_alive(pid: libc::pid_t) -> bool {
 }
 
 #[cfg(unix)]
+fn wait_for_recorded_pid(path: &std::path::Path) -> libc::pid_t {
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while Instant::now() < deadline {
+        if let Ok(value) = std::fs::read_to_string(path) {
+            if let Ok(pid) = value.trim().parse() {
+                return pid;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    recorded_pid(path)
+}
+
+#[test]
+fn gh_runner_releases_tree_before_joining_readers() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    let released = Arc::new(AtomicBool::new(false));
+    let reader = |released: Arc<AtomicBool>| {
+        std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_millis(250);
+            while Instant::now() < deadline {
+                if released.load(Ordering::SeqCst) {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            false
+        })
+    };
+    let stdout = reader(Arc::clone(&released));
+    let stderr = reader(Arc::clone(&released));
+
+    let (stdout_saw_cleanup, stderr_saw_cleanup) =
+        join_gh_readers_after_cleanup(|| released.store(true, Ordering::SeqCst), stdout, stderr);
+
+    assert!(stdout_saw_cleanup);
+    assert!(stderr_saw_cleanup);
+}
+
+#[cfg(windows)]
+#[test]
+fn gh_windows_job_setup_returns_a_retained_handle() {
+    let _: fn(
+        u32,
+    ) -> Result<
+        crate::managed_agents::JobHandle,
+        crate::commands::project_git_merge_error::ProjectPullRequestMergeError,
+    > = super::create_windows_job;
+}
+
+#[cfg(unix)]
 #[test]
 fn gh_runner_preserves_direct_argv_and_closes_stdin() {
     let (_dir, binary) = fake_gh(
@@ -156,16 +212,19 @@ while :; do :; done
         timeout: Duration::from_secs(2),
     };
     let started = Instant::now();
+    let pid_path = pid_file.path().as_os_str().to_owned();
+    let run = std::thread::spawn(move || runner.run(&[pid_path]));
+    let descendant = wait_for_recorded_pid(pid_file.path());
 
-    let error = runner
-        .run(&[pid_file.path().as_os_str().to_owned()])
+    let error = run
+        .join()
+        .expect("timed-out fake gh runner thread should not panic")
         .expect_err("fake gh should time out");
 
     assert!(started.elapsed() < Duration::from_secs(4));
     let value = error_value(error);
     assert_eq!(value["code"], "github_merge_failed");
     assert!(value["message"].as_str().unwrap().contains("timed out"));
-    let descendant = recorded_pid(pid_file.path());
     std::thread::sleep(Duration::from_millis(200));
     let descendant_alive = kill_if_alive(descendant);
     assert!(

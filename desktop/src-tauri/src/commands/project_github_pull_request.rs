@@ -12,6 +12,11 @@ const GH_TIMEOUT: Duration = Duration::from_secs(60);
 const GH_STREAM_LIMIT: usize = 64 * 1024;
 const GH_DIAGNOSTIC_LIMIT: usize = 8 * 1024;
 
+#[cfg(windows)]
+type GhJob = crate::managed_agents::JobHandle;
+#[cfg(not(windows))]
+type GhJob = ();
+
 pub(crate) struct GitHubRepoRef {
     owner: String,
     repo: String,
@@ -156,6 +161,18 @@ impl GhRunner {
             }
         })?;
         let pid = child.id();
+        #[cfg(windows)]
+        let mut job = match create_windows_job(pid) {
+            Ok(job) => Some(job),
+            Err(error) => {
+                let _ = crate::managed_agents::terminate_process(pid);
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error);
+            }
+        };
+        #[cfg(not(windows))]
+        let mut job = None::<GhJob>;
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
         let stdout_thread = std::thread::spawn(move || read_pipe_bounded(stdout, GH_STREAM_LIMIT));
@@ -164,16 +181,17 @@ impl GhRunner {
         let started = Instant::now();
         let status = loop {
             match child.try_wait() {
-                Ok(Some(status)) => {
-                    terminate_gh_tree(pid);
-                    break status;
-                }
+                Ok(Some(status)) => break status,
                 Ok(None) if started.elapsed() >= self.timeout => {
-                    terminate_gh_tree(pid);
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    let _ = stdout_thread.join();
-                    let _ = stderr_thread.join();
+                    let _ = join_gh_readers_after_cleanup(
+                        || {
+                            release_gh_tree(pid, &mut job);
+                            let _ = child.kill();
+                            let _ = child.wait();
+                        },
+                        stdout_thread,
+                        stderr_thread,
+                    );
                     return Err(ProjectPullRequestMergeError::new(
                         "github_merge_failed",
                         format!(
@@ -184,11 +202,15 @@ impl GhRunner {
                 }
                 Ok(None) => std::thread::sleep(Duration::from_millis(10)),
                 Err(error) => {
-                    terminate_gh_tree(pid);
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    let _ = stdout_thread.join();
-                    let _ = stderr_thread.join();
+                    let _ = join_gh_readers_after_cleanup(
+                        || {
+                            release_gh_tree(pid, &mut job);
+                            let _ = child.kill();
+                            let _ = child.wait();
+                        },
+                        stdout_thread,
+                        stderr_thread,
+                    );
                     return Err(ProjectPullRequestMergeError::new(
                         "github_merge_failed",
                         redact_diagnostic(&format!("Failed to wait for GitHub CLI: {error}")),
@@ -197,8 +219,11 @@ impl GhRunner {
             }
         };
 
-        let stdout = stdout_thread.join().unwrap_or_default();
-        let stderr = stderr_thread.join().unwrap_or_default();
+        let (stdout, stderr) = join_gh_readers_after_cleanup(
+            || release_gh_tree(pid, &mut job),
+            stdout_thread,
+            stderr_thread,
+        );
         if status.code() == Some(127) {
             return Err(missing_cli_error());
         }
@@ -210,7 +235,17 @@ impl GhRunner {
     }
 }
 
-fn terminate_gh_tree(pid: u32) {
+#[cfg(windows)]
+fn create_windows_job(pid: u32) -> Result<GhJob, ProjectPullRequestMergeError> {
+    crate::managed_agents::create_job_for_child(pid).ok_or_else(|| {
+        ProjectPullRequestMergeError::new(
+            "github_merge_failed",
+            "GitHub CLI could not be isolated in a Windows process job.",
+        )
+    })
+}
+
+fn release_gh_tree(pid: u32, job: &mut Option<GhJob>) {
     #[cfg(unix)]
     unsafe {
         // The child owns this process group. ESRCH after leader exit is a no-op;
@@ -219,12 +254,27 @@ fn terminate_gh_tree(pid: u32) {
     }
     #[cfg(windows)]
     {
-        let _ = crate::managed_agents::terminate_process(pid);
+        drop(job.take());
+        let _ = pid;
     }
     #[cfg(not(any(unix, windows)))]
     {
         let _ = pid;
     }
+    #[cfg(not(windows))]
+    let _ = job;
+}
+
+fn join_gh_readers_after_cleanup<T: Default, U: Default>(
+    cleanup: impl FnOnce(),
+    stdout_thread: std::thread::JoinHandle<T>,
+    stderr_thread: std::thread::JoinHandle<U>,
+) -> (T, U) {
+    cleanup();
+    (
+        stdout_thread.join().unwrap_or_default(),
+        stderr_thread.join().unwrap_or_default(),
+    )
 }
 
 fn missing_cli_error() -> ProjectPullRequestMergeError {
