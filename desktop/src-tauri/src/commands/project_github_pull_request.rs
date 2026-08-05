@@ -1,7 +1,8 @@
 use crate::commands::project_git_merge_error::ProjectPullRequestMergeError;
 use regex::Regex;
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::ffi::OsString;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::OnceLock;
@@ -81,17 +82,121 @@ impl GitHubRepoRef {
         format!("{}/{}", self.owner, self.repo)
     }
 
-    fn gh_repo(&self) -> String {
-        format!("github.com/{}", self.slug())
-    }
-
-    fn pull_url(&self, number: u64) -> String {
-        format!("https://github.com/{}/pull/{number}", self.slug())
-    }
-
     fn pulls_url(&self) -> String {
         format!("https://github.com/{}/pulls", self.slug())
     }
+}
+
+pub(crate) struct GitHubMergeInput {
+    pub(crate) target: GitHubRepoRef,
+    pub(crate) source: GitHubRepoRef,
+    pub(crate) target_branch: String,
+    pub(crate) source_branch: String,
+    pub(crate) expected_commit: String,
+    pub(crate) title: String,
+    pub(crate) body: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct GitHubPullSummary {
+    number: u64,
+    html_url: String,
+    state: String,
+    merged_at: Option<String>,
+    head: GitHubPullHead,
+    base: GitHubPullBase,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct GitHubPullHead {
+    sha: String,
+    #[serde(rename = "ref")]
+    branch: String,
+    repo: GitHubNamedRepo,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct GitHubPullBase {
+    #[serde(rename = "ref")]
+    branch: String,
+    repo: GitHubNamedRepo,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct GitHubNamedRepo {
+    full_name: String,
+}
+
+#[derive(Debug)]
+enum PullSelection {
+    Reuse(GitHubPullSummary),
+    Create,
+}
+
+fn select_pull(
+    pulls: Vec<GitHubPullSummary>,
+    input: &GitHubMergeInput,
+) -> Result<PullSelection, ProjectPullRequestMergeError> {
+    let mut open = Vec::new();
+    let mut merged = Vec::new();
+    let mut closed = Vec::new();
+    for pull in pulls.into_iter().filter(|pull| {
+        pull.base
+            .repo
+            .full_name
+            .eq_ignore_ascii_case(&input.target.slug())
+            && pull
+                .head
+                .repo
+                .full_name
+                .eq_ignore_ascii_case(&input.source.slug())
+            && pull.base.branch == input.target_branch
+            && pull.head.branch == input.source_branch
+    }) {
+        if pull.state.eq_ignore_ascii_case("open") {
+            open.push(pull);
+        } else if pull.merged_at.is_some()
+            && pull.head.sha.eq_ignore_ascii_case(&input.expected_commit)
+        {
+            merged.push(pull);
+        } else if pull.merged_at.is_none() {
+            closed.push(pull);
+        }
+    }
+
+    match open.len() {
+        1 => return Ok(PullSelection::Reuse(open.remove(0))),
+        2.. => {
+            return Err(ProjectPullRequestMergeError::open_url(
+                "github_pr_ambiguous",
+                "More than one open GitHub pull request matched.",
+                input.target.pulls_url(),
+                Vec::new(),
+            ));
+        }
+        0 => {}
+    }
+    match merged.len() {
+        1 => return Ok(PullSelection::Reuse(merged.remove(0))),
+        2.. => {
+            return Err(ProjectPullRequestMergeError::open_url(
+                "github_pr_ambiguous",
+                "More than one merged GitHub pull request matched the reviewed commit.",
+                input.target.pulls_url(),
+                Vec::new(),
+            ));
+        }
+        0 => {}
+    }
+    if let Some(pull) = closed.into_iter().min_by_key(|pull| pull.number) {
+        return Err(ProjectPullRequestMergeError::open_url(
+            "github_pr_blocked",
+            "The matching GitHub pull request was closed without merging.",
+            pull.html_url,
+            vec!["Reopen or replace the pull request on GitHub.".to_string()],
+        ));
+    }
+    Ok(PullSelection::Create)
 }
 
 #[derive(Debug)]
@@ -134,6 +239,27 @@ impl GhRunner {
             "github_auth_required",
             "Authenticate GitHub CLI with: gh auth login --hostname github.com",
         ))
+    }
+
+    fn run_json<T: DeserializeOwned>(
+        &self,
+        args: &[OsString],
+        accepted_codes: &[i32],
+    ) -> Result<T, ProjectPullRequestMergeError> {
+        let output = self.run(args)?;
+        let code = output.status.code().unwrap_or(-1);
+        if !output.status.success() && !accepted_codes.contains(&code) {
+            return Err(ProjectPullRequestMergeError::new(
+                "github_merge_failed",
+                redact_diagnostic(&output.stderr),
+            ));
+        }
+        serde_json::from_str(&output.stdout).map_err(|_| {
+            ProjectPullRequestMergeError::new(
+                "github_merge_failed",
+                "GitHub CLI returned an unexpected JSON response. Update gh, then retry.",
+            )
+        })
     }
 
     fn run(&self, args: &[OsString]) -> Result<GhOutput, ProjectPullRequestMergeError> {
@@ -232,6 +358,131 @@ impl GhRunner {
             stdout,
             stderr,
         })
+    }
+}
+
+fn list_pulls(
+    gh: &GhRunner,
+    input: &GitHubMergeInput,
+) -> Result<PullSelection, ProjectPullRequestMergeError> {
+    let pages: Vec<Vec<GitHubPullSummary>> = gh.run_json(
+        &[
+            "api".into(),
+            "--method".into(),
+            "GET".into(),
+            "--hostname".into(),
+            "github.com".into(),
+            "--paginate".into(),
+            "--slurp".into(),
+            format!("repos/{}/pulls", input.target.slug()).into(),
+            "-f".into(),
+            "state=all".into(),
+            "-f".into(),
+            format!("head={}:{}", input.source.owner, input.source_branch).into(),
+            "-f".into(),
+            format!("base={}", input.target_branch).into(),
+            "-f".into(),
+            "per_page=100".into(),
+        ],
+        &[],
+    )?;
+    select_pull(pages.into_iter().flatten().collect(), input)
+}
+
+fn json_input<T: Serialize>(
+    value: &T,
+) -> Result<tempfile::NamedTempFile, ProjectPullRequestMergeError> {
+    let mut file = tempfile::Builder::new()
+        .prefix("buzz-gh-")
+        .tempfile()
+        .map_err(|_| {
+            ProjectPullRequestMergeError::new(
+                "github_merge_failed",
+                "Buzz could not prepare the GitHub request.",
+            )
+        })?;
+    serde_json::to_writer(file.as_file_mut(), value).map_err(|_| {
+        ProjectPullRequestMergeError::new(
+            "github_merge_failed",
+            "Buzz could not encode the GitHub request.",
+        )
+    })?;
+    file.as_file_mut().flush().map_err(|_| {
+        ProjectPullRequestMergeError::new(
+            "github_merge_failed",
+            "Buzz could not finish the GitHub request.",
+        )
+    })?;
+    Ok(file)
+}
+
+#[derive(Serialize)]
+struct CreatePullRequest<'a> {
+    title: &'a str,
+    body: &'a str,
+    head: String,
+    base: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    head_repo: Option<String>,
+}
+
+pub(crate) fn find_or_create_pull_request(
+    input: &GitHubMergeInput,
+) -> Result<String, ProjectPullRequestMergeError> {
+    let gh = GhRunner::discover()?;
+    find_or_create_pull_request_with(&gh, input)
+}
+
+fn find_or_create_pull_request_with(
+    gh: &GhRunner,
+    input: &GitHubMergeInput,
+) -> Result<String, ProjectPullRequestMergeError> {
+    gh.ensure_auth()?;
+    match list_pulls(gh, input)? {
+        PullSelection::Reuse(pull) => return Ok(pull.html_url),
+        PullSelection::Create => {}
+    }
+
+    let request = CreatePullRequest {
+        title: &input.title,
+        body: &input.body,
+        head: format!("{}:{}", input.source.owner, input.source_branch),
+        base: &input.target_branch,
+        head_repo: (!input
+            .source
+            .slug()
+            .eq_ignore_ascii_case(&input.target.slug()))
+        .then(|| input.source.slug()),
+    };
+    let body = json_input(&request)?;
+    let post = gh.run(&[
+        "api".into(),
+        "--method".into(),
+        "POST".into(),
+        "--hostname".into(),
+        "github.com".into(),
+        format!("repos/{}/pulls", input.target.slug()).into(),
+        "--input".into(),
+        body.path().as_os_str().to_owned(),
+    ]);
+    let post_error = match post {
+        Ok(output) if output.status.success() => None,
+        Ok(output) => Some(ProjectPullRequestMergeError::new(
+            "github_merge_failed",
+            redact_diagnostic(&output.stderr),
+        )),
+        Err(error) => Some(error),
+    };
+
+    match list_pulls(gh, input)? {
+        PullSelection::Reuse(pull) => Ok(pull.html_url),
+        PullSelection::Create => match post_error {
+            Some(error) => Err(error),
+            None => Err(ProjectPullRequestMergeError::new(
+                "github_merge_failed",
+                "GitHub created the pull request but it could not be found. Refresh and retry.",
+            )),
+        },
     }
 }
 
