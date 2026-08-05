@@ -1306,7 +1306,7 @@ printf '<%s>\n' "$@"
     );
     let runner = GhRunner {
         binary,
-        timeout: Duration::from_secs(2),
+        timeout: LIFECYCLE_FAKE_TIMEOUT,
     };
 
     let output = runner
@@ -1361,7 +1361,7 @@ while :; do :; done
     let pid_file = tempfile::NamedTempFile::new().expect("create pid file");
     let runner = GhRunner {
         binary,
-        timeout: Duration::from_secs(2),
+        timeout: LIFECYCLE_FAKE_TIMEOUT,
     };
     let started = Instant::now();
     let pid_path = pid_file.path().as_os_str().to_owned();
@@ -1373,7 +1373,7 @@ while :; do :; done
         .expect("timed-out fake gh runner thread should not panic")
         .expect_err("fake gh should time out");
 
-    assert!(started.elapsed() < Duration::from_secs(4));
+    assert!(started.elapsed() < LIFECYCLE_FAKE_TIMEOUT + Duration::from_secs(2));
     let value = error_value(error);
     assert_eq!(value["code"], "github_merge_failed");
     assert!(value["message"].as_str().unwrap().contains("timed out"));
@@ -1398,7 +1398,7 @@ exit 0
     let pid_file = tempfile::NamedTempFile::new().expect("create descendant pid file");
     let runner = GhRunner {
         binary,
-        timeout: Duration::from_secs(2),
+        timeout: LIFECYCLE_FAKE_TIMEOUT,
     };
     let started = Instant::now();
 
