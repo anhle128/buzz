@@ -131,6 +131,15 @@ fn github_pull_gate_state_table() {
     unknown_mergeability.mergeable = "UNKNOWN".to_string();
     assert_blocked_contains(&unknown_mergeability, &pass, Ok(&empty_rules), "UNKNOWN");
 
+    let mut future_mergeability = ready_pull_view();
+    future_mergeability.mergeable = "FUTURE_READY".to_string();
+    assert_blocked_contains(
+        &future_mergeability,
+        &pass,
+        Ok(&empty_rules),
+        "FUTURE_READY",
+    );
+
     let mut review_required = ready_pull_view();
     review_required.review_decision = "REVIEW_REQUIRED".to_string();
     assert_blocked_contains(&review_required, &pass, Ok(&empty_rules), "REVIEW_REQUIRED");
@@ -143,6 +152,14 @@ fn github_pull_gate_state_table() {
         Ok(&empty_rules),
         "CHANGES_REQUESTED",
     );
+
+    let mut unknown_review = ready_pull_view();
+    unknown_review.review_decision = "STALE_APPROVAL".to_string();
+    assert_blocked_contains(&unknown_review, &pass, Ok(&empty_rules), "STALE_APPROVAL");
+
+    let mut empty_review = ready_pull_view();
+    empty_review.review_decision.clear();
+    assert_blocked_contains(&empty_review, &pass, Ok(&empty_rules), "Review state is");
 
     let failing_check = [GitHubCheck {
         name: "lint".to_string(),
@@ -603,6 +620,10 @@ fn github_merge_skips_merge_for_each_blocked_open_gate() {
     unknown_mergeable["mergeable"] = serde_json::json!("UNKNOWN");
     cases.push(("unknown mergeable", unknown_mergeable, MergeFake::ready()));
 
+    let mut future_mergeable = ready_view_value();
+    future_mergeable["mergeable"] = serde_json::json!("FUTURE_READY");
+    cases.push(("future mergeable", future_mergeable, MergeFake::ready()));
+
     let mut review_required = ready_view_value();
     review_required["reviewDecision"] = serde_json::json!("REVIEW_REQUIRED");
     cases.push(("review required", review_required, MergeFake::ready()));
@@ -610,6 +631,14 @@ fn github_merge_skips_merge_for_each_blocked_open_gate() {
     let mut changes_requested = ready_view_value();
     changes_requested["reviewDecision"] = serde_json::json!("CHANGES_REQUESTED");
     cases.push(("changes requested", changes_requested, MergeFake::ready()));
+
+    let mut unknown_review = ready_view_value();
+    unknown_review["reviewDecision"] = serde_json::json!("STALE_APPROVAL");
+    cases.push(("unknown review", unknown_review, MergeFake::ready()));
+
+    let mut empty_review = ready_view_value();
+    empty_review["reviewDecision"] = serde_json::json!("");
+    cases.push(("empty review", empty_review, MergeFake::ready()));
 
     let mut auto_merge = ready_view_value();
     auto_merge["autoMergeRequest"] = serde_json::json!({ "enabledBy": "octocat" });

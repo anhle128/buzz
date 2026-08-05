@@ -582,13 +582,10 @@ fn decide_open_pull(
     if view.is_draft {
         reasons.push("The pull request is still a draft.".to_string());
     }
-    if matches!(view.mergeable.as_str(), "CONFLICTING" | "UNKNOWN") {
+    if view.mergeable != "MERGEABLE" {
         reasons.push(format!("Mergeability is {}.", view.mergeable));
     }
-    if matches!(
-        view.review_decision.as_str(),
-        "REVIEW_REQUIRED" | "CHANGES_REQUESTED"
-    ) {
+    if view.review_decision != "APPROVED" {
         reasons.push(format!("Review state is {}.", view.review_decision));
     }
     if view.auto_merge_request.is_some() {
