@@ -566,6 +566,8 @@ export async function mergeProjectPullRequest(input: {
   targetBranch: string;
   sourceBranch: string;
   expectedCommit: string;
+  title: string;
+  body: string;
 }): Promise<ProjectRepoMergeResult> {
   let result: RawProjectRepoMergeResult;
   try {

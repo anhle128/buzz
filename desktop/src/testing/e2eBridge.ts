@@ -11525,6 +11525,8 @@ export function maybeInstallE2eTauriMocks() {
             repoAddress: string;
             sourceBranch: string;
             statusCreatedAt: number;
+            title: string;
+            body: string;
             targetBranch: string;
             targetOwner: string;
           };

@@ -7,6 +7,7 @@ const SHOTS = "test-results/project-pr-review";
 const RECOVERY_SHOTS = "test-results/project-pr-conflict-recovery";
 const REVIEWER_AGENT_PUBKEY = "a".repeat(64);
 const DEFAULT_MOCK_PUBKEY = "deadbeef".repeat(8);
+const KIND_GIT_PULL_REQUEST = 1618;
 
 // The projects surface is a preview feature — opt in before the app mounts.
 // Must run before installMockBridge so React reads the override on mount.
@@ -454,14 +455,51 @@ test("PR creator/owner can toggle draft, request reviews, and approve", async ({
   await expect(page.getByTestId("chat-title")).toHaveText("general");
 });
 
-test("sends strict GitHub clone URLs to the native merge boundary", async ({
+test("sends GitHub merge payload unchanged through native boundary", async ({
   page,
 }) => {
+  const markdownBody =
+    "  Keep leading whitespace.\n\n- preserve **Markdown**\n";
+  const title = "Preserve GitHub PR body";
   await enableProjectsFeature(page);
   await page.addInitScript(() => {
     window.__BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__ =
       "https://github.com/anhle128/buzz";
+    window.__BUZZ_E2E_PROJECT_MERGE_ERROR__ = {
+      code: "github_auth_required",
+      message: "GitHub auth required.",
+      recovery: null,
+    };
   });
+  await page.addInitScript(
+    ({ owner, author, title, markdownBody, prKind, repoKind }) => {
+      window.__BUZZ_E2E_EXTRA_PROJECT_EVENTS__ = [
+        {
+          id: "5".repeat(64),
+          kind: prKind,
+          pubkey: author,
+          created_at: 2_000_000_000,
+          content: markdownBody,
+          tags: [
+            ["a", `${repoKind}:${owner}:buzz`],
+            ["subject", title],
+            ["c", "1".repeat(40)],
+            ["clone", "https://github.com/fork/buzz"],
+            ["branch-name", "feature/preserve-markdown"],
+            ["target-branch", "main"],
+          ],
+        },
+      ];
+    },
+    {
+      owner: DEFAULT_MOCK_PUBKEY,
+      author: TEST_IDENTITIES.alice.pubkey,
+      title,
+      markdownBody,
+      prKind: KIND_GIT_PULL_REQUEST,
+      repoKind: 30617,
+    },
+  );
   await installMockBridge(page);
 
   await openBuzzProject(page);
@@ -470,11 +508,21 @@ test("sends strict GitHub clone URLs to the native merge boundary", async ({
   await page.getByRole("tab", { name: "Pull Request" }).click();
   const aliceRow = page
     .getByTestId("project-pull-request-row")
-    .filter({ hasText: "alice" })
+    .filter({ hasText: title })
     .first();
   await aliceRow.getByRole("button", { name: /^#/ }).click();
   await page.getByRole("button", { name: "Merge", exact: true }).click();
   await page.getByTestId("merge-pull-request-confirm-button").click();
+  await expect(page.getByText("GitHub auth required.")).toBeVisible();
+  await expect(
+    page.getByText("clone URL must use the active workspace relay"),
+  ).toHaveCount(0);
+  const signedMergedStatusCount = await page.evaluate(
+    () =>
+      window.__BUZZ_E2E_SIGNED_EVENTS__?.filter((event) => event.kind === 1631)
+        .length ?? 0,
+  );
+  expect(signedMergedStatusCount).toBe(0);
 
   await expect
     .poll(() =>
@@ -488,10 +536,12 @@ test("sends strict GitHub clone URLs to the native merge boundary", async ({
       payload: {
         input: {
           targetCloneUrl: "https://github.com/anhle128/buzz",
-          sourceCloneUrl: "https://github.com/anhle128/buzz",
+          sourceCloneUrl: "https://github.com/fork/buzz",
           targetBranch: "main",
-          sourceBranch: "feature/mock-4-1",
-          expectedCommit: "buzz4x1000000000000000000000000000000000",
+          sourceBranch: "feature/preserve-markdown",
+          expectedCommit: "1".repeat(40),
+          title,
+          body: markdownBody,
         },
       },
     });

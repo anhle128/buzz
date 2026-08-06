@@ -250,6 +250,8 @@ export function useMergeProjectPullRequestMutation(
         targetBranch: pullRequest.targetBranch ?? project.defaultBranch,
         sourceBranch: pullRequest.branchName,
         expectedCommit: pullRequest.commit,
+        title: pullRequest.title,
+        body: pullRequest.content,
       });
       return result;
     },
