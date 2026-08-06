@@ -43,6 +43,15 @@ async function openAlicePullRequest(page: import("@playwright/test").Page) {
   await aliceRow.getByRole("button", { name: /^#/ }).click();
 }
 
+async function openClonedGitHubAlicePullRequest(
+  page: import("@playwright/test").Page,
+) {
+  await openBuzzProject(page);
+  await page.getByRole("button", { name: "Clone locally" }).click();
+  await expect(page.getByText("Cloned repository.")).toBeVisible();
+  await openAlicePullRequest(page);
+}
+
 async function confirmMerge(page: import("@playwright/test").Page) {
   await page.getByRole("button", { name: "Merge", exact: true }).click();
   await page.getByTestId("merge-pull-request-confirm-button").click();
@@ -612,8 +621,7 @@ test("GitHub CLI guidance persists with retry", async ({ page }) => {
     };
   });
   await installMockBridge(page);
-  await openBuzzProject(page);
-  await openAlicePullRequest(page);
+  await openClonedGitHubAlicePullRequest(page);
   await confirmMerge(page);
 
   await expect(page.getByText("GitHub CLI is required")).toBeVisible();
@@ -641,8 +649,7 @@ test("GitHub blocked recovery opens the exact pull request and retries", async (
     };
   });
   await installMockBridge(page);
-  await openBuzzProject(page);
-  await openAlicePullRequest(page);
+  await openClonedGitHubAlicePullRequest(page);
   await confirmMerge(page);
 
   await expect(
@@ -680,8 +687,7 @@ test("GitHub branch changes require refresh without a stale merge action", async
     };
   });
   await installMockBridge(page);
-  await openBuzzProject(page);
-  await openAlicePullRequest(page);
+  await openClonedGitHubAlicePullRequest(page);
   await confirmMerge(page);
 
   await expect(
@@ -713,8 +719,7 @@ test("GitHub ambiguous recovery opens the exact pull-request list", async ({
     };
   });
   await installMockBridge(page);
-  await openBuzzProject(page);
-  await openAlicePullRequest(page);
+  await openClonedGitHubAlicePullRequest(page);
   await confirmMerge(page);
 
   await page.getByRole("button", { name: "Open GitHub PR" }).click();
@@ -741,8 +746,7 @@ test("invalid GitHub recovery URLs never render an open action", async ({
     };
   });
   await installMockBridge(page);
-  await openBuzzProject(page);
-  await openAlicePullRequest(page);
+  await openClonedGitHubAlicePullRequest(page);
   await confirmMerge(page);
 
   await expect(
@@ -768,8 +772,7 @@ for (const theme of ["buzz", "buzz-dark"] as const) {
     }, theme);
     await enableProjectsFeature(page);
     await installMockBridge(page);
-    await openBuzzProject(page);
-    await openAlicePullRequest(page);
+    await openClonedGitHubAlicePullRequest(page);
     await confirmMerge(page);
     await expect(
       page.getByText("Required check desktop-ci is pending."),
