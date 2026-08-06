@@ -4,11 +4,18 @@ use serde::Serialize;
 
 /// Machine-readable recovery metadata for a failed pull-request merge.
 #[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ProjectPullRequestMergeRecovery {
-    action: String,
-    target_branch: String,
-    source_branch: String,
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum ProjectPullRequestMergeRecovery {
+    OpenTerminal {
+        #[serde(rename = "targetBranch")]
+        target_branch: String,
+        #[serde(rename = "sourceBranch")]
+        source_branch: String,
+    },
+    OpenUrl {
+        url: String,
+        reasons: Vec<String>,
+    },
 }
 
 /// Structured pull-request merge failure returned across the Tauri boundary.
@@ -33,11 +40,28 @@ impl ProjectPullRequestMergeError {
         Self {
             code: "merge_conflict".to_string(),
             message: "Pull request has merge conflicts.".to_string(),
-            recovery: Some(ProjectPullRequestMergeRecovery {
-                action: "open_terminal".to_string(),
+            recovery: Some(ProjectPullRequestMergeRecovery::OpenTerminal {
                 target_branch,
                 source_branch,
             }),
+        }
+    }
+
+    pub(crate) fn open_url(
+        code: &str,
+        message: impl Into<String>,
+        url: String,
+        reasons: impl IntoIterator<Item = String>,
+    ) -> Self {
+        let reasons = reasons
+            .into_iter()
+            .take(20)
+            .map(|reason| reason.chars().take(200).collect())
+            .collect();
+        Self {
+            code: code.to_string(),
+            message: message.into(),
+            recovery: Some(ProjectPullRequestMergeRecovery::OpenUrl { url, reasons }),
         }
     }
 }
@@ -79,7 +103,9 @@ pub(crate) fn classify_merge_error(
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_merge_error, ProjectPullRequestMergeError};
+    use super::{
+        classify_merge_error, ProjectPullRequestMergeError, ProjectPullRequestMergeRecovery,
+    };
 
     #[test]
     fn merge_conflict_error_has_stable_recovery_metadata() {
@@ -89,9 +115,15 @@ mod tests {
         assert_eq!(error.code, "merge_conflict");
         assert_eq!(error.message, "Pull request has merge conflicts.");
         let recovery = error.recovery.expect("conflict recovery");
-        assert_eq!(recovery.action, "open_terminal");
-        assert_eq!(recovery.target_branch, "main");
-        assert_eq!(recovery.source_branch, "feature/demo");
+        let ProjectPullRequestMergeRecovery::OpenTerminal {
+            target_branch,
+            source_branch,
+        } = recovery
+        else {
+            panic!("expected open terminal recovery");
+        };
+        assert_eq!(target_branch, "main");
+        assert_eq!(source_branch, "feature/demo");
     }
 
     #[test]
@@ -101,8 +133,36 @@ mod tests {
         let value = serde_json::to_value(error).expect("serialize merge conflict");
 
         assert_eq!(value["code"], "merge_conflict");
+        assert_eq!(value["recovery"]["action"], "open_terminal");
         assert_eq!(value["recovery"]["targetBranch"], "main");
         assert_eq!(value["recovery"]["sourceBranch"], "feature/demo");
+    }
+
+    #[test]
+    fn open_url_recovery_serializes_capped_reasons() {
+        let reasons = (0..25)
+            .map(|index| format!("{index}:{}", "x".repeat(250)))
+            .collect::<Vec<_>>();
+        let error = ProjectPullRequestMergeError::open_url(
+            "github_pr_blocked",
+            "Blocked.",
+            "https://github.com/acme/buzz/pull/42".to_string(),
+            reasons,
+        );
+        let value = serde_json::to_value(error).expect("serialize URL recovery");
+
+        assert_eq!(value["recovery"]["action"], "open_url");
+        assert_eq!(
+            value["recovery"]["url"],
+            "https://github.com/acme/buzz/pull/42"
+        );
+        let reasons = value["recovery"]["reasons"]
+            .as_array()
+            .expect("reasons array");
+        assert_eq!(reasons.len(), 20);
+        assert!(reasons
+            .iter()
+            .all(|reason| reason.as_str().unwrap().chars().count() == 200));
     }
 
     #[test]

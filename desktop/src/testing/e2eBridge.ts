@@ -1166,14 +1166,22 @@ declare global {
     __BUZZ_E2E_PROJECT_MERGE_ERROR__?: {
       code: string;
       message: string;
-      recovery: {
-        action: "open_terminal";
-        sourceBranch: string;
-        targetBranch: string;
-      } | null;
+      recovery:
+        | {
+            action: "open_terminal";
+            sourceBranch: string;
+            targetBranch: string;
+          }
+        | {
+            action: "open_url";
+            url: string;
+            reasons: string[];
+          }
+        | null;
     };
     /** Overrides the first mock repository owner for delegated-owner tests. */
     __BUZZ_E2E_PROJECT_OWNER_OVERRIDE__?: string;
+    __BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__?: string;
     /** Project history kinds rejected with CLOSED for aggregate-query tests. */
     __BUZZ_E2E_REJECT_PROJECT_QUERY_KINDS__?: number[];
     /** Captured aggregate project-history filters for request-count assertions. */
@@ -5324,6 +5332,10 @@ function buildMockProjectEvents(): RelayEvent[] {
       projectIndex === 0
         ? (window.__BUZZ_E2E_PROJECT_OWNER_OVERRIDE__ ?? seed.owner)
         : seed.owner;
+    const cloneUrl =
+      projectIndex === 0
+        ? (window.__BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__ ?? seed.cloneUrl)
+        : seed.cloneUrl;
     const repoAddress = `${KIND_REPO_ANNOUNCEMENT}:${owner}:${seed.dtag}`;
     const authors = [seed.owner, ...seed.contributors];
     const random = mulberry32(projectIndex + 1);
@@ -5337,7 +5349,7 @@ function buildMockProjectEvents(): RelayEvent[] {
           ["name", seed.name],
           ["description", seed.description],
           ["buzz-channel", "9a1657ac-f7aa-5db0-b632-d8bbeb6dfb50"],
-          ["clone", seed.cloneUrl],
+          ["clone", cloneUrl],
           ...seed.contributors.map((pubkey) => ["p", pubkey]),
         ],
         owner,
@@ -5402,7 +5414,7 @@ function buildMockProjectEvents(): RelayEvent[] {
             ? [
                 ["h", "9a1657ac-f7aa-5db0-b632-d8bbeb6dfb50"],
                 ["branch-name", `feature/mock-${dayOffset}-${index}`],
-                ["clone", seed.cloneUrl],
+                ["clone", cloneUrl],
               ]
             : []),
         ];
@@ -11230,8 +11242,12 @@ export function maybeInstallE2eTauriMocks() {
             },
           ],
         };
-      case "get_project_local_repo_snapshot":
-        return null;
+      case "get_project_local_repo_snapshot": {
+        const path = window.__BUZZ_E2E_PROJECT_REPO_SYNC_STATUS__?.local_path;
+        return path
+          ? { path, snapshot: { latest_commit: null, files: [] } }
+          : null;
+      }
       case "get_project_repo_diff":
         return {
           additions: 27,
@@ -11516,6 +11532,8 @@ export function maybeInstallE2eTauriMocks() {
             repoAddress: string;
             sourceBranch: string;
             statusCreatedAt: number;
+            title: string;
+            body: string;
             targetBranch: string;
             targetOwner: string;
           };
