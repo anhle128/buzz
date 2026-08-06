@@ -653,13 +653,7 @@ struct CreatePullRequest<'a> {
     head_repo: Option<String>,
 }
 
-pub(crate) fn find_or_create_pull_request(
-    input: &GitHubMergeInput,
-) -> Result<String, ProjectPullRequestMergeError> {
-    let gh = GhRunner::discover()?;
-    find_or_create_pull_request_with(&gh, input)
-}
-
+#[cfg(test)]
 fn find_or_create_pull_request_with(
     gh: &GhRunner,
     input: &GitHubMergeInput,

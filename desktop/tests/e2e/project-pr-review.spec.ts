@@ -609,6 +609,112 @@ test("sends GitHub merge payload unchanged through native boundary", async ({
     });
 });
 
+test("GitHub merge success publishes one merged status", async ({ page }) => {
+  await enableProjectsFeature(page);
+  await page.addInitScript(() => {
+    window.__BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__ =
+      "https://github.com/anhle128/buzz";
+  });
+  await installMockBridge(page);
+  await openClonedGitHubAlicePullRequest(page);
+
+  await page.getByRole("button", { name: "Merge", exact: true }).click();
+  await expect(page.getByTestId("merge-pull-request-confirm")).toContainText(
+    "Buzz will find or create the matching GitHub pull request, verify its checks, reviews, and branch rules, then merge it only if GitHub allows an immediate merge.",
+  );
+  await page.getByTestId("merge-pull-request-confirm-button").click();
+
+  await expect(page.getByText("Merged feature into main.")).toBeVisible();
+  await expect(page.getByText("Merged", { exact: true })).toBeVisible();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          window.__BUZZ_E2E_SIGNED_EVENTS__?.filter(
+            (event) => event.kind === 1631,
+          ).length ?? 0,
+      ),
+    )
+    .toBe(1);
+  const mergedEvent = await page.evaluate(() =>
+    window.__BUZZ_E2E_SIGNED_EVENTS__
+      ?.filter((event) => event.kind === 1631)
+      .at(-1),
+  );
+  expect(mergedEvent?.tags).toContainEqual([
+    "merge-commit",
+    "abcdef0123456789abcdef0123456789abcdef01",
+  ]);
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          window.__BUZZ_E2E_COMMANDS__?.filter(
+            (command) => command === "merge_project_pull_request",
+          ).length ?? 0,
+      ),
+    )
+    .toBe(1);
+  await expect(page.locator("#github-merge-recovery-title")).toHaveCount(0);
+  await expect(
+    page.getByRole("button", {
+      name: "Publish merged status",
+      exact: true,
+    }),
+  ).toHaveCount(0);
+});
+
+test("GitHub merged-status retry skips the merge command", async ({ page }) => {
+  await enableProjectsFeature(page);
+  await page.addInitScript(() => {
+    window.__BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__ =
+      "https://github.com/anhle128/buzz";
+    window.__BUZZ_E2E_REJECT_PROJECT_EVENT_KINDS__ = [1631];
+  });
+  await installMockBridge(page);
+  await openClonedGitHubAlicePullRequest(page);
+  await confirmMerge(page);
+
+  const publishMergedStatus = page.getByRole("button", {
+    name: "Publish merged status",
+    exact: true,
+  });
+  await expect(page.getByText("Merged feature into main.")).toBeVisible();
+  await expect(publishMergedStatus).toBeVisible();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          window.__BUZZ_E2E_COMMANDS__?.filter(
+            (command) => command === "merge_project_pull_request",
+          ).length ?? 0,
+      ),
+    )
+    .toBe(1);
+
+  await publishMergedStatus.click();
+
+  await expect(
+    page.getByText("Published merged pull request status."),
+  ).toBeVisible();
+  await expect(publishMergedStatus).toHaveCount(0);
+  const mergeCommandCount = await page.evaluate(
+    () =>
+      window.__BUZZ_E2E_COMMANDS__?.filter(
+        (command) => command === "merge_project_pull_request",
+      ).length ?? 0,
+  );
+  expect(mergeCommandCount).toBe(1);
+  const publishCommandCount = await page.evaluate(
+    () =>
+      window.__BUZZ_E2E_COMMANDS__?.filter(
+        (command) => command === "publish_project_pull_request_merged_status",
+      ).length ?? 0,
+  );
+  expect(publishCommandCount).toBe(1);
+  await expect(page.locator("#github-merge-recovery-title")).toHaveCount(0);
+});
+
 test("GitHub CLI guidance persists with retry", async ({ page }) => {
   await enableProjectsFeature(page);
   await page.addInitScript(() => {
