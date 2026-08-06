@@ -46,6 +46,30 @@ struct ProjectRepoMergeGitResult {
     merge_commit: String,
 }
 
+fn complete_pull_request_merge(
+    git_result: Result<ProjectRepoMergeGitResult, ProjectPullRequestMergeError>,
+    build_status: impl FnOnce(
+        &ProjectRepoMergeGitResult,
+    ) -> Result<String, ProjectPullRequestMergeError>,
+) -> Result<(ProjectRepoMergeGitResult, String), ProjectPullRequestMergeError> {
+    let git_result = git_result?;
+    let status_event = build_status(&git_result)?;
+    Ok((git_result, status_event))
+}
+
+fn project_repo_merge_result(
+    git_result: ProjectRepoMergeGitResult,
+    status_event: String,
+    status_publication_error: Option<String>,
+) -> ProjectRepoMergeResult {
+    ProjectRepoMergeResult {
+        message: git_result.message,
+        merge_commit: git_result.merge_commit,
+        status_event,
+        status_publication_error,
+    }
+}
+
 enum PullRequestRepoRoute {
     Buzz,
     GitHub {
@@ -116,8 +140,8 @@ fn classify_pull_request_route(
     target_clone_url: &str,
     source_clone_url: &str,
 ) -> Result<PullRequestRepoRoute, ProjectPullRequestMergeError> {
-    let target_is_github = GitHubRepoRef::is_github_host(target_clone_url);
-    let source_is_github = GitHubRepoRef::is_github_host(source_clone_url);
+    let target_is_github = has_github_intent(target_clone_url);
+    let source_is_github = has_github_intent(source_clone_url);
     match (target_is_github, source_is_github) {
         (true, true) => Ok(PullRequestRepoRoute::GitHub {
             target: GitHubRepoRef::parse(target_clone_url).map_err(|message| {
@@ -133,6 +157,18 @@ fn classify_pull_request_route(
             "Source and target repositories must use the same supported host.",
         )),
     }
+}
+
+fn has_github_intent(raw: &str) -> bool {
+    if GitHubRepoRef::is_github_host(raw) {
+        return true;
+    }
+    let raw = raw.to_ascii_lowercase();
+    raw.strip_prefix("https://github.com")
+        .is_some_and(|suffix| {
+            suffix.is_empty()
+                || matches!(suffix.as_bytes().first(), Some(b'/' | b':' | b'?' | b'#'))
+        })
 }
 
 struct ProjectOwnerIdentity {
@@ -680,33 +716,35 @@ pub async fn merge_project_pull_request(
     let git_result = match route {
         PullRequestRepoRoute::GitHub { target, source } => {
             if title.trim().is_empty() {
-                return Err(ProjectPullRequestMergeError::new(
+                Err(ProjectPullRequestMergeError::new(
                     "github_merge_failed",
                     "GitHub pull request title cannot be empty.",
-                ));
-            }
-            let github_input = GitHubMergeInput {
-                target,
-                source,
-                target_branch,
-                source_branch,
-                expected_commit,
-                title,
-                body,
-            };
-            let outcome = tauri::async_runtime::spawn_blocking(move || {
-                merge_github_pull_request(github_input)
-            })
-            .await
-            .map_err(|error| {
-                ProjectPullRequestMergeError::new(
-                    "merge_task_failed",
-                    format!("GitHub merge task failed: {error}"),
-                )
-            })??;
-            ProjectRepoMergeGitResult {
-                message: outcome.message,
-                merge_commit: outcome.merge_commit,
+                ))
+            } else {
+                let github_input = GitHubMergeInput {
+                    target,
+                    source,
+                    target_branch,
+                    source_branch,
+                    expected_commit,
+                    title,
+                    body,
+                };
+                tauri::async_runtime::spawn_blocking(move || {
+                    merge_github_pull_request(github_input)
+                })
+                .await
+                .map_err(|error| {
+                    ProjectPullRequestMergeError::new(
+                        "merge_task_failed",
+                        format!("GitHub merge task failed: {error}"),
+                    )
+                })
+                .and_then(|outcome| outcome)
+                .map(|outcome| ProjectRepoMergeGitResult {
+                    message: outcome.message,
+                    merge_commit: outcome.merge_commit,
+                })
             }
         }
         PullRequestRepoRoute::Buzz => {
@@ -725,7 +763,7 @@ pub async fn merge_project_pull_request(
                     .into());
             }
             let auth = build_git_auth_config_for_keys(&owner_identity.keys)?;
-            tauri::async_runtime::spawn_blocking(move || {
+            Ok(tauri::async_runtime::spawn_blocking(move || {
                 merge_buzz_pull_request(
                     target_clone_url,
                     source_clone_url,
@@ -742,17 +780,20 @@ pub async fn merge_project_pull_request(
                     "merge_task_failed",
                     format!("pull request merge task failed: {error}"),
                 )
-            })??
+            })??)
         }
     };
-    let status_event = build_merged_status_event(
-        &owner_identity.keys,
-        &repo_address,
-        &pull_request_id,
-        &pull_request_author,
-        &git_result.merge_commit,
-        status_created_at,
-    )?;
+    let (git_result, status_event) = complete_pull_request_merge(git_result, |git_result| {
+        build_merged_status_event(
+            &owner_identity.keys,
+            &repo_address,
+            &pull_request_id,
+            &pull_request_author,
+            &git_result.merge_commit,
+            status_created_at,
+        )
+        .map_err(ProjectPullRequestMergeError::from)
+    })?;
     let signed_status = Event::from_json(&status_event)
         .map_err(|error| format!("parse signed merged status: {error}"))?;
     let status_publication_error = submit_signed_event_with_keys(
@@ -763,22 +804,23 @@ pub async fn merge_project_pull_request(
     )
     .await
     .err();
-    Ok(ProjectRepoMergeResult {
-        message: git_result.message,
-        merge_commit: git_result.merge_commit,
+    Ok(project_repo_merge_result(
+        git_result,
         status_event,
         status_publication_error,
-    })
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         align_unborn_head_branch, build_merged_status_event, build_pull_request_status_event,
-        build_review_request_event, classify_pull_request_route, normalize_commit, same_repository,
-        validate_merge_status_metadata, PullRequestRepoRoute,
+        build_review_request_event, classify_pull_request_route, complete_pull_request_merge,
+        normalize_commit, project_repo_merge_result, same_repository,
+        validate_merge_status_metadata, ProjectRepoMergeGitResult, PullRequestRepoRoute,
     };
     use crate::commands::project_git_exec::{build_test_git_auth_config, run_git};
+    use crate::commands::project_git_merge_error::ProjectPullRequestMergeError;
     use nostr::{Event, JsonUtil, Keys, Timestamp};
 
     fn route_error(target: &str, source: &str) -> serde_json::Value {
@@ -884,10 +926,69 @@ mod tests {
             "https://user@github.com/block/buzz",
             "https://github.com:443/block/buzz",
             "https://github.com/block/buzz/extra",
+            "https://github.com:bad/acme/repo",
         ] {
             let value = route_error(raw, raw);
             assert_eq!(value["code"], "github_merge_failed");
         }
+    }
+
+    #[test]
+    fn github_errors_do_not_build_a_merged_status() {
+        for (code, message) in [
+            ("github_auth_required", "GitHub authentication is required."),
+            ("github_pr_blocked", "GitHub blocked this pull request."),
+            ("github_merge_failed", "GitHub did not verify the merge."),
+        ] {
+            let mut status_builder_called = false;
+            let result = complete_pull_request_merge(
+                Err(ProjectPullRequestMergeError::new(code, message)),
+                |_| {
+                    status_builder_called = true;
+                    Ok("unexpected signed status".to_string())
+                },
+            );
+            let error = result
+                .err()
+                .expect("GitHub error must stop before status construction");
+            assert_eq!(serde_json::to_value(error).unwrap()["code"], code);
+            assert!(!status_builder_called);
+        }
+    }
+
+    #[test]
+    fn verified_github_merge_builds_status_with_verified_commit() {
+        let verified_commit = "a".repeat(40);
+        let (git_result, status_event) = complete_pull_request_merge(
+            Ok(ProjectRepoMergeGitResult {
+                message: "Merged GitHub pull request #42.".to_string(),
+                merge_commit: verified_commit.clone(),
+            }),
+            |git_result| {
+                assert_eq!(git_result.merge_commit, verified_commit);
+                Ok(format!("signed:{}", git_result.merge_commit))
+            },
+        )
+        .expect("verified merge builds status");
+        assert_eq!(git_result.merge_commit, verified_commit);
+        assert_eq!(status_event, format!("signed:{verified_commit}"));
+    }
+
+    #[test]
+    fn publication_failure_keeps_the_signed_merged_status() {
+        let result = project_repo_merge_result(
+            ProjectRepoMergeGitResult {
+                message: "Merged GitHub pull request #42.".to_string(),
+                merge_commit: "a".repeat(40),
+            },
+            "signed merged status".to_string(),
+            Some("relay unavailable".to_string()),
+        );
+        assert_eq!(result.status_event, "signed merged status");
+        assert_eq!(
+            result.status_publication_error.as_deref(),
+            Some("relay unavailable")
+        );
     }
 
     #[test]
