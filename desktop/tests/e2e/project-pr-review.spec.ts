@@ -33,6 +33,35 @@ async function openBuzzProject(page: import("@playwright/test").Page) {
   await projectEntry.click();
 }
 
+async function openAlicePullRequest(page: import("@playwright/test").Page) {
+  await page.getByRole("tab", { name: "Pull Request" }).click();
+  const aliceRow = page
+    .getByTestId("project-pull-request-row")
+    .filter({ hasText: "alice" })
+    .first();
+  await expect(aliceRow).toBeVisible({ timeout: 10_000 });
+  await aliceRow.getByRole("button", { name: /^#/ }).click();
+}
+
+async function confirmMerge(page: import("@playwright/test").Page) {
+  await page.getByRole("button", { name: "Merge", exact: true }).click();
+  await page.getByTestId("merge-pull-request-confirm-button").click();
+}
+
+async function openedExternalUrls(page: import("@playwright/test").Page) {
+  return page.evaluate(async () => {
+    const bridgeWindow = window as Window & {
+      __BUZZ_E2E_INVOKE_MOCK_COMMAND__?: (command: string) => Promise<unknown>;
+      __TAURI_INTERNALS__?: { invoke?: (command: string) => Promise<unknown> };
+    };
+    const invoke =
+      bridgeWindow.__BUZZ_E2E_INVOKE_MOCK_COMMAND__ ??
+      bridgeWindow.__TAURI_INTERNALS__?.invoke;
+    if (!invoke) throw new Error("Mock invoke bridge is unavailable.");
+    return (await invoke("get_e2e_opened_external_urls")) as string[];
+  });
+}
+
 test("same-second request changes supersedes approval", async ({ page }) => {
   await enableProjectsFeature(page);
   await page.addInitScript(() => {
@@ -383,6 +412,11 @@ test("PR creator/owner can toggle draft, request reviews, and approve", async ({
 
   await page.getByRole("button", { name: "Merge", exact: true }).click();
   await expect(page.getByTestId("merge-pull-request-confirm")).toBeVisible();
+  await expect(
+    page.getByTestId("merge-pull-request-confirm"),
+  ).not.toContainText(
+    "Buzz will find or create the matching GitHub pull request, verify its checks, reviews, and branch rules, then merge it only if GitHub allows an immediate merge.",
+  );
   await page.getByTestId("merge-pull-request-confirm-button").click();
   await expect(page.getByText("Merged feature into main.")).toBeVisible();
   await expect
@@ -461,6 +495,9 @@ test("sends GitHub merge payload unchanged through native boundary", async ({
   const markdownBody =
     "  Keep leading whitespace.\n\n- preserve **Markdown**\n";
   const title = "Preserve GitHub PR body";
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"], {
+    origin: "http://127.0.0.1:4173",
+  });
   await enableProjectsFeature(page);
   await page.addInitScript(() => {
     window.__BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__ =
@@ -512,8 +549,24 @@ test("sends GitHub merge payload unchanged through native boundary", async ({
     .first();
   await aliceRow.getByRole("button", { name: /^#/ }).click();
   await page.getByRole("button", { name: "Merge", exact: true }).click();
+  await expect(page.getByTestId("merge-pull-request-confirm")).toContainText(
+    "Buzz will find or create the matching GitHub pull request, verify its checks, reviews, and branch rules, then merge it only if GitHub allows an immediate merge.",
+  );
   await page.getByTestId("merge-pull-request-confirm-button").click();
   await expect(page.getByText("GitHub auth required.")).toBeVisible();
+  await expect(
+    page.getByText("gh auth login --hostname github.com", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Copy GitHub login command" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Retry", exact: true }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Copy GitHub login command" }).click();
+  await expect
+    .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+    .toBe("gh auth login --hostname github.com");
   await expect(
     page.getByText("clone URL must use the active workspace relay"),
   ).toHaveCount(0);
@@ -546,6 +599,188 @@ test("sends GitHub merge payload unchanged through native boundary", async ({
       },
     });
 });
+
+test("GitHub CLI guidance persists with retry", async ({ page }) => {
+  await enableProjectsFeature(page);
+  await page.addInitScript(() => {
+    window.__BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__ =
+      "https://github.com/anhle128/buzz";
+    window.__BUZZ_E2E_PROJECT_MERGE_ERROR__ = {
+      code: "github_cli_missing",
+      message: "GitHub CLI is not installed.",
+      recovery: null,
+    };
+  });
+  await installMockBridge(page);
+  await openBuzzProject(page);
+  await openAlicePullRequest(page);
+  await confirmMerge(page);
+
+  await expect(page.getByText("GitHub CLI is required")).toBeVisible();
+  await expect(page.getByText("Install GitHub CLI, then retry.")).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Retry", exact: true }),
+  ).toBeVisible();
+});
+
+test("GitHub blocked recovery opens the exact pull request and retries", async ({
+  page,
+}) => {
+  await enableProjectsFeature(page);
+  await page.addInitScript(() => {
+    window.__BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__ =
+      "https://github.com/anhle128/buzz";
+    window.__BUZZ_E2E_PROJECT_MERGE_ERROR__ = {
+      code: "github_pr_blocked",
+      message: "GitHub does not allow an immediate merge yet.",
+      recovery: {
+        action: "open_url",
+        url: "https://github.com/anhle128/buzz/pull/42",
+        reasons: ["Required check desktop-ci is pending."],
+      },
+    };
+  });
+  await installMockBridge(page);
+  await openBuzzProject(page);
+  await openAlicePullRequest(page);
+  await confirmMerge(page);
+
+  await expect(
+    page.getByText("Required check desktop-ci is pending."),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Open GitHub PR" }).click();
+  await expect
+    .poll(() => openedExternalUrls(page))
+    .toEqual(["https://github.com/anhle128/buzz/pull/42"]);
+  await page.getByRole("button", { name: "Retry", exact: true }).click();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          window.__BUZZ_E2E_COMMANDS__?.filter(
+            (command) => command === "merge_project_pull_request",
+          ).length ?? 0,
+      ),
+    )
+    .toBe(2);
+});
+
+test("GitHub branch changes require refresh without a stale merge action", async ({
+  page,
+}) => {
+  await enableProjectsFeature(page);
+  await page.addInitScript(() => {
+    window.__BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__ =
+      "https://github.com/anhle128/buzz";
+    window.__BUZZ_E2E_PROJECT_MERGE_ERROR__ = {
+      code: "github_branch_changed",
+      message:
+        "The GitHub pull request branch changed. Refresh before merging.",
+      recovery: null,
+    };
+  });
+  await installMockBridge(page);
+  await openBuzzProject(page);
+  await openAlicePullRequest(page);
+  await confirmMerge(page);
+
+  await expect(
+    page.getByText("Refresh the pull request before trying again."),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Retry", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Merge", exact: true }),
+  ).toHaveCount(0);
+});
+
+test("GitHub ambiguous recovery opens the exact pull-request list", async ({
+  page,
+}) => {
+  await enableProjectsFeature(page);
+  await page.addInitScript(() => {
+    window.__BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__ =
+      "https://github.com/anhle128/buzz";
+    window.__BUZZ_E2E_PROJECT_MERGE_ERROR__ = {
+      code: "github_pr_ambiguous",
+      message: "More than one GitHub pull request matched.",
+      recovery: {
+        action: "open_url",
+        url: "https://github.com/anhle128/buzz/pulls",
+        reasons: [],
+      },
+    };
+  });
+  await installMockBridge(page);
+  await openBuzzProject(page);
+  await openAlicePullRequest(page);
+  await confirmMerge(page);
+
+  await page.getByRole("button", { name: "Open GitHub PR" }).click();
+  await expect
+    .poll(() => openedExternalUrls(page))
+    .toEqual(["https://github.com/anhle128/buzz/pulls"]);
+});
+
+test("invalid GitHub recovery URLs never render an open action", async ({
+  page,
+}) => {
+  await enableProjectsFeature(page);
+  await page.addInitScript(() => {
+    window.__BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__ =
+      "https://github.com/anhle128/buzz";
+    window.__BUZZ_E2E_PROJECT_MERGE_ERROR__ = {
+      code: "github_pr_blocked",
+      message: "GitHub does not allow an immediate merge yet.",
+      recovery: {
+        action: "open_url",
+        url: "https://github.com/anhle128/buzz/pull/42/files",
+        reasons: [],
+      },
+    };
+  });
+  await installMockBridge(page);
+  await openBuzzProject(page);
+  await openAlicePullRequest(page);
+  await confirmMerge(page);
+
+  await expect(
+    page.getByRole("button", { name: "Open GitHub PR" }),
+  ).toHaveCount(0);
+});
+
+for (const theme of ["buzz", "buzz-dark"] as const) {
+  test(`renders GitHub merge recovery in ${theme}`, async ({ page }) => {
+    await page.addInitScript((selectedTheme) => {
+      window.localStorage.setItem("buzz-theme", selectedTheme);
+      window.__BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__ =
+        "https://github.com/anhle128/buzz";
+      window.__BUZZ_E2E_PROJECT_MERGE_ERROR__ = {
+        code: "github_pr_blocked",
+        message: "GitHub does not allow an immediate merge yet.",
+        recovery: {
+          action: "open_url",
+          url: "https://github.com/anhle128/buzz/pull/42",
+          reasons: ["Required check desktop-ci is pending."],
+        },
+      };
+    }, theme);
+    await enableProjectsFeature(page);
+    await installMockBridge(page);
+    await openBuzzProject(page);
+    await openAlicePullRequest(page);
+    await confirmMerge(page);
+    await expect(
+      page.getByText("Required check desktop-ci is pending."),
+    ).toBeVisible();
+    await waitForAnimations(page);
+    await page.screenshot({
+      path: `test-results/github-merge/${theme}-blocked.png`,
+      fullPage: true,
+    });
+  });
+}
 
 test("merge conflicts offer persistent terminal recovery", async ({ page }) => {
   await enableProjectsFeature(page);

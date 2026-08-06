@@ -1166,11 +1166,18 @@ declare global {
     __BUZZ_E2E_PROJECT_MERGE_ERROR__?: {
       code: string;
       message: string;
-      recovery: {
-        action: "open_terminal";
-        sourceBranch: string;
-        targetBranch: string;
-      } | null;
+      recovery:
+        | {
+            action: "open_terminal";
+            sourceBranch: string;
+            targetBranch: string;
+          }
+        | {
+            action: "open_url";
+            url: string;
+            reasons: string[];
+          }
+        | null;
     };
     /** Overrides the first mock repository owner for delegated-owner tests. */
     __BUZZ_E2E_PROJECT_OWNER_OVERRIDE__?: string;

@@ -477,11 +477,17 @@ type RawProjectRepoMergeResult = {
   status_publication_error: string | null;
 };
 
-export type ProjectPullRequestMergeRecovery = {
-  action: "open_terminal";
-  targetBranch: string;
-  sourceBranch: string;
-};
+export type ProjectPullRequestMergeRecovery =
+  | {
+      action: "open_terminal";
+      targetBranch: string;
+      sourceBranch: string;
+    }
+  | {
+      action: "open_url";
+      url: string;
+      reasons: string[];
+    };
 
 /** Machine-readable pull-request merge failure returned by the desktop shell. */
 export class ProjectPullRequestMergeError extends Error {
@@ -510,6 +516,51 @@ function mergeErrorPayload(error: unknown): unknown {
   }
 }
 
+function isSafeGitHubRecoveryUrl(raw: string): boolean {
+  try {
+    if (
+      raw !== raw.trim() ||
+      !raw.startsWith("https://github.com/") ||
+      raw.endsWith("/") ||
+      raw.includes("\\")
+    ) {
+      return false;
+    }
+    const url = new URL(raw);
+    if (
+      url.protocol !== "https:" ||
+      url.hostname !== "github.com" ||
+      url.port !== "" ||
+      url.username !== "" ||
+      url.password !== "" ||
+      url.search !== "" ||
+      url.hash !== "" ||
+      url.pathname.includes("%") ||
+      url.pathname.includes("//")
+    ) {
+      return false;
+    }
+    const segments = url.pathname.split("/").filter(Boolean);
+    const [owner, repo] = segments;
+    if (
+      !owner ||
+      !repo ||
+      !/^[A-Za-z0-9-]+$/.test(owner) ||
+      !/^[A-Za-z0-9._-]+$/.test(repo)
+    ) {
+      return false;
+    }
+    return (
+      (segments.length === 3 && segments[2] === "pulls") ||
+      (segments.length === 4 &&
+        segments[2] === "pull" &&
+        /^[1-9]\d*$/.test(segments[3]))
+    );
+  } catch {
+    return false;
+  }
+}
+
 /** Parse a structured native merge error without classifying generic failures. */
 export function parseProjectPullRequestMergeError(
   error: unknown,
@@ -530,23 +581,35 @@ export function parseProjectPullRequestMergeError(
   let recovery: ProjectPullRequestMergeRecovery | null = null;
   if (candidate.recovery !== null && candidate.recovery !== undefined) {
     if (typeof candidate.recovery !== "object") return null;
-    const value = candidate.recovery as {
-      action?: unknown;
-      sourceBranch?: unknown;
-      targetBranch?: unknown;
-    };
+    const value = candidate.recovery as Record<string, unknown>;
     if (
-      value.action !== "open_terminal" ||
-      typeof value.targetBranch !== "string" ||
-      typeof value.sourceBranch !== "string"
+      value.action === "open_terminal" &&
+      typeof value.targetBranch === "string" &&
+      typeof value.sourceBranch === "string"
     ) {
+      recovery = {
+        action: value.action,
+        sourceBranch: value.sourceBranch,
+        targetBranch: value.targetBranch,
+      };
+    } else if (
+      value.action === "open_url" &&
+      typeof value.url === "string" &&
+      isSafeGitHubRecoveryUrl(value.url) &&
+      Array.isArray(value.reasons) &&
+      value.reasons.length <= 20 &&
+      value.reasons.every(
+        (reason) => typeof reason === "string" && [...reason].length <= 200,
+      )
+    ) {
+      recovery = {
+        action: value.action,
+        url: value.url,
+        reasons: value.reasons,
+      };
+    } else {
       return null;
     }
-    recovery = {
-      action: value.action,
-      sourceBranch: value.sourceBranch,
-      targetBranch: value.targetBranch,
-    };
   }
   return new ProjectPullRequestMergeError(
     candidate.code,
