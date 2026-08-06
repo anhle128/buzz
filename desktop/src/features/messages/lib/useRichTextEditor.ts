@@ -36,6 +36,7 @@ import {
   insertNewlineInCodeBlock,
 } from "./codeBlockExtensions";
 import { SpoilerMark } from "./spoilerMark";
+import { setEditorMarkdownPreservingTrailingWhitespace } from "./setEditorMarkdownPreservingTrailingWhitespace";
 
 function hardBreakLineBounds($from: ResolvedPos) {
   const parentStart = $from.start();
@@ -714,7 +715,7 @@ export function useRichTextEditor({
   const setContent = React.useCallback(
     (markdown: string) => {
       if (!editor) return;
-      editor.commands.setContent(markdown);
+      setEditorMarkdownPreservingTrailingWhitespace(editor, markdown);
     },
     [editor],
   );
@@ -724,12 +725,12 @@ export function useRichTextEditor({
       if (!editor) return;
       // The caller already synchronizes composer state. Keep this programmatic
       // restoration out of user-edit observers (autocomplete/reconciliation),
-      // then move selection in the same command chain.
-      editor
-        .chain()
-        .setContent(markdown, { emitUpdate: false })
-        .focus("end")
-        .run();
+      // then move selection to the end — including any trailing space that
+      // markdown parse would otherwise strip (see #4979).
+      setEditorMarkdownPreservingTrailingWhitespace(editor, markdown, {
+        emitUpdate: false,
+        focusEnd: true,
+      });
     },
     [editor],
   );
