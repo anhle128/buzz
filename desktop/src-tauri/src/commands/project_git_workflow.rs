@@ -7,6 +7,9 @@ use super::project_git_exec::{
     validate_local_clone_url, validate_local_clone_url_for_workspace, validate_workspace_clone_url,
     GitAuthConfig,
 };
+use super::project_github_pull_request::{
+    merge_github_pull_request, GitHubMergeInput, GitHubRepoRef,
+};
 use super::project_repo_paths::{
     canonical_repos_roots, canonicalize_repos_root, default_repos_root_candidates,
     find_local_repo_dir, local_repo_candidates,
@@ -43,6 +46,38 @@ struct ProjectRepoMergeGitResult {
     merge_commit: String,
 }
 
+fn complete_pull_request_merge(
+    git_result: Result<ProjectRepoMergeGitResult, ProjectPullRequestMergeError>,
+    build_status: impl FnOnce(
+        &ProjectRepoMergeGitResult,
+    ) -> Result<String, ProjectPullRequestMergeError>,
+) -> Result<(ProjectRepoMergeGitResult, String), ProjectPullRequestMergeError> {
+    let git_result = git_result?;
+    let status_event = build_status(&git_result)?;
+    Ok((git_result, status_event))
+}
+
+fn project_repo_merge_result(
+    git_result: ProjectRepoMergeGitResult,
+    status_event: String,
+    status_publication_error: Option<String>,
+) -> ProjectRepoMergeResult {
+    ProjectRepoMergeResult {
+        message: git_result.message,
+        merge_commit: git_result.merge_commit,
+        status_event,
+        status_publication_error,
+    }
+}
+
+enum PullRequestRepoRoute {
+    Buzz,
+    GitHub {
+        target: GitHubRepoRef,
+        source: GitHubRepoRef,
+    },
+}
+
 /// Validated repository and pull-request metadata for a native merge.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -57,6 +92,8 @@ pub struct ProjectPullRequestMergeInput {
     target_branch: String,
     source_branch: String,
     expected_commit: String,
+    title: String,
+    body: String,
 }
 
 /// Repository-scoped metadata for an agent-signed review request.
@@ -97,6 +134,41 @@ fn normalize_commit(value: &str) -> Option<String> {
 fn normalize_event_id(value: &str) -> Option<String> {
     let value = value.trim().to_ascii_lowercase();
     (value.len() == 64 && value.chars().all(|c| c.is_ascii_hexdigit())).then_some(value)
+}
+
+fn classify_pull_request_route(
+    target_clone_url: &str,
+    source_clone_url: &str,
+) -> Result<PullRequestRepoRoute, ProjectPullRequestMergeError> {
+    let target_is_github = has_github_intent(target_clone_url);
+    let source_is_github = has_github_intent(source_clone_url);
+    match (target_is_github, source_is_github) {
+        (true, true) => Ok(PullRequestRepoRoute::GitHub {
+            target: GitHubRepoRef::parse(target_clone_url).map_err(|message| {
+                ProjectPullRequestMergeError::new("github_merge_failed", message)
+            })?,
+            source: GitHubRepoRef::parse(source_clone_url).map_err(|message| {
+                ProjectPullRequestMergeError::new("github_merge_failed", message)
+            })?,
+        }),
+        (false, false) => Ok(PullRequestRepoRoute::Buzz),
+        _ => Err(ProjectPullRequestMergeError::new(
+            "github_merge_failed",
+            "Source and target repositories must use the same supported host.",
+        )),
+    }
+}
+
+fn has_github_intent(raw: &str) -> bool {
+    if GitHubRepoRef::is_github_host(raw) {
+        return true;
+    }
+    let raw = raw.to_ascii_lowercase();
+    raw.strip_prefix("https://github.com")
+        .is_some_and(|suffix| {
+            suffix.is_empty()
+                || matches!(suffix.as_bytes().first(), Some(b'/' | b':' | b'?' | b'#'))
+        })
 }
 
 struct ProjectOwnerIdentity {
@@ -404,6 +476,107 @@ pub(crate) fn clone_project_repository_blocking(
     })
 }
 
+fn merge_buzz_pull_request(
+    target_clone_url: String,
+    source_clone_url: String,
+    target_branch: String,
+    source_branch: String,
+    expected_commit: String,
+    merger_pubkey: String,
+    auth: GitAuthConfig,
+) -> Result<ProjectRepoMergeGitResult, ProjectPullRequestMergeError> {
+    let temp_dir = tempfile::tempdir().map_err(|error| format!("create temp dir: {error}"))?;
+    let repo_dir = temp_dir.path().join("repo");
+    let repo_path = repo_dir
+        .to_str()
+        .ok_or_else(|| "temporary repository path is not UTF-8".to_string())?;
+    run_git(
+        &[
+            "clone",
+            "--filter=blob:none",
+            "--no-tags",
+            "--branch",
+            target_branch.as_str(),
+            "--single-branch",
+            "--end-of-options",
+            target_clone_url.as_str(),
+            repo_path,
+        ],
+        None,
+        &auth,
+    )?;
+    run_git(
+        &[
+            "fetch",
+            "--quiet",
+            "--end-of-options",
+            source_clone_url.as_str(),
+            source_branch.as_str(),
+        ],
+        Some(&repo_dir),
+        &auth,
+    )?;
+    let source_head = run_git(&["rev-parse", "FETCH_HEAD"], Some(&repo_dir), &auth)
+        .ok()
+        .and_then(|output| first_output_line(&output))
+        .ok_or_else(|| "Could not resolve the pull request branch.".to_string())?;
+    if source_head.to_ascii_lowercase() != expected_commit {
+        return Err(ProjectPullRequestMergeError::new(
+            "branch_changed",
+            "The pull request branch changed. Refresh the pull request before merging.",
+        ));
+    }
+
+    let merge_email = format!("{merger_pubkey}@users.noreply.buzz");
+    let merge_result = run_git(
+        &[
+            "-c",
+            "user.name=Buzz User",
+            "-c",
+            format!("user.email={merge_email}").as_str(),
+            "merge",
+            "--no-edit",
+            "--end-of-options",
+            expected_commit.as_str(),
+        ],
+        Some(&repo_dir),
+        &auth,
+    );
+    if let Err(error) = merge_result {
+        let has_conflicts = run_git(
+            &["diff", "--name-only", "--diff-filter=U"],
+            Some(&repo_dir),
+            &auth,
+        )
+        .is_ok_and(|output| !output.trim().is_empty());
+        return Err(classify_merge_error(
+            error,
+            has_conflicts,
+            &target_branch,
+            &source_branch,
+        ));
+    }
+    let merge_commit = run_git(&["rev-parse", "HEAD"], Some(&repo_dir), &auth)
+        .ok()
+        .and_then(|output| first_output_line(&output))
+        .ok_or_else(|| "Could not resolve the merge commit.".to_string())?;
+    run_git(
+        &[
+            "push",
+            "--end-of-options",
+            "origin",
+            format!("HEAD:{target_branch}").as_str(),
+        ],
+        Some(&repo_dir),
+        &auth,
+    )?;
+
+    Ok(ProjectRepoMergeGitResult {
+        message: format!("Merged {source_branch} into {target_branch}."),
+        merge_commit,
+    })
+}
+
 #[tauri::command]
 pub async fn clone_project_repository(
     repos_dir: Option<String>,
@@ -517,17 +690,12 @@ pub async fn merge_project_pull_request(
         target_branch,
         source_branch,
         expected_commit,
+        title,
+        body,
     } = input;
-    validate_workspace_clone_url(&target_clone_url, &state)?;
-    validate_workspace_clone_url(&source_clone_url, &state)?;
     let target_owner = target_owner.trim().to_ascii_lowercase();
     if target_owner.len() != 64 || !target_owner.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err("Invalid target repository owner.".to_string().into());
-    }
-    if clone_url_owner(&target_clone_url).as_deref() != Some(target_owner.as_str()) {
-        return Err("Target clone URL does not match the repository owner."
-            .to_string()
-            .into());
     }
     let owner_identity = project_owner_identity(&app, &state, &target_owner)?;
     let merger_pubkey = owner_identity.keys.public_key().to_hex();
@@ -535,11 +703,6 @@ pub async fn merge_project_pull_request(
         .ok_or_else(|| "Invalid target branch.".to_string())?;
     let source_branch = normalize_branch_option(Some(&source_branch))
         .ok_or_else(|| "Invalid source branch.".to_string())?;
-    if target_branch == source_branch && same_repository(&target_clone_url, &source_clone_url) {
-        return Err("Source and target branches must be different."
-            .to_string()
-            .into());
-    }
     let expected_commit = normalize_commit(&expected_commit)
         .ok_or_else(|| "Invalid pull request commit.".to_string())?;
     let (pull_request_id, pull_request_author) = validate_merge_status_metadata(
@@ -548,119 +711,89 @@ pub async fn merge_project_pull_request(
         &pull_request_id,
         &pull_request_author,
     )?;
-    let auth = build_git_auth_config_for_keys(&owner_identity.keys)?;
+    let route = classify_pull_request_route(&target_clone_url, &source_clone_url)?;
 
-    let git_result = tauri::async_runtime::spawn_blocking(
-        move || -> Result<ProjectRepoMergeGitResult, ProjectPullRequestMergeError> {
-            let temp_dir =
-                tempfile::tempdir().map_err(|error| format!("create temp dir: {error}"))?;
-            let repo_dir = temp_dir.path().join("repo");
-            let repo_path = repo_dir
-                .to_str()
-                .ok_or_else(|| "temporary repository path is not UTF-8".to_string())?;
-            run_git(
-                &[
-                    "clone",
-                    "--filter=blob:none",
-                    "--no-tags",
-                    "--branch",
-                    target_branch.as_str(),
-                    "--single-branch",
-                    "--end-of-options",
-                    target_clone_url.as_str(),
-                    repo_path,
-                ],
-                None,
-                &auth,
-            )?;
-            run_git(
-                &[
-                    "fetch",
-                    "--quiet",
-                    "--end-of-options",
-                    source_clone_url.as_str(),
-                    source_branch.as_str(),
-                ],
-                Some(&repo_dir),
-                &auth,
-            )?;
-            let source_head = run_git(&["rev-parse", "FETCH_HEAD"], Some(&repo_dir), &auth)
-                .ok()
-                .and_then(|output| first_output_line(&output))
-                .ok_or_else(|| "Could not resolve the pull request branch.".to_string())?;
-            if source_head.to_ascii_lowercase() != expected_commit {
-                return Err(ProjectPullRequestMergeError::new(
-                    "branch_changed",
-                    "The pull request branch changed. Refresh the pull request before merging."
-                        .to_string(),
-                ));
+    let git_result = match route {
+        PullRequestRepoRoute::GitHub { target, source } => {
+            if title.trim().is_empty() {
+                Err(ProjectPullRequestMergeError::new(
+                    "github_merge_failed",
+                    "GitHub pull request title cannot be empty.",
+                ))
+            } else {
+                let github_input = GitHubMergeInput {
+                    target,
+                    source,
+                    target_branch,
+                    source_branch,
+                    expected_commit,
+                    title,
+                    body,
+                };
+                tauri::async_runtime::spawn_blocking(move || {
+                    merge_github_pull_request(github_input)
+                })
+                .await
+                .map_err(|error| {
+                    ProjectPullRequestMergeError::new(
+                        "merge_task_failed",
+                        format!("GitHub merge task failed: {error}"),
+                    )
+                })
+                .and_then(|outcome| outcome)
+                .map(|outcome| ProjectRepoMergeGitResult {
+                    message: outcome.message,
+                    merge_commit: outcome.merge_commit,
+                })
             }
-
-            let merge_email = format!("{merger_pubkey}@users.noreply.buzz");
-            let merge_result = run_git(
-                &[
-                    "-c",
-                    "user.name=Buzz User",
-                    "-c",
-                    format!("user.email={merge_email}").as_str(),
-                    "merge",
-                    "--no-edit",
-                    "--end-of-options",
-                    expected_commit.as_str(),
-                ],
-                Some(&repo_dir),
-                &auth,
-            );
-            if let Err(error) = merge_result {
-                let has_conflicts = run_git(
-                    &["diff", "--name-only", "--diff-filter=U"],
-                    Some(&repo_dir),
-                    &auth,
+        }
+        PullRequestRepoRoute::Buzz => {
+            validate_workspace_clone_url(&target_clone_url, &state)?;
+            validate_workspace_clone_url(&source_clone_url, &state)?;
+            if clone_url_owner(&target_clone_url).as_deref() != Some(target_owner.as_str()) {
+                return Err("Target clone URL does not match the repository owner."
+                    .to_string()
+                    .into());
+            }
+            if target_branch == source_branch
+                && same_repository(&target_clone_url, &source_clone_url)
+            {
+                return Err("Source and target branches must be different."
+                    .to_string()
+                    .into());
+            }
+            let auth = build_git_auth_config_for_keys(&owner_identity.keys)?;
+            Ok(tauri::async_runtime::spawn_blocking(move || {
+                merge_buzz_pull_request(
+                    target_clone_url,
+                    source_clone_url,
+                    target_branch,
+                    source_branch,
+                    expected_commit,
+                    merger_pubkey,
+                    auth,
                 )
-                .is_ok_and(|output| !output.trim().is_empty());
-                return Err(classify_merge_error(
-                    error,
-                    has_conflicts,
-                    &target_branch,
-                    &source_branch,
-                ));
-            }
-            let merge_commit = run_git(&["rev-parse", "HEAD"], Some(&repo_dir), &auth)
-                .ok()
-                .and_then(|output| first_output_line(&output))
-                .ok_or_else(|| "Could not resolve the merge commit.".to_string())?;
-            run_git(
-                &[
-                    "push",
-                    "--end-of-options",
-                    "origin",
-                    format!("HEAD:{target_branch}").as_str(),
-                ],
-                Some(&repo_dir),
-                &auth,
-            )?;
-
-            Ok(ProjectRepoMergeGitResult {
-                message: format!("Merged {source_branch} into {target_branch}."),
-                merge_commit,
             })
-        },
-    )
-    .await
-    .map_err(|error| {
-        ProjectPullRequestMergeError::new(
-            "merge_task_failed",
-            format!("pull request merge task failed: {error}"),
+            .await
+            .map_err(|error| {
+                ProjectPullRequestMergeError::new(
+                    "merge_task_failed",
+                    format!("pull request merge task failed: {error}"),
+                )
+            })??)
+        }
+    };
+    let (git_result, status_event) = complete_pull_request_merge(git_result, |git_result| {
+        build_merged_status_event(
+            &owner_identity.keys,
+            &repo_address,
+            &pull_request_id,
+            &pull_request_author,
+            &git_result.merge_commit,
+            status_created_at,
         )
-    })??;
-    let status_event = build_merged_status_event(
-        &owner_identity.keys,
-        &repo_address,
-        &pull_request_id,
-        &pull_request_author,
-        &git_result.merge_commit,
-        status_created_at,
-    )?;
+        .map_err(ProjectPullRequestMergeError::from)
+    })?;
     let signed_status = Event::from_json(&status_event)
         .map_err(|error| format!("parse signed merged status: {error}"))?;
     let status_publication_error = submit_signed_event_with_keys(
@@ -671,215 +804,13 @@ pub async fn merge_project_pull_request(
     )
     .await
     .err();
-    Ok(ProjectRepoMergeResult {
-        message: git_result.message,
-        merge_commit: git_result.merge_commit,
+    Ok(project_repo_merge_result(
+        git_result,
         status_event,
         status_publication_error,
-    })
+    ))
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{
-        align_unborn_head_branch, build_merged_status_event, build_pull_request_status_event,
-        build_review_request_event, normalize_commit, same_repository,
-        validate_merge_status_metadata,
-    };
-    use crate::commands::project_git_exec::{build_test_git_auth_config, run_git};
-    use nostr::{Event, JsonUtil, Keys, Timestamp};
-
-    #[test]
-    fn empty_clone_uses_requested_default_branch() {
-        let auth = build_test_git_auth_config().expect("build test git config");
-        let repo = tempfile::tempdir().expect("create repository");
-        run_git(&["init"], Some(repo.path()), &auth).expect("initialize repository");
-
-        align_unborn_head_branch(repo.path(), Some("main"), &auth).expect("align unborn HEAD");
-
-        assert_eq!(
-            std::fs::read_to_string(repo.path().join(".git/HEAD"))
-                .expect("read HEAD")
-                .trim(),
-            "ref: refs/heads/main"
-        );
-    }
-
-    #[test]
-    fn normalize_commit_accepts_sha1_and_sha256_hex() {
-        assert_eq!(normalize_commit(&"A".repeat(40)), Some("a".repeat(40)));
-        assert_eq!(normalize_commit(&"B".repeat(64)), Some("b".repeat(64)));
-    }
-
-    #[test]
-    fn normalize_commit_rejects_invalid_values() {
-        assert_eq!(normalize_commit("abc"), None);
-        assert_eq!(normalize_commit(&"z".repeat(40)), None);
-    }
-
-    #[test]
-    fn repository_comparison_normalizes_git_suffix_and_trailing_slash() {
-        assert!(same_repository(
-            "https://relay.example/git/owner/repo.git",
-            "https://relay.example/git/owner/repo/"
-        ));
-        assert!(!same_repository(
-            "https://relay.example/git/owner/repo",
-            "https://relay.example/git/fork/repo"
-        ));
-    }
-
-    #[test]
-    fn merged_status_is_signed_by_repository_owner() {
-        let keys = Keys::generate();
-        let owner = keys.public_key().to_hex();
-        let pull_request_id = "d".repeat(64);
-        let pull_request_author = "b".repeat(64);
-        let merge_commit = "e".repeat(40);
-        let repo_address = format!("30617:{owner}:buzz");
-        let before = Timestamp::now().as_secs();
-        let event = Event::from_json(
-            build_merged_status_event(
-                &keys,
-                &repo_address,
-                &pull_request_id,
-                &pull_request_author,
-                &merge_commit,
-                123,
-            )
-            .unwrap(),
-        )
-        .unwrap();
-
-        assert_eq!(event.pubkey, keys.public_key());
-        assert_eq!(event.kind.as_u16(), 1631);
-        assert!(event.created_at.as_secs() >= before);
-        assert!(event
-            .tags
-            .iter()
-            .any(|tag| tag.as_slice() == ["merge-commit", merge_commit.as_str()]));
-        assert!(event.verify().is_ok());
-    }
-
-    #[test]
-    fn merged_status_preserves_a_newer_requested_timestamp() {
-        let keys = Keys::generate();
-        let owner = keys.public_key().to_hex();
-        let requested = Timestamp::now().as_secs() + 10;
-        let event = Event::from_json(
-            build_merged_status_event(
-                &keys,
-                &format!("30617:{owner}:buzz"),
-                &"d".repeat(64),
-                &"b".repeat(64),
-                &"e".repeat(40),
-                requested,
-            )
-            .unwrap(),
-        )
-        .unwrap();
-
-        assert_eq!(event.created_at.as_secs(), requested);
-    }
-
-    #[test]
-    fn merge_status_metadata_is_rejected_before_git_work() {
-        let owner = "a".repeat(64);
-        assert!(validate_merge_status_metadata(
-            &format!("30617:{}:buzz", "b".repeat(64)),
-            &owner,
-            &"d".repeat(64),
-            &"e".repeat(64),
-        )
-        .is_err());
-        assert!(validate_merge_status_metadata(
-            &format!("30617:{owner}:buzz"),
-            &owner,
-            "not-an-event-id",
-            &"e".repeat(64),
-        )
-        .is_err());
-        assert!(validate_merge_status_metadata(
-            &format!("30617:{owner}:buzz"),
-            &owner,
-            &"d".repeat(64),
-            "not-an-author",
-        )
-        .is_err());
-    }
-
-    #[test]
-    fn lifecycle_status_is_signed_by_repository_owner() {
-        let keys = Keys::generate();
-        let owner = keys.public_key().to_hex();
-        let author = "b".repeat(64);
-        let event = Event::from_json(
-            build_pull_request_status_event(
-                &keys,
-                &format!("30617:{owner}:buzz"),
-                &"d".repeat(64),
-                &author,
-                "closed",
-                Timestamp::now().as_secs(),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-
-        assert_eq!(event.pubkey, keys.public_key());
-        assert_eq!(event.kind.as_u16(), 1632);
-        assert!(event
-            .tags
-            .iter()
-            .any(|tag| tag.as_slice() == ["p", author.as_str()]));
-        assert!(event.verify().is_ok());
-    }
-
-    #[test]
-    fn lifecycle_status_rejects_merged_alias() {
-        let keys = Keys::generate();
-        let owner = keys.public_key().to_hex();
-
-        assert!(build_pull_request_status_event(
-            &keys,
-            &format!("30617:{owner}:buzz"),
-            &"d".repeat(64),
-            &"b".repeat(64),
-            "merged",
-            Timestamp::now().as_secs(),
-        )
-        .is_err());
-    }
-
-    #[test]
-    fn review_request_is_signed_by_repository_owner() {
-        let keys = Keys::generate();
-        let owner = keys.public_key().to_hex();
-        let reviewer = "b".repeat(64);
-        let repo_address = format!("30617:{owner}:buzz");
-        let event = Event::from_json(
-            build_review_request_event(
-                &keys,
-                &repo_address,
-                &"d".repeat(64),
-                std::slice::from_ref(&reviewer),
-                "Bob",
-            )
-            .unwrap(),
-        )
-        .unwrap();
-
-        assert_eq!(event.pubkey, keys.public_key());
-        assert_eq!(event.kind, nostr::Kind::TextNote);
-        assert_eq!(event.content, "Requested a review from Bob");
-        assert!(event
-            .tags
-            .iter()
-            .any(|tag| tag.as_slice() == ["p", reviewer.as_str()]));
-        assert!(event
-            .tags
-            .iter()
-            .any(|tag| tag.as_slice() == ["t", "review-request"]));
-        assert!(event.verify().is_ok());
-    }
-}
+#[path = "project_git_workflow_tests.rs"]
+mod tests;

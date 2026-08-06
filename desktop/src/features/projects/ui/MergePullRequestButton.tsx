@@ -1,3 +1,4 @@
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { AlertTriangle, Copy, GitMerge, SquareTerminal } from "lucide-react";
 import * as React from "react";
 import { toast } from "sonner";
@@ -15,6 +16,7 @@ import {
   ProjectPullRequestMergeError,
   type ProjectPullRequestMergeRecovery,
 } from "@/shared/api/projectGit";
+import { useProjectRepoHost } from "@/features/projects/useProjectRepoHost";
 import { copyTextToClipboard } from "@/shared/lib/clipboard";
 import {
   AlertDialog,
@@ -35,6 +37,23 @@ export type OpenMergeRecoveryTerminal = (input: {
   targetBranch: string;
 }) => Promise<{ recoveryRef: string; targetRef: string }>;
 
+function githubMergeErrorTitle(code: string): string {
+  switch (code) {
+    case "github_cli_missing":
+      return "GitHub CLI is required";
+    case "github_auth_required":
+      return "GitHub authentication required";
+    case "github_pr_blocked":
+      return "GitHub pull request is blocked";
+    case "github_branch_changed":
+      return "GitHub pull request changed";
+    case "github_pr_ambiguous":
+      return "Multiple GitHub pull requests found";
+    default:
+      return "GitHub merge failed";
+  }
+}
+
 export function MergePullRequestButton({
   onOpenTerminal,
   project,
@@ -48,7 +67,14 @@ export function MergePullRequestButton({
   const [isPreparingRecovery, setIsPreparingRecovery] = React.useState(false);
   const [conflictRecoveryState, setConflictRecoveryState] = React.useState<{
     pullRequestId: string;
-    recovery: ProjectPullRequestMergeRecovery;
+    recovery: Extract<
+      ProjectPullRequestMergeRecovery,
+      { action: "open_terminal" }
+    >;
+  } | null>(null);
+  const [githubErrorState, setGitHubErrorState] = React.useState<{
+    pullRequestId: string;
+    error: ProjectPullRequestMergeError;
   } | null>(null);
   const [unpublishedStatusState, setUnpublishedStatusState] = React.useState<{
     event: string;
@@ -62,6 +88,7 @@ export function MergePullRequestButton({
   const mergeMutation = useMergeProjectPullRequestMutation(project);
   const publishMergedMutation =
     usePublishProjectPullRequestMergedMutation(project);
+  const projectHost = useProjectRepoHost(project);
   const targetBranch = pullRequest.targetBranch ?? project.defaultBranch;
   const conflictRecovery =
     conflictRecoveryState?.pullRequestId === pullRequest.id
@@ -75,8 +102,16 @@ export function MergePullRequestButton({
     preparedRecoveryState?.pullRequestId === pullRequest.id
       ? preparedRecoveryState
       : null;
+  const githubError =
+    githubErrorState?.pullRequestId === pullRequest.id
+      ? githubErrorState.error
+      : null;
+  const githubRecovery =
+    githubError?.recovery?.action === "open_url" ? githubError.recovery : null;
+  const canRetryGitHubMerge = githubError?.code !== "github_branch_changed";
 
   const handleMerge = React.useCallback(async () => {
+    setGitHubErrorState(null);
     try {
       const result = await mergeMutation.mutateAsync({ pullRequest });
       if (result.statusPublicationError) {
@@ -93,12 +128,13 @@ export function MergePullRequestButton({
       }
       setConflictRecoveryState(null);
       setPreparedRecoveryState(null);
+      setGitHubErrorState(null);
       setConfirmOpen(false);
     } catch (error) {
       if (
         error instanceof ProjectPullRequestMergeError &&
         error.code === "merge_conflict" &&
-        error.recovery
+        error.recovery?.action === "open_terminal"
       ) {
         setConflictRecoveryState({
           pullRequestId: pullRequest.id,
@@ -106,12 +142,22 @@ export function MergePullRequestButton({
         });
         setPreparedRecoveryState(null);
         setConfirmOpen(false);
+        toast.error(error.message);
+      } else if (
+        error instanceof ProjectPullRequestMergeError &&
+        error.code.startsWith("github_")
+      ) {
+        setGitHubErrorState({ pullRequestId: pullRequest.id, error });
+        setConflictRecoveryState(null);
+        setPreparedRecoveryState(null);
+        setConfirmOpen(false);
+      } else {
+        toast.error(
+          error instanceof Error
+            ? error.message
+            : "Failed to merge pull request.",
+        );
       }
-      toast.error(
-        error instanceof Error
-          ? error.message
-          : "Failed to merge pull request.",
-      );
     }
   }, [mergeMutation, pullRequest]);
 
@@ -179,56 +225,140 @@ export function MergePullRequestButton({
 
   return (
     <div className="contents">
-      <AlertDialog onOpenChange={setConfirmOpen} open={confirmOpen}>
-        <Button
-          className="h-8 gap-1.5 px-3.5"
-          disabled={mergeMutation.isPending || publishMergedMutation.isPending}
-          onClick={() => {
-            if (unpublishedStatusEvent) {
-              void handlePublishMergedStatus();
-            } else {
-              setConfirmOpen(true);
+      {githubError?.code !== "github_branch_changed" ? (
+        <AlertDialog onOpenChange={setConfirmOpen} open={confirmOpen}>
+          <Button
+            className="h-8 gap-1.5 px-3.5"
+            disabled={
+              mergeMutation.isPending || publishMergedMutation.isPending
             }
-          }}
-          size="xs"
-          type="button"
+            onClick={() => {
+              if (unpublishedStatusEvent) {
+                void handlePublishMergedStatus();
+              } else {
+                setConfirmOpen(true);
+              }
+            }}
+            size="xs"
+            type="button"
+          >
+            <GitMerge className="h-3.5 w-3.5" />
+            {publishMergedMutation.isPending
+              ? "Publishing…"
+              : unpublishedStatusEvent
+                ? "Publish merged status"
+                : "Merge"}
+          </Button>
+          <AlertDialogContent data-testid="merge-pull-request-confirm">
+            <AlertDialogHeader>
+              <AlertDialogTitle>Merge pull request?</AlertDialogTitle>
+              <AlertDialogDescription>
+                {projectHost.kind === "external" &&
+                projectHost.host === "github.com"
+                  ? "Buzz will find or create the matching GitHub pull request, verify its checks, reviews, and branch rules, then merge it only if GitHub allows an immediate merge."
+                  : `Merge ${pullRequest.branchName} into ${targetBranch} and push the result to the repository. The remote will reject the operation if the branch changed or conflicts.`}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={mergeMutation.isPending}>
+                Cancel
+              </AlertDialogCancel>
+              <AlertDialogAction asChild>
+                <Button
+                  data-testid="merge-pull-request-confirm-button"
+                  disabled={mergeMutation.isPending}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    void handleMerge();
+                  }}
+                  type="button"
+                >
+                  {mergeMutation.isPending ? "Merging…" : "Merge pull request"}
+                </Button>
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      ) : null}
+      {githubError ? (
+        <section
+          aria-labelledby="github-merge-recovery-title"
+          className="w-full basis-full rounded-md border border-border bg-muted/40 p-3"
+          role="status"
         >
-          <GitMerge className="h-3.5 w-3.5" />
-          {publishMergedMutation.isPending
-            ? "Publishing…"
-            : unpublishedStatusEvent
-              ? "Publish merged status"
-              : "Merge"}
-        </Button>
-        <AlertDialogContent data-testid="merge-pull-request-confirm">
-          <AlertDialogHeader>
-            <AlertDialogTitle>Merge pull request?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Merge {pullRequest.branchName} into {targetBranch} and push the
-              result to the repository. The remote will reject the operation if
-              the branch changed or conflicts.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={mergeMutation.isPending}>
-              Cancel
-            </AlertDialogCancel>
-            <AlertDialogAction asChild>
+          <h3 id="github-merge-recovery-title" className="text-sm font-medium">
+            {githubMergeErrorTitle(githubError.code)}
+          </h3>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {githubError.message}
+          </p>
+          {githubError.code === "github_cli_missing" ? (
+            <p className="mt-2 text-sm text-muted-foreground">
+              Install GitHub CLI, then retry.
+            </p>
+          ) : null}
+          {githubError.code === "github_auth_required" ? (
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <code className="rounded bg-background/80 px-2 py-1 font-mono text-sm text-foreground">
+                gh auth login --hostname github.com
+              </code>
               <Button
-                data-testid="merge-pull-request-confirm-button"
-                disabled={mergeMutation.isPending}
-                onClick={(event) => {
-                  event.preventDefault();
-                  void handleMerge();
-                }}
+                aria-label="Copy GitHub login command"
+                onClick={() =>
+                  copyTextToClipboard(
+                    "gh auth login --hostname github.com",
+                    "GitHub login command copied",
+                  )
+                }
+                size="xs"
                 type="button"
+                variant="ghost"
               >
-                {mergeMutation.isPending ? "Merging…" : "Merge pull request"}
+                <Copy className="h-3.5 w-3.5" />
+                Copy
               </Button>
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+            </div>
+          ) : null}
+          {githubError.code === "github_branch_changed" ? (
+            <p className="mt-2 text-sm text-muted-foreground">
+              Refresh the pull request before trying again.
+            </p>
+          ) : null}
+          {githubRecovery && githubRecovery.reasons.length > 0 ? (
+            <ul className="mt-2 list-disc space-y-1 pl-5 text-sm">
+              {githubRecovery.reasons.map((reason) => (
+                <li key={reason}>{reason}</li>
+              ))}
+            </ul>
+          ) : null}
+          <div className="mt-3 flex flex-wrap gap-2">
+            {canRetryGitHubMerge ? (
+              <Button
+                onClick={() => void handleMerge()}
+                size="xs"
+                type="button"
+                variant="outline"
+              >
+                Retry
+              </Button>
+            ) : null}
+            {githubRecovery ? (
+              <Button
+                onClick={() =>
+                  void openUrl(githubRecovery.url).catch(() => {
+                    toast.error("Failed to open GitHub pull request.");
+                  })
+                }
+                size="xs"
+                type="button"
+                variant="outline"
+              >
+                Open GitHub PR
+              </Button>
+            ) : null}
+          </div>
+        </section>
+      ) : null}
       {conflictRecovery ? (
         <div
           className="w-full basis-full space-y-2 rounded-lg border border-amber-500/35 bg-amber-500/10 p-3"
