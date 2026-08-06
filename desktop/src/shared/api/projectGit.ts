@@ -550,12 +550,15 @@ function isSafeGitHubRecoveryUrl(raw: string): boolean {
     ) {
       return false;
     }
-    return (
-      (segments.length === 3 && segments[2] === "pulls") ||
-      (segments.length === 4 &&
-        segments[2] === "pull" &&
-        /^[1-9]\d*$/.test(segments[3]))
-    );
+    const canonical =
+      segments.length === 3 && segments[2] === "pulls"
+        ? `https://github.com/${owner}/${repo}/pulls`
+        : segments.length === 4 &&
+            segments[2] === "pull" &&
+            /^[1-9]\d*$/.test(segments[3])
+          ? `https://github.com/${owner}/${repo}/pull/${segments[3]}`
+          : null;
+    return canonical === raw;
   } catch {
     return false;
   }
