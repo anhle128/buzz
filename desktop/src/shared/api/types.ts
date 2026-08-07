@@ -1,3 +1,15 @@
+import type {
+  PermissionPolicy,
+  PermissionPolicySource,
+} from "./agentConfigTypes";
+
+export type {
+  GlobalAgentConfig,
+  GlobalAgentConfigSaveResult,
+  PermissionPolicy,
+  PermissionPolicySource,
+} from "./agentConfigTypes";
+
 export type ChannelType = "stream" | "forum" | "dm";
 export type ChannelVisibility = "open" | "private";
 export type ChannelRole = "owner" | "admin" | "member" | "guest" | "bot";
@@ -384,6 +396,16 @@ export type ManagedAgent = {
    * `"allowlist"`. Preserved across mode toggles.
    */
   respondToAllowlist: string[];
+  /**
+   * Effective permission policy at the last spawn. Determines how the ACP
+   * harness answers `session/request_permission` calls.
+   */
+  permissionPolicy: PermissionPolicy;
+  /**
+   * Where the effective `permissionPolicy` value came from: a per-agent
+   * override, the fleet-wide global default, or the built-in desktop default.
+   */
+  permissionPolicySource: PermissionPolicySource;
 };
 
 /** Inbound author gate mode. Mirrors buzz-acp's --respond-to CLI flag. */
@@ -443,6 +465,8 @@ export type CreateManagedAgentInput = {
    */
   respondToAllowlist?: string[];
   relayMesh?: RelayMeshConfig;
+  /** Per-agent permission policy override. Omitted = inherit from global or built-in default. */
+  permissionPolicy?: PermissionPolicy;
 };
 
 export type CreateManagedAgentResponse = {
@@ -475,9 +499,11 @@ export type SwitchManagedAgentModelStatus =
   | "no_active_turn";
 
 export type ControlResultFrame = {
-  type: "cancel_turn" | "switch_model";
+  type: "cancel_turn" | "switch_model" | "permission_decision";
   status: string;
   modelId?: string;
+  /** Present on `permission_decision` results — identifies the request card to retire. */
+  requestNonce?: string;
 };
 
 export type GitBashPrerequisite = {
@@ -706,6 +732,11 @@ export type UpdateManagedAgentInput = {
    * (validated & normalized server-side).
    */
   respondToAllowlist?: string[];
+  /**
+   * Absent = don't touch. Present = override (or `null` to clear back to inherit).
+   * Remote deployed agents: read-only; edit the deploy config and redeploy.
+   */
+  permissionPolicy?: PermissionPolicy | null;
 };
 export type AgentPersona = {
   id: string;
@@ -991,39 +1022,4 @@ export type ChannelMessagesPageResponse = {
   events: RelayEvent[];
   /** Present only when a full page was returned — pass back to fetch the next (older) page. */
   nextCursor: ChannelPageCursor | null;
-};
-
-// ── Global agent configuration ────────────────────────────────────────────────
-
-/**
- * Global agent configuration defaults applied to ALL agents.
- *
- * Lowest user-settable layer — per-agent and persona values win on any key
- * collision. Mirrors the Rust `GlobalAgentConfig` struct.
- *
- * Precedence: baked floor < global < persona < per-agent.
- */
-export type GlobalAgentConfig = {
-  /** Global env vars injected into all agents unconditionally. */
-  env_vars: Record<string, string>;
-  /** Global fallback provider (e.g. "anthropic", "databricks_v2"). Null = no global default. */
-  provider: string | null;
-  /** Global fallback model identifier. Null = no global default. */
-  model: string | null;
-  /** Preferred ACP runtime for agents without a persona-specific runtime. */
-  preferred_runtime: string | null;
-};
-
-/**
- * Result returned by `set_global_agent_config`.
- *
- * Mirrors the Rust `GlobalAgentConfigSaveResult` struct.
- */
-export type GlobalAgentConfigSaveResult = {
-  /** The persisted global config (after strip-on-write). */
-  config: GlobalAgentConfig;
-  /** Number of local agents successfully stopped and restarted. */
-  restarted_count: number;
-  /** Number of agents whose stop succeeded but respawn failed. */
-  failed_restart_count: number;
 };

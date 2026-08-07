@@ -695,35 +695,9 @@ use databricks::{
     should_start_interactive_auth,
 };
 use databricks::{discover_databricks_models, DatabricksAuthIntent};
-
-/// Apply an `UpdateManagedAgentRequest`'s model/provider/system_prompt patch
-/// to `record`, enforcing the linked-instance write guard: a definition-linked
-/// record's model/provider/prompt are definition-authoritative (see
-/// `effective_config::resolve_linked`), so writes to these three fields are
-/// silently dropped for a linked instance rather than persisting a byte the
-/// resolver will never read. Definition-less instances accept the patch
-/// as-is. Extracted so the guard is exercised by both `update_managed_agent`
-/// and its regression tests — a test that reimplements this check instead of
-/// calling it can go green after the real guard is deleted.
-fn apply_model_provider_prompt_update(
-    record: &mut crate::managed_agents::ManagedAgentRecord,
-    model: Option<Option<String>>,
-    provider: Option<Option<String>>,
-    system_prompt: Option<Option<String>>,
-) {
-    if record.persona_id.is_some() {
-        return;
-    }
-    if let Some(model_update) = model {
-        record.model = model_update;
-    }
-    if let Some(provider_update) = provider {
-        record.provider = provider_update;
-    }
-    if let Some(prompt_update) = system_prompt {
-        record.system_prompt = prompt_update;
-    }
-}
+#[path = "agent_models_update.rs"]
+mod update;
+use update::{apply_model_provider_prompt_update, apply_permission_policy_update};
 
 /// Update mutable fields on an existing managed agent record.
 ///
@@ -851,6 +825,8 @@ pub async fn update_managed_agent(
         if input.respond_to_allowlist.is_some() {
             record.respond_to_allowlist = prospective_allowlist;
         }
+
+        apply_permission_policy_update(record, input.permission_policy)?;
 
         record.updated_at = now_iso();
 

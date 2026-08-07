@@ -83,8 +83,6 @@ import {
   getProviderApiKeyLabel,
 } from "./agentConfigOptions";
 import { useAgentDialogDefaults } from "./useAgentDialogDefaults";
-import { AgentAiDefaultsNotice } from "./AgentAiDefaults";
-import { AgentDefaultsDialog } from "./AgentDefaultsDialog";
 import { useProviderApiKeyFieldState } from "./providerApiKeyFieldState";
 import { resolveModelFieldStatusMessage } from "./agentConfigControls";
 import { AdvancedRequiredBadge } from "./AdvancedRequiredBadge";
@@ -95,6 +93,11 @@ import {
   runtimeDropdownAction,
   usePendingHarnessSelection,
 } from "./addCustomHarness";
+import {
+  EditAgentPermissionPolicy,
+  useEditAgentPermissionPolicy,
+} from "./EditAgentPermissionPolicy";
+import { EditAgentDefaultsSection } from "./EditAgentDefaultsSection";
 
 export function AgentInstanceEditDialog({
   agent,
@@ -120,8 +123,6 @@ export function AgentInstanceEditDialog({
   const runtimes = runtimesQuery.data ?? [];
 
   const [name, setName] = React.useState(agent.name);
-  const [aiDefaultsOpen, setAiDefaultsOpen] = React.useState(false);
-  const aiDefaultsTriggerRef = React.useRef<HTMLButtonElement>(null);
   const [acpCommand, setAcpCommand] = React.useState(agent.acpCommand);
   const [agentCommand, setAgentCommand] = React.useState(agent.agentCommand);
   const [originalAgentCommand, setOriginalAgentCommand] = React.useState(
@@ -160,6 +161,7 @@ export function AgentInstanceEditDialog({
   const [respondToAllowlist, setRespondToAllowlist] = React.useState<string[]>(
     agent.respondToAllowlist,
   );
+  const permissionPolicy = useEditAgentPermissionPolicy(agent, open);
   const [showAdvancedFields, setShowAdvancedFields] = React.useState(false);
   const [avatarUrl, setAvatarUrl] = React.useState(agent.avatarUrl ?? "");
   const [isAvatarUploadPending, setIsAvatarUploadPending] =
@@ -167,8 +169,7 @@ export function AgentInstanceEditDialog({
   const [isAddHarnessOpen, setIsAddHarnessOpen] = React.useState(false);
   const shouldReduceMotion = useReducedMotion();
 
-  // Runtime selector: defaults to "custom" until the dialog opens and the
-  // catalog loads. The open-effect re-derives the correct id from the catalog.
+  // The open-effect re-derives the runtime id after the catalog loads.
   const [selectedRuntimeId, setSelectedRuntimeId] = React.useState("custom");
 
   // Tracks whether the user has made an in-dialog runtime selection.
@@ -725,6 +726,7 @@ export function AgentInstanceEditDialog({
           respondToAllowlist.join(",") !== agent.respondToAllowlist.join(",")
             ? respondToAllowlist
             : undefined,
+        permissionPolicy: permissionPolicy.update,
       };
 
       const result = await updateMutation.mutateAsync(input);
@@ -944,6 +946,12 @@ export function AgentInstanceEditDialog({
               onAllowlistChange={setRespondToAllowlist}
               onModeChange={setRespondTo}
             />
+            <EditAgentPermissionPolicy
+              agent={agent}
+              disabled={updateMutation.isPending}
+              value={permissionPolicy.value}
+              onChange={permissionPolicy.setValue}
+            />
             <RunOnSummarySection backend={agent.backend} />
 
             {/* Provider (runtime) */}
@@ -1128,19 +1136,11 @@ export function AgentInstanceEditDialog({
               ) : null}
             </div>
 
-            <AgentAiDefaultsNotice
-              onEditDefaults={() => setAiDefaultsOpen(true)}
-              triggerRef={aiDefaultsTriggerRef}
+            <EditAgentDefaultsSection
               explicitModel={inheritedSubmission.model ?? ""}
               explicitProvider={inheritedSubmission.provider ?? ""}
               inheritedModel={inheritedModelDefault}
               inheritedProvider={inheritedProviderDefault}
-            />
-
-            <AgentDefaultsDialog
-              onOpenChange={setAiDefaultsOpen}
-              open={aiDefaultsOpen}
-              returnFocusRef={aiDefaultsTriggerRef}
             />
 
             {/* Advanced settings */}
