@@ -261,6 +261,10 @@ desktop-release-build target="aarch64-apple-darwin":
     pnpm install
     cd {{desktop_dir}} && pnpm tauri build --features mesh-llm --target {{target}}
 
+# Build an unsigned local desktop app and replace the installed macOS Buzz.app.
+desktop-replace-local target="aarch64-apple-darwin":
+    ./scripts/build-and-replace-desktop.sh --target {{target}}
+
 # Run desktop checks suitable for CI / pre-push
 desktop-ci: desktop-check desktop-test desktop-tauri-fmt-check desktop-build desktop-tauri-check desktop-tauri-test
 
