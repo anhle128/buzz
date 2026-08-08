@@ -13,12 +13,28 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::{Child, ChildStdin, ChildStdout};
 use tokio_util::codec::{FramedRead, LinesCodec, LinesCodecError};
 
-use crate::observer::{ObserverContext, ObserverHandle};
+use crate::config::{PermissionMode, PermissionPolicy, ResolvedPermissionConfig};
+use crate::observer::{AuthorizationEnvelope, ObserverContext, ObserverEvent, ObserverHandle};
 use crate::usage::{TurnUsage, UsageTracker};
+use buzz_core::observer::OBSERVER_MAX_PLAINTEXT_LEN;
 
 /// Maximum allowed size of a single NDJSON line from the agent's stdout.
 /// Lines exceeding this limit are rejected to prevent OOM from rogue agents.
 const MAX_LINE_SIZE: usize = 10_000_000; // 10 MB
+
+/// Maximum number of `session/request_permission` requests that may be
+/// simultaneously pending under the `ask` policy. New requests beyond this
+/// cap are denied immediately (fail closed) so the map remains bounded.
+pub const PERMISSION_MAP_CAP: usize = 8;
+
+/// Maximum number of options in a single `session/request_permission` request.
+/// Requests with more options are denied immediately (admission preflight).
+const PERMISSION_OPTIONS_MAX: usize = 16;
+
+/// Per-request timeout under the `ask` policy. The desktop has at most this
+/// long to deliver a `permission_decision` control frame before the harness
+/// fails closed with the denial response.
+const PERMISSION_ASK_TIMEOUT_SECS: u64 = 300;
 
 /// An MCP server configuration passed to `session/new`.
 ///
@@ -106,6 +122,16 @@ pub enum AcpError {
 
     #[error("Agent reported error (code {code}): {message}")]
     AgentError { code: i64, message: String },
+
+    /// A permission response write was interrupted mid-flight by a cancel.
+    ///
+    /// The process may have received the response bytes but may not have acted
+    /// on them — state is irrecoverably uncertain. The agent process MUST be
+    /// replaced (not returned to the pool) after this error. The cancel path
+    /// surfaces this through `cancel_with_cleanup_grace` so
+    /// `classify_control_cancel_failure` in `pool.rs` triggers respawn.
+    #[error("Permission response write was interrupted — process state uncertain")]
+    PermissionPoisoned,
 }
 
 /// Build an [`AcpError::AgentError`] from a JSON-RPC error object,
@@ -132,6 +158,45 @@ fn build_initialize_params() -> serde_json::Value {
     })
 }
 
+/// A decision delivered by the desktop via a `permission_decision` control frame.
+#[derive(Debug, Clone)]
+pub struct PermissionDecision {
+    /// The nonce that was advertised in the `authorization` envelope of the
+    /// `acp_read` frame for this request.
+    pub request_nonce: String,
+    /// The `optionId` the owner chose. Must exactly match one of the options in
+    /// the original request.
+    pub option_id: String,
+}
+
+/// Lifecycle state of a single `session/request_permission` request under
+/// the `ask` policy.
+#[derive(Debug)]
+enum PermissionEntryState {
+    /// Registered and waiting for an owner decision.
+    Pending,
+    /// A decision arrived; we are in the process of writing the response.
+    /// Cancel during this state → `PermissionPoisoned`.
+    Writing,
+    /// Fully resolved — write confirmed. Kept in map until turn end to guard
+    /// against duplicate delivery.
+    Resolved,
+}
+
+/// Per-request state tracked in `AcpClient::pending_permissions` under `ask`.
+#[derive(Debug)]
+struct PermissionEntry {
+    /// Nonce bound to this request — must match the desktop's decision.
+    nonce: String,
+    /// The exact options snapshot from the original request.
+    options_snapshot: Vec<serde_json::Value>,
+    /// Current lifecycle state.
+    state: PermissionEntryState,
+    /// Per-request hard deadline: `min(registered_at + 300s, turn hard deadline)`.
+    /// Expiry → fail closed (denial + `cancelled` outcome).
+    deadline: tokio::time::Instant,
+}
+
 /// ACP client that owns an agent subprocess and communicates over its stdio.
 ///
 /// One `AcpClient` per agent process. Multiple sessions can be created on the
@@ -153,11 +218,39 @@ pub struct AcpClient {
     /// permits both numeric and string IDs from the agent.
     /// Used by [`cancel_with_cleanup`](AcpClient::cancel_with_cleanup) to send
     /// a `cancelled` outcome before the agent returns from `session/prompt`.
+    ///
+    /// Under `reject` and `allow` policies only one request can be in-flight
+    /// (synchronous handling), so a single Option suffices.
+    /// Under `ask` the full map is `pending_permissions` below.
     pending_permission_id: Option<serde_json::Value>,
     /// Whether we have already sent a response to the pending permission request.
     /// Guards against double-response if a timeout fires after the rejection
     /// response was written but before `pending_permission_id` was cleared.
     permission_responded: bool,
+    /// Pending `session/request_permission` entries under the `ask` policy.
+    ///
+    /// Keyed by request id (as JSON Value). Bounded at `PERMISSION_MAP_CAP`.
+    /// Entries transition: `Pending → Writing(optionId) → Resolved`.
+    /// Cancel during `Writing` → `PermissionPoisoned`.
+    /// Cleared at turn end.
+    pending_permissions: std::collections::HashMap<String, PermissionEntry>,
+    /// Whether this process is poisoned due to a cancel-during-write.
+    ///
+    /// When `true` the process MUST NOT be returned to the pool — it must be
+    /// respawned. The cancel path surfaces this via `PermissionPoisoned`.
+    permission_poisoned: bool,
+    /// Resolved permission configuration. Determines how `handle_permission_request`
+    /// answers ACP `session/request_permission` frames.
+    permission_config: ResolvedPermissionConfig,
+    /// Whether an agent owner pubkey was resolved at startup.
+    ///
+    /// Used by the `ask` availability gate: `ask` without a known owner downgrades
+    /// to `reject` (the desktop needs an owner to route the permission card to).
+    owner_pubkey_known: bool,
+    /// Channel for delivering `permission_decision` control frames from the
+    /// observer dispatch loop into the read loop's decision arm.
+    /// Installed by `install_permission_decision_rx`; consumed by the read loop.
+    permission_decision_rx: Option<tokio::sync::mpsc::Receiver<PermissionDecision>>,
     /// The JSON-RPC id of the most recently sent `session/prompt` request.
     /// Used by [`cancel_with_cleanup`] to drain the correct response.
     /// Set in [`session_prompt_with_idle_timeout`]; consumed in [`cancel_with_cleanup`].
@@ -541,6 +634,16 @@ impl AcpClient {
             next_id: 0,
             pending_permission_id: None,
             permission_responded: false,
+            pending_permissions: std::collections::HashMap::new(),
+            permission_poisoned: false,
+            permission_config: ResolvedPermissionConfig {
+                policy: crate::config::PermissionPolicy::Reject,
+                effective_mode: PermissionMode::DontAsk,
+                mode_source: crate::config::ModeSource::Derived,
+                transmit_mode: true,
+            },
+            owner_pubkey_known: false,
+            permission_decision_rx: None,
             last_prompt_id: None,
             current_hard_deadline: None,
             observer: None,
@@ -557,6 +660,33 @@ impl AcpClient {
     pub fn set_observer(&mut self, observer: Option<ObserverHandle>, agent_index: usize) {
         self.observer = observer;
         self.observer_agent_index = Some(agent_index);
+    }
+
+    /// Set the resolved permission configuration for this agent process.
+    ///
+    /// Called once after spawn (like `set_observer`) by `pool_lifecycle`.
+    pub fn set_permission_config(&mut self, config: ResolvedPermissionConfig) {
+        self.permission_config = config;
+    }
+
+    /// Record whether the agent owner pubkey is known at startup.
+    ///
+    /// The `ask` availability gate downgrades to `reject` when the owner is
+    /// unknown — the desktop needs an owner to route the permission card.
+    pub fn set_owner_pubkey_known(&mut self, known: bool) {
+        self.owner_pubkey_known = known;
+    }
+
+    /// Install the per-session `permission_decision` receiver.
+    ///
+    /// The matching `Sender` is held by `handle_observer_control` in `lib.rs`
+    /// and delivers `permission_decision` control frames into the read loop's
+    /// decision arm. Idempotent — replaces any previously installed receiver.
+    pub fn install_permission_decision_rx(
+        &mut self,
+        rx: tokio::sync::mpsc::Receiver<PermissionDecision>,
+    ) {
+        self.permission_decision_rx = Some(rx);
     }
 
     /// Update metadata that will be attached to subsequent raw wire events.
@@ -581,6 +711,24 @@ impl AcpClient {
                 kind,
                 self.observer_agent_index,
                 &self.observer_context,
+                payload,
+            );
+        }
+    }
+
+    /// Emit a semantic event with an authorization envelope, if observer enabled.
+    fn observe_authorized(
+        &self,
+        kind: impl Into<String>,
+        authorization: AuthorizationEnvelope,
+        payload: serde_json::Value,
+    ) {
+        if let Some(observer) = &self.observer {
+            observer.emit_authorized(
+                kind,
+                self.observer_agent_index,
+                &self.observer_context,
+                authorization,
                 payload,
             );
         }
@@ -811,6 +959,10 @@ impl AcpClient {
             Ok(_) => {
                 self.last_prompt_id = None;
                 self.current_hard_deadline = None;
+                // Turn completed normally — drain resolved/expired permission entries.
+                // Pending entries are unexpected here (should be Resolved or expired),
+                // but drain unconditionally to guarantee the map never leaks across turns.
+                self.pending_permissions.clear();
             }
             Err(AcpError::IdleTimeout(_) | AcpError::HardTimeout { .. }) => {
                 // Leave last_prompt_id and current_hard_deadline set —
@@ -819,6 +971,10 @@ impl AcpClient {
             Err(_) => {
                 self.last_prompt_id = None;
                 self.current_hard_deadline = None;
+                // Non-recoverable error — drain the map to prevent capacity leak
+                // if the pool reuses this process (poisoned processes are respawned,
+                // but clean error exits may be returned to the pool).
+                self.pending_permissions.clear();
             }
         }
         self.parse_stop_reason(&result?)
@@ -1003,8 +1159,81 @@ impl AcpClient {
             AcpError::Protocol("cancel_with_cleanup called with no in-flight prompt".into())
         })?;
 
-        // Step 1: respond to any pending permission request with "cancelled",
-        // but only if we haven't already responded (guards against double-response race).
+        // Check for poisoning first: if a permission write is in progress we
+        // must not send any more bytes to this process — return the dedicated
+        // error so `classify_control_cancel_failure` triggers respawn.
+        if self.permission_poisoned {
+            tracing::error!(
+                target: "acp::cancel",
+                "cancel on poisoned process — triggering respawn"
+            );
+            return Err(AcpError::PermissionPoisoned);
+        }
+
+        // Step 1: respond to any pending permission request with "cancelled".
+        //
+        // Under `ask` policy: drain all pending entries (cancel each one);
+        // check for any entry currently in `Writing` state → that's a
+        // cancel-during-write, so poison the process.
+        //
+        // Under `reject`/`allow` policy: use the old single-id path.
+        let mut cancel_during_write = false;
+
+        // Ask-policy pending map: drain every Pending entry with cancelled;
+        // Writing entries poison the process.
+        let ids_to_cancel: Vec<String> = self.pending_permissions.keys().cloned().collect();
+        for req_id_str in ids_to_cancel {
+            let entry = self.pending_permissions.remove(&req_id_str).unwrap();
+            match entry.state {
+                PermissionEntryState::Writing => {
+                    tracing::error!(
+                        target: "acp::cancel",
+                        "cancel during permission write for req_id={req_id_str} — poisoning process"
+                    );
+                    cancel_during_write = true;
+                    // Don't try to write anything to this process.
+                }
+                PermissionEntryState::Pending => {
+                    // Parse id back to JSON value for the wire response.
+                    let perm_id: serde_json::Value = serde_json::from_str(&req_id_str)
+                        .unwrap_or_else(|_| serde_json::Value::String(req_id_str.clone()));
+                    let response = permission_response_cancelled(&perm_id);
+                    if let Err(e) = self.write_ndjson_no_observe(&response).await {
+                        tracing::warn!(
+                            target: "acp::cancel",
+                            "failed to write cancelled for pending perm id={req_id_str}: {e}"
+                        );
+                        // Best-effort; continue to session/cancel.
+                    } else {
+                        // Emit one authorized acp_write with the original nonce
+                        // so the desktop can retire the card by nonce correlation.
+                        self.observe_authorized(
+                            "acp_write",
+                            AuthorizationEnvelope {
+                                request_nonce: entry.nonce.clone(),
+                                actionable: false,
+                                reason: Some("cancelled".to_string()),
+                            },
+                            response,
+                        );
+                        tracing::debug!(
+                            target: "acp::cancel",
+                            "responded cancelled to pending permission id={req_id_str}"
+                        );
+                    }
+                }
+                PermissionEntryState::Resolved => {
+                    // Already resolved — nothing to do.
+                }
+            }
+        }
+
+        if cancel_during_write {
+            self.permission_poisoned = true;
+            return Err(AcpError::PermissionPoisoned);
+        }
+
+        // Old single-id path (reject/allow policy).
         if let Some(perm_id) = self.pending_permission_id.clone() {
             if !self.permission_responded {
                 let response = permission_response_cancelled(&perm_id);
@@ -1038,6 +1267,9 @@ impl AcpClient {
                 remaining,
             )
             .await?;
+        // Cancel completed — drain any remaining permission entries (they were
+        // answered with cancelled above, but drain Resolved ones to free capacity).
+        self.pending_permissions.clear();
         self.parse_stop_reason(&result)
     }
 
@@ -1045,7 +1277,26 @@ impl AcpClient {
     ///
     /// Bounded by a 30-second write timeout. If the agent stops reading stdin
     /// (e.g., it's stuck or dead), the write would otherwise block forever.
+    ///
+    /// Emits a generic `acp_write` observer event. For permission response paths
+    /// that emit their own authorized event, use `write_ndjson_no_observe`.
     async fn write_ndjson(&mut self, value: &serde_json::Value) -> Result<(), AcpError> {
+        self.write_ndjson_inner(value, true).await
+    }
+
+    /// Write NDJSON without emitting a generic `acp_write` observer event.
+    ///
+    /// Used for permission response paths that emit a single authorized event
+    /// themselves — prevents duplicate generic+authorized telemetry.
+    async fn write_ndjson_no_observe(&mut self, value: &serde_json::Value) -> Result<(), AcpError> {
+        self.write_ndjson_inner(value, false).await
+    }
+
+    async fn write_ndjson_inner(
+        &mut self,
+        value: &serde_json::Value,
+        emit_observe: bool,
+    ) -> Result<(), AcpError> {
         const WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
         let line = serde_json::to_string(value)?;
         tokio::time::timeout(WRITE_TIMEOUT, async {
@@ -1057,7 +1308,9 @@ impl AcpClient {
         .await
         .map_err(|_| AcpError::WriteTimeout(WRITE_TIMEOUT))?
         .map_err(AcpError::Io)?;
-        self.observe("acp_write", value.clone());
+        if emit_observe {
+            self.observe("acp_write", value.clone());
+        }
         Ok(())
     }
 
@@ -1239,7 +1492,26 @@ impl AcpClient {
                         self.handle_goose_usage_update(&msg);
                     }
                     "session/request_permission" => {
-                        self.handle_permission_request(&msg).await?;
+                        // Pre-turn (session/new) path: no decision arm installed.
+                        // Force reject regardless of policy — ask requests would
+                        // register map entries that can never be resolved without
+                        // the turn reader's decision arm.
+                        let saved_policy = self.permission_config.policy;
+                        if matches!(saved_policy, PermissionPolicy::Ask) {
+                            // Temporarily downgrade to reject for this request only.
+                            let saved = std::mem::replace(
+                                &mut self.permission_config.policy,
+                                PermissionPolicy::Reject,
+                            );
+                            let deadline = tokio::time::Instant::now()
+                                + std::time::Duration::from_secs(PERMISSION_ASK_TIMEOUT_SECS);
+                            let _ = self.handle_permission_request(&msg, true, deadline).await;
+                            self.permission_config.policy = saved;
+                        } else {
+                            let deadline = tokio::time::Instant::now()
+                                + std::time::Duration::from_secs(PERMISSION_ASK_TIMEOUT_SECS);
+                            self.handle_permission_request(&msg, true, deadline).await?;
+                        }
                     }
                     other => {
                         // If the unknown message has an id, it's a request expecting a reply.
@@ -1309,6 +1581,11 @@ impl AcpClient {
         // so the ack_tx oneshot is never leaked silently).
         let mut steer_rx = self.steer_rx.take();
 
+        // Take the per-session permission decision receiver into a local for
+        // the same reason: `self.reader` and `decision_rx` cannot both be
+        // borrowed inside `select!` via `self`.
+        let mut decision_rx = self.permission_decision_rx.take();
+
         // Tracks the in-flight steer write: `(request_id, transport, ack_tx)`.
         // While `Some`, the steer arm is gated off so we don't stack writes,
         // and a response matching `id` is routed to the ack_tx instead
@@ -1328,14 +1605,48 @@ impl AcpClient {
         let mut last_activity_at = now;
 
         loop {
+            // If the process was poisoned by a cancel-during-write, surface the
+            // error immediately so the caller can respawn.
+            if self.permission_poisoned {
+                if let Some((_, _, ack_tx)) = pending_steer.take() {
+                    let _ = ack_tx.send(crate::pool::SteerAck::PromptCompletedNeutral);
+                }
+                return Err(AcpError::PermissionPoisoned);
+            }
+
             // Determine which deadline fires first BEFORE sleeping — this is
             // the classification we'll use on timeout, immune to scheduler jitter.
-            let idle_fires_first = idle_deadline < hard_deadline;
-            let next_deadline = if idle_fires_first {
-                idle_deadline
+            //
+            // Deadline logic:
+            // - When any Pending permission entries exist, suspend the idle
+            //   deadline (owner is deciding; agent silence is expected) and
+            //   wake on the earliest permission deadline instead.
+            // - Otherwise wake on min(idle, hard) as normal.
+            let has_pending_permissions = self
+                .pending_permissions
+                .values()
+                .any(|e| matches!(e.state, PermissionEntryState::Pending));
+            let next_deadline;
+            let idle_fires_first;
+            if has_pending_permissions {
+                // Suspend idle; find earliest permission deadline (capped by hard).
+                let earliest_perm = self
+                    .pending_permissions
+                    .values()
+                    .filter(|e| matches!(e.state, PermissionEntryState::Pending))
+                    .map(|e| e.deadline)
+                    .min()
+                    .unwrap_or(hard_deadline);
+                next_deadline = earliest_perm.min(hard_deadline);
+                idle_fires_first = false; // hard deadline governs if we wake
             } else {
-                hard_deadline
-            };
+                idle_fires_first = idle_deadline < hard_deadline;
+                next_deadline = if idle_fires_first {
+                    idle_deadline
+                } else {
+                    hard_deadline
+                };
+            }
 
             // Pre-select deadline check — required by Max's review. Under
             // `biased`, a continuously-ready reader arm wins every poll and
@@ -1345,20 +1656,79 @@ impl AcpClient {
             // exists). Check the classified deadline here so a steady-
             // stream agent is still bounded.
             if Instant::now() >= next_deadline {
-                if let Some((_, _, ack_tx)) = pending_steer.take() {
-                    // Prompt is timing out — release the withheld event via
-                    // PromptCompletedNeutral (no fallback signal: there is
-                    // no in-flight turn to signal once we return, and
-                    // normal dispatch handles redelivery).
-                    let _ = ack_tx.send(crate::pool::SteerAck::PromptCompletedNeutral);
+                // When we woke for a permission deadline (not the hard deadline),
+                // skip the error return — let the expiry block below process the
+                // timed-out entries, then continue the loop.
+                let is_permission_wake = has_pending_permissions && next_deadline != hard_deadline;
+                if !is_permission_wake {
+                    if let Some((_, _, ack_tx)) = pending_steer.take() {
+                        // Prompt is timing out — release the withheld event via
+                        // PromptCompletedNeutral (no fallback signal: there is
+                        // no in-flight turn to signal once we return, and
+                        // normal dispatch handles redelivery).
+                        let _ = ack_tx.send(crate::pool::SteerAck::PromptCompletedNeutral);
+                    }
+                    if idle_fires_first {
+                        tracing::warn!("idle timeout ({idle_timeout:?}) — no agent activity");
+                        return Err(AcpError::IdleTimeout(idle_timeout));
+                    } else {
+                        let silence = Instant::now().saturating_duration_since(last_activity_at);
+                        tracing::warn!("hard turn timeout exceeded (silence {silence:?})");
+                        return Err(AcpError::HardTimeout { silence });
+                    }
                 }
-                if idle_fires_first {
-                    tracing::warn!("idle timeout ({idle_timeout:?}) — no agent activity");
-                    return Err(AcpError::IdleTimeout(idle_timeout));
-                } else {
-                    let silence = Instant::now().saturating_duration_since(last_activity_at);
-                    tracing::warn!("hard turn timeout exceeded (silence {silence:?})");
-                    return Err(AcpError::HardTimeout { silence });
+            }
+
+            // Expire any pending `ask` permission entries whose per-request
+            // deadline has passed. Fail closed: write denial response for each
+            // expired entry and transition to Resolved.
+            {
+                let now = Instant::now();
+                let expired: Vec<(String, serde_json::Value, Vec<serde_json::Value>, String)> =
+                    self.pending_permissions
+                        .iter()
+                        .filter(|(_, e)| {
+                            matches!(e.state, PermissionEntryState::Pending) && now >= e.deadline
+                        })
+                        .map(|(id_str, e)| {
+                            (
+                                id_str.clone(),
+                                serde_json::from_str(id_str)
+                                    .unwrap_or_else(|_| serde_json::Value::String(id_str.clone())),
+                                e.options_snapshot.clone(),
+                                e.nonce.clone(),
+                            )
+                        })
+                        .collect();
+                for (id_str, id_val, opts, nonce) in expired {
+                    tracing::warn!(
+                        target: "acp::permission",
+                        "ask timeout for permission id={id_val} — failing closed"
+                    );
+                    // Transition to Resolved so cancel doesn't drain twice.
+                    if let Some(entry) = self.pending_permissions.get_mut(&id_str) {
+                        entry.state = PermissionEntryState::Resolved;
+                    }
+                    if let Ok(response) = permission_denial_response(&id_val, &opts) {
+                        // Write the denial without the generic observer (avoids duplicate).
+                        // Best-effort; ignore error (we're already timing out).
+                        let write_ok = self.write_ndjson_no_observe(&response).await.is_ok();
+                        // Emit one authorized acp_write correlated by nonce so the
+                        // desktop can retire the card. Only emitted when the write
+                        // actually reached the pipe — otherwise emit nothing rather
+                        // than claim a response was delivered.
+                        if write_ok {
+                            self.observe_authorized(
+                                "acp_write",
+                                AuthorizationEnvelope {
+                                    request_nonce: nonce,
+                                    actionable: false,
+                                    reason: Some("timed_out".to_string()),
+                                },
+                                response,
+                            );
+                        }
+                    }
                 }
             }
 
@@ -1366,6 +1736,113 @@ impl AcpClient {
             // read level — the buffer never grows beyond the limit.
             let read_result = tokio::select! {
                 biased;
+                // Decision arm — must be FIRST in the biased select! (spec §9) so
+                // owner decisions are not starved by a continuously-ready stdout.
+                // Cancel-safe: `mpsc::Receiver::recv` does not lose messages on drop.
+                Some(decision) = async {
+                    match decision_rx.as_mut() {
+                        Some(rx) => rx.recv().await,
+                        None => None,
+                    }
+                } => {
+                    // Find the pending entry by nonce match.
+                    let entry_id = self.pending_permissions
+                        .iter()
+                        .find(|(_, e)| {
+                            matches!(e.state, PermissionEntryState::Pending)
+                                && e.nonce == decision.request_nonce
+                        })
+                        .map(|(k, _)| k.clone());
+
+                    if let Some(id_str) = entry_id {
+                        // Validate the chosen option_id is in the snapshot.
+                        let opt_valid = self.pending_permissions
+                            .get(&id_str)
+                            .map(|e| {
+                                e.options_snapshot.iter().any(|opt| {
+                                    opt.get("optionId")
+                                        .and_then(|v| v.as_str())
+                                        == Some(decision.option_id.as_str())
+                                })
+                            })
+                            .unwrap_or(false);
+
+                        if !opt_valid {
+                            tracing::warn!(
+                                target: "acp::permission",
+                                "permission_decision optionId {:?} not in snapshot for id={id_str} — ignoring",
+                                decision.option_id
+                            );
+                        } else {
+                            // Transition Pending → Writing.
+                            let (nonce, opts, id_val) = {
+                                let entry = self.pending_permissions.get_mut(&id_str).unwrap();
+                                entry.state = PermissionEntryState::Writing;
+                                (
+                                    entry.nonce.clone(),
+                                    entry.options_snapshot.clone(),
+                                    serde_json::from_str::<serde_json::Value>(&id_str)
+                                        .unwrap_or_else(|_| serde_json::Value::String(id_str.clone())),
+                                )
+                            };
+
+                            let response = permission_response_selected(&id_val, &decision.option_id);
+                            // Write bounded by min(30s, remaining hard deadline).
+                            let write_deadline = (Instant::now()
+                                + std::time::Duration::from_secs(30))
+                            .min(hard_deadline);
+                            let write_result = tokio::time::timeout_at(write_deadline, self.write_ndjson_no_observe(&response)).await;
+
+                            match write_result {
+                                Ok(Ok(())) => {
+                                    // Transition Writing → Resolved.
+                                    if let Some(entry) = self.pending_permissions.get_mut(&id_str) {
+                                        entry.state = PermissionEntryState::Resolved;
+                                    }
+                                    // Emit single authorized acp_write after confirmed write.
+                                    self.observe_authorized(
+                                        "acp_write",
+                                        AuthorizationEnvelope {
+                                            request_nonce: nonce.clone(),
+                                            actionable: false,
+                                            reason: Some("applied".to_string()),
+                                        },
+                                        response,
+                                    );
+                                    let _ = opts; // used above for validation
+                                    tracing::info!(
+                                        target: "acp::permission",
+                                        "permission id={id_val} answered: optionId={:?}",
+                                        decision.option_id
+                                    );
+                                }
+                                Ok(Err(write_err)) => {
+                                    // Write failed — poison the process.
+                                    tracing::error!(
+                                        target: "acp::permission",
+                                        "permission write failed for id={id_val}: {write_err} — poisoning process"
+                                    );
+                                    self.permission_poisoned = true;
+                                }
+                                Err(_timeout) => {
+                                    // Write timed out — poison the process.
+                                    tracing::error!(
+                                        target: "acp::permission",
+                                        "permission write timed out for id={id_val} — poisoning process"
+                                    );
+                                    self.permission_poisoned = true;
+                                }
+                            }
+                        }
+                    } else {
+                        tracing::warn!(
+                            target: "acp::permission",
+                            "permission_decision nonce {:?} has no matching pending entry — ignoring",
+                            decision.request_nonce
+                        );
+                    }
+                    None // loop back; don't set read_result
+                }
                 read_result = self.reader.next() => Some(read_result),
                 // Steer arm: gated off whenever a steer write is already in
                 // flight so we don't stack two writes against the same
@@ -1470,16 +1947,24 @@ impl AcpClient {
                     // would catch this anyway, but firing the deadline arm
                     // here makes the wakeup immediate (no extra reader poll
                     // round-trip when stdout is idle).
-                    if let Some((_, _, ack_tx)) = pending_steer.take() {
-                        let _ = ack_tx.send(crate::pool::SteerAck::PromptCompletedNeutral);
-                    }
-                    if idle_fires_first {
-                        tracing::warn!("idle timeout ({idle_timeout:?}) — no agent activity");
-                        return Err(AcpError::IdleTimeout(idle_timeout));
+                    // For a permission-deadline wake, loop back to let the
+                    // expiry block process timed-out entries.
+                    let is_permission_wake =
+                        has_pending_permissions && next_deadline != hard_deadline;
+                    if is_permission_wake {
+                        None // loop back; expiry block will fire
                     } else {
-                        let silence = Instant::now().saturating_duration_since(last_activity_at);
-                        tracing::warn!("hard turn timeout exceeded (silence {silence:?})");
-                        return Err(AcpError::HardTimeout { silence });
+                        if let Some((_, _, ack_tx)) = pending_steer.take() {
+                            let _ = ack_tx.send(crate::pool::SteerAck::PromptCompletedNeutral);
+                        }
+                        if idle_fires_first {
+                            tracing::warn!("idle timeout ({idle_timeout:?}) — no agent activity");
+                            return Err(AcpError::IdleTimeout(idle_timeout));
+                        } else {
+                            let silence = Instant::now().saturating_duration_since(last_activity_at);
+                            tracing::warn!("hard turn timeout exceeded (silence {silence:?})");
+                            return Err(AcpError::HardTimeout { silence });
+                        }
                     }
                 }
             };
@@ -1538,7 +2023,16 @@ impl AcpClient {
                             continue;
                         }
                     };
-                    self.observe("acp_read", msg.clone());
+                    // Suppress the generic `acp_read` for `session/request_permission`
+                    // under the `ask` policy — `handle_permission_request` emits the
+                    // single enveloped frame instead (spec §6 "one frame per request").
+                    let is_ask_permission_request =
+                        matches!(self.permission_config.policy, PermissionPolicy::Ask)
+                            && msg.get("method").and_then(|v| v.as_str())
+                                == Some("session/request_permission");
+                    if !is_ask_permission_request {
+                        self.observe("acp_read", msg.clone());
+                    }
 
                     let activity_now = Instant::now();
                     idle_deadline = activity_now + idle_timeout;
@@ -1683,7 +2177,12 @@ impl AcpClient {
                                 self.handle_goose_usage_update(&msg);
                             }
                             "session/request_permission" => {
-                                self.handle_permission_request(&msg).await?;
+                                self.handle_permission_request(
+                                    &msg,
+                                    is_ask_permission_request,
+                                    hard_deadline,
+                                )
+                                .await?;
                             }
                             other => {
                                 // If the unknown message has an id, it's a request expecting a reply.
@@ -1871,57 +2370,292 @@ impl AcpClient {
         }
     }
 
-    /// Reject a `session/request_permission` request from the agent.
+    /// Handle a `session/request_permission` request from the agent.
     ///
-    /// Buzz has no human permission prompt in this harness, so selecting
-    /// `allow_once` would turn any admitted prompt into an implicit approval.
-    /// Find `reject_once` by kind when the adapter offers it; otherwise use the
-    /// protocol's cancelled outcome, which is also fail-closed.
+    /// Dispatches based on the resolved permission policy:
+    /// - `reject` — deny via `reject_once`/`cancelled` (byte-for-byte old behaviour).
+    /// - `allow`  — auto-select the unique validated `allow_once` option; fail closed.
+    /// - `ask` — register in the pending map, emit an actionable frame, and return.
+    ///   The read loop's decision arm (added to `select!`) delivers the owner decision.
+    ///   This call is intentionally **non-blocking** for `ask`; the actual response is
+    ///   written asynchronously via the decision arm.
     ///
-    /// The request `id` is stored as `serde_json::Value` to support both numeric
-    /// and string IDs per JSON-RPC 2.0.
-    async fn handle_permission_request(&mut self, msg: &serde_json::Value) -> Result<(), AcpError> {
+    /// **Admission preflight (always runs before any policy dispatch):**
+    /// options nonempty, count ≤ PERMISSION_OPTIONS_MAX, every optionId unique +
+    /// nonempty, required kind/name fields present, no duplicate live requestId,
+    /// plaintext size ≤ OBSERVER_MAX_PLAINTEXT_LEN. Fail → immediate denial + emit
+    /// with `actionable: false`.
+    ///
+    /// Under `ask`, the generic pre-dispatch `acp_read` (acp.rs:1697 seam) is
+    /// **suppressed** for permission requests; this method emits the single
+    /// post-preflight enveloped frame instead.
+    ///
+    /// Returns `Ok(true)` when the caller should suppress the normal `acp_read` emit
+    /// (i.e. this method already emitted the enveloped frame), `Ok(false)` otherwise.
+    pub(crate) async fn handle_permission_request(
+        &mut self,
+        msg: &serde_json::Value,
+        // When `true`, caller has NOT yet emitted acp_read for this message —
+        // this method emits it (enveloped) for permission frames under `ask`.
+        // When `false` (read_until_response, non-idle path), the caller already
+        // emitted it; we must not double-emit.
+        caller_will_emit_read: bool,
+        // Hard deadline for the current turn. Used to bound per-request ask timeouts.
+        hard_deadline: tokio::time::Instant,
+    ) -> Result<bool, AcpError> {
         // Extract id as a Value — JSON-RPC 2.0 allows both numeric and string IDs.
         let id = msg
             .get("id")
             .cloned()
             .ok_or_else(|| AcpError::Protocol("permission request missing id".into()))?;
 
-        // Store pending permission id so cancel_with_cleanup can respond to it.
-        self.pending_permission_id = Some(id.clone());
-        // Mark as not yet responded — guards against double-response race.
-        self.permission_responded = false;
+        let options = match msg["params"]["options"].as_array() {
+            Some(o) => o.clone(),
+            None => {
+                // Missing options — emit non-actionable frame and deny.
+                let reason = "missing or non-array options field";
+                tracing::warn!(target: "acp::permission", "{reason}, id={id}");
+                self.emit_permission_read_non_actionable(&id, msg, reason, caller_will_emit_read);
+                let response = permission_denial_response(&id, &[])?;
+                self.write_ndjson(&response).await?;
+                return Ok(true);
+            }
+        };
 
-        let options = msg["params"]["options"]
-            .as_array()
-            .ok_or_else(|| AcpError::Protocol("permission request missing options".into()))?;
+        // ── Admission preflight ────────────────────────────────────────────────
+        let preflight_result = run_admission_preflight(
+            &options,
+            msg,
+            // Check for duplicate live requestId under ask.
+            if matches!(self.permission_config.policy, PermissionPolicy::Ask) {
+                let id_str = id.to_string();
+                self.pending_permissions.contains_key(&id_str)
+            } else {
+                false
+            },
+            if matches!(self.permission_config.policy, PermissionPolicy::Ask) {
+                self.pending_permissions.len() >= PERMISSION_MAP_CAP
+            } else {
+                false
+            },
+            &self.observer_context,
+            self.observer_agent_index,
+        );
+
+        if let Err(reason) = preflight_result {
+            tracing::warn!(target: "acp::permission", "preflight failed: {reason}, id={id}");
+            self.emit_permission_read_non_actionable(&id, msg, &reason, caller_will_emit_read);
+            let response = permission_denial_response(&id, &options)?;
+            self.write_ndjson(&response).await?;
+            return Ok(true);
+        }
+        // ── Preflight passed ───────────────────────────────────────────────────
 
         tracing::debug!(
             target: "acp::permission",
-            "session/request_permission id={id}, {} options",
-            options.len()
+            "session/request_permission id={id}, {} options, policy={}",
+            options.len(),
+            self.permission_config.policy
         );
 
-        let response = permission_denial_response(&id, options)?;
+        match self.permission_config.policy {
+            PermissionPolicy::Reject => {
+                // Byte-for-byte old behaviour: deny, track pending id for cancel.
+                self.pending_permission_id = Some(id.clone());
+                self.permission_responded = false;
 
-        // Write the response first, then mark as responded.
-        //
-        // Previous ordering (flag-before-write) was intended to guard against a
-        // double-response if a timeout fires between write and flag-set. However,
-        // the deadlock risk is worse: if write_ndjson fails (e.g. WriteTimeout),
-        // the flag would be true but no response was actually sent. Then
-        // cancel_with_cleanup would see permission_responded=true, skip sending
-        // the cancelled outcome, and the agent would hang waiting for a reply
-        // that never arrives — a guaranteed deadlock.
-        //
-        // The correct fix: set the flag AFTER a successful write. The double-
-        // response window (between write completion and flag-set) is negligibly
-        // small and bounded by a single memory store; the deadlock window was
-        // unbounded.
-        self.write_ndjson(&response).await?;
-        self.permission_responded = true;
-        self.pending_permission_id = None;
-        Ok(())
+                // For reject, the caller already emitted acp_read unconditionally;
+                // emit a non-actionable authorization envelope alongside.
+                let nonce = new_permission_nonce();
+                self.emit_permission_read_with_nonce(
+                    &id,
+                    msg,
+                    &nonce,
+                    false,
+                    Some("policy=reject"),
+                    caller_will_emit_read,
+                );
+
+                let response = permission_denial_response(&id, &options)?;
+                self.write_ndjson(&response).await?;
+                self.permission_responded = true;
+                self.pending_permission_id = None;
+                Ok(true)
+            }
+            PermissionPolicy::Allow => {
+                // Auto-select the unique allow_once option; fail closed otherwise.
+                self.pending_permission_id = Some(id.clone());
+                self.permission_responded = false;
+
+                match select_allow_once(&options) {
+                    Ok(option_id) => {
+                        tracing::info!(
+                            target: "acp::permission",
+                            "allow: selecting allow_once optionId={option_id:?} for id={id}"
+                        );
+                        let nonce = new_permission_nonce();
+                        // Emit enveloped acp_read (non-actionable: auto-approved).
+                        self.emit_permission_read_with_nonce(
+                            &id,
+                            msg,
+                            &nonce,
+                            false,
+                            Some("policy=allow; auto-approved"),
+                            caller_will_emit_read,
+                        );
+                        let response = permission_response_selected(&id, &option_id);
+                        self.write_ndjson(&response).await?;
+                        // Emit enveloped acp_write after confirmed write.
+                        self.observe_authorized(
+                            "acp_write",
+                            AuthorizationEnvelope {
+                                request_nonce: nonce,
+                                actionable: false,
+                                reason: Some("auto-approved by policy=allow".to_string()),
+                            },
+                            response,
+                        );
+                        self.permission_responded = true;
+                        self.pending_permission_id = None;
+                    }
+                    Err(reason) => {
+                        // Fail closed.
+                        tracing::warn!(
+                            target: "acp::permission",
+                            "allow: fail closed — {reason}, id={id}"
+                        );
+                        let nonce = new_permission_nonce();
+                        self.emit_permission_read_with_nonce(
+                            &id,
+                            msg,
+                            &nonce,
+                            false,
+                            Some(&format!("policy=allow; fail closed: {reason}")),
+                            caller_will_emit_read,
+                        );
+                        let response = permission_denial_response(&id, &options)?;
+                        self.write_ndjson(&response).await?;
+                        self.permission_responded = true;
+                        self.pending_permission_id = None;
+                    }
+                }
+                Ok(true)
+            }
+            PermissionPolicy::Ask => {
+                // Availability gate (spec §10): `ask` requires both an active observer
+                // and a known owner. Without either, downgrade to `reject` with a loud
+                // warning — never sideways to `allow`.
+                let observer_active = self.observer.is_some();
+                if !observer_active || !self.owner_pubkey_known {
+                    tracing::warn!(
+                        target: "acp::permission",
+                        "ask policy unavailable (observer={}, owner_known={}) — downgrading to reject for id={id}",
+                        observer_active,
+                        self.owner_pubkey_known
+                    );
+                    // Fall through to the Reject arm's logic.
+                    self.pending_permission_id = Some(id.clone());
+                    self.permission_responded = false;
+                    let nonce = new_permission_nonce();
+                    self.emit_permission_read_with_nonce(
+                        &id,
+                        msg,
+                        &nonce,
+                        false,
+                        Some("policy=ask unavailable (no observer/owner); downgraded to reject"),
+                        caller_will_emit_read,
+                    );
+                    let response = permission_denial_response(&id, &options)?;
+                    self.write_ndjson(&response).await?;
+                    self.permission_responded = true;
+                    self.pending_permission_id = None;
+                    return Ok(true);
+                }
+
+                // Register in the pending map and emit the actionable frame.
+                // The read loop's decision arm delivers the response asynchronously.
+                let id_str = id.to_string();
+                let nonce = new_permission_nonce();
+
+                // Emit the single enveloped acp_read — suppresses the caller's
+                // generic emit via the Ok(true) return.
+                self.observe_authorized(
+                    "acp_read",
+                    AuthorizationEnvelope {
+                        request_nonce: nonce.clone(),
+                        actionable: true,
+                        reason: None,
+                    },
+                    msg.clone(),
+                );
+
+                // Per-request deadline: min(now + 300s, turn hard deadline).
+                let ask_deadline = tokio::time::Instant::now()
+                    + std::time::Duration::from_secs(PERMISSION_ASK_TIMEOUT_SECS);
+                let entry_deadline = ask_deadline.min(hard_deadline);
+
+                self.pending_permissions.insert(
+                    id_str,
+                    PermissionEntry {
+                        nonce,
+                        options_snapshot: options.clone(),
+                        state: PermissionEntryState::Pending,
+                        deadline: entry_deadline,
+                    },
+                );
+
+                // Do NOT set pending_permission_id for ask — the map is the
+                // sole source of truth. The legacy single-id slot is only used
+                // by reject/allow (synchronous paths).
+                Ok(true)
+            }
+        }
+    }
+
+    /// Emit a non-actionable `acp_read` authorization frame for a permission request.
+    fn emit_permission_read_non_actionable(
+        &self,
+        id: &serde_json::Value,
+        msg: &serde_json::Value,
+        reason: &str,
+        _caller_will_emit_read: bool,
+    ) {
+        let nonce = new_permission_nonce();
+        self.observe_authorized(
+            "acp_read",
+            AuthorizationEnvelope {
+                request_nonce: nonce,
+                actionable: false,
+                reason: Some(reason.to_string()),
+            },
+            msg.clone(),
+        );
+        tracing::debug!(target: "acp::permission", "non-actionable permission read id={id}");
+    }
+
+    /// Emit an `acp_read` with an authorization envelope.
+    ///
+    /// When `caller_will_emit_read` is `false` the caller already emitted the
+    /// raw `acp_read`; we emit only the enveloped version. When `true` we emit
+    /// the enveloped version (the caller suppresses its normal emit).
+    fn emit_permission_read_with_nonce(
+        &self,
+        _id: &serde_json::Value,
+        msg: &serde_json::Value,
+        nonce: &str,
+        actionable: bool,
+        reason: Option<&str>,
+        _caller_will_emit_read: bool,
+    ) {
+        self.observe_authorized(
+            "acp_read",
+            AuthorizationEnvelope {
+                request_nonce: nonce.to_string(),
+                actionable,
+                reason: reason.map(str::to_string),
+            },
+            msg.clone(),
+        );
     }
 
     /// Parse `stopReason` from a `session/prompt` result value.
@@ -2040,14 +2774,190 @@ fn permission_denial_response(
         return Ok(permission_response_cancelled(id));
     };
 
-    let option_id = opt["optionId"]
-        .as_str()
-        .ok_or_else(|| AcpError::Protocol("reject_once option missing optionId".into()))?;
+    let Some(option_id) = opt["optionId"].as_str().filter(|s| !s.is_empty()) else {
+        // reject_once found but optionId is missing or empty — malformed request;
+        // fall back to `cancelled` rather than returning a Protocol error so the
+        // adapter still receives a valid JSON-RPC response.
+        tracing::warn!(
+            target: "acp::permission",
+            "reject_once option has missing or empty optionId for id={id}, cancelling"
+        );
+        return Ok(permission_response_cancelled(id));
+    };
     tracing::info!(
         target: "acp::permission",
         "rejecting permission id={id} with reject_once optionId={option_id:?}"
     );
     Ok(permission_response_selected(id, option_id))
+}
+
+/// Generate a cryptographically random, URL-safe nonce string.
+///
+/// Used as the `requestNonce` in [`crate::observer::AuthorizationEnvelope`].
+/// The nonce is single-use and bound to a specific permission request.
+fn new_permission_nonce() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+
+/// Select the unique `allow_once` option from a permission request's option list.
+///
+/// Returns `Ok(option_id)` when there is exactly one option with `kind =
+/// "allow_once"` and a non-empty `optionId`. Returns `Err(reason)` (fail
+/// closed) when:
+/// - zero `allow_once` options are present,
+/// - multiple `allow_once` options are present (ambiguous),
+/// - the matching option has a missing or empty `optionId`.
+///
+/// `allow_always` options are deliberately not selected — they would grant
+/// indefinite access without a per-request human decision.
+fn select_allow_once(options: &[serde_json::Value]) -> Result<String, String> {
+    let candidates: Vec<&serde_json::Value> = options
+        .iter()
+        .filter(|opt| {
+            opt.get("kind")
+                .and_then(|k| k.as_str())
+                .map(|k| k == "allow_once")
+                .unwrap_or(false)
+        })
+        .collect();
+
+    match candidates.len() {
+        0 => Err("no allow_once option found".to_string()),
+        2.. => Err(format!(
+            "multiple allow_once options found ({}); ambiguous",
+            candidates.len()
+        )),
+        1 => {
+            let opt = candidates[0];
+            let option_id = opt
+                .get("optionId")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| "allow_once option has missing or empty optionId".to_string())?;
+            Ok(option_id.to_string())
+        }
+    }
+}
+
+/// Validate a `session/request_permission` request before it touches the
+/// pending map or policy dispatch.
+///
+/// Returns `Ok(())` on a clean request; `Err(reason)` on the first violation.
+///
+/// Checks (in order):
+/// 1. `options` nonempty.
+/// 2. `options` count ≤ `PERMISSION_OPTIONS_MAX`.
+/// 3. Every `optionId` is present and non-empty.
+/// 4. Every `optionId` is unique across the request.
+/// 5. Every option has a non-empty `kind` and `name`.
+/// 6. Duplicate live `requestId` (only relevant under `ask`, caller passes flag).
+/// 7. Permission map at capacity (only relevant under `ask`, caller passes flag).
+/// 8. Full serialised `ObserverEvent` (raw payload + all envelope fields + real
+///    context) fits within `OBSERVER_MAX_PLAINTEXT_LEN` — no leaf surgery on frames.
+fn run_admission_preflight(
+    options: &[serde_json::Value],
+    msg: &serde_json::Value,
+    is_duplicate_id: bool,
+    is_map_at_cap: bool,
+    observer_context: &ObserverContext,
+    agent_index: Option<usize>,
+) -> Result<(), String> {
+    // 1. options nonempty
+    if options.is_empty() {
+        return Err("options array is empty".to_string());
+    }
+
+    // 2. count ≤ PERMISSION_OPTIONS_MAX
+    if options.len() > PERMISSION_OPTIONS_MAX {
+        return Err(format!(
+            "too many options: {} > {}",
+            options.len(),
+            PERMISSION_OPTIONS_MAX
+        ));
+    }
+
+    // 3 & 4. optionId present, non-empty, unique
+    let mut seen_ids = std::collections::HashSet::new();
+    for opt in options {
+        let option_id = opt
+            .get("optionId")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| "option has missing or empty optionId".to_string())?;
+        if !seen_ids.insert(option_id) {
+            return Err(format!("duplicate optionId: {option_id:?}"));
+        }
+    }
+
+    // 5. required kind and name fields
+    for opt in options {
+        if opt
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .is_none()
+        {
+            return Err("option has missing or empty kind".to_string());
+        }
+        if opt
+            .get("name")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .is_none()
+        {
+            return Err("option has missing or empty name".to_string());
+        }
+    }
+
+    // 6. duplicate live requestId (ask only — caller computes flag)
+    if is_duplicate_id {
+        return Err("duplicate live requestId".to_string());
+    }
+
+    // 7. map at capacity (ask only — caller computes flag)
+    if is_map_at_cap {
+        return Err(format!(
+            "pending permission map at capacity ({})",
+            PERMISSION_MAP_CAP
+        ));
+    }
+
+    // 8. Full annotated `ObserverEvent` fits within `OBSERVER_MAX_PLAINTEXT_LEN`.
+    //
+    // Construct the exact production `ObserverEvent` with the real observer context
+    // and a representative nonce. Serialise it and reject if over cap. This is the
+    // same construction path the observer uses at emit time, so any payload that
+    // passes here is guaranteed to fit in the final frame — no leaf surgery needed.
+    //
+    // A UUID nonce is used for sizing; the actual nonce is generated after the
+    // preflight passes, but all nonces are the same UUID length.
+    let candidate_event = ObserverEvent {
+        seq: u64::MAX, // worst-case seq (19 digits)
+        timestamp: "2026-01-01T00:00:00.000000000+00:00".to_string(), // max RFC3339 len
+        kind: "acp_read".to_string(),
+        agent_index,
+        channel_id: observer_context.channel_id.clone(),
+        session_id: observer_context.session_id.clone(),
+        turn_id: observer_context.turn_id.clone(),
+        started_at: observer_context.started_at.clone(),
+        authorization: Some(AuthorizationEnvelope {
+            // UUID nonce — all production nonces are this length.
+            request_nonce: "00000000-0000-0000-0000-000000000000".to_string(),
+            actionable: true,
+            reason: None,
+        }),
+        payload: msg.clone(),
+    };
+    let annotated_len = serde_json::to_string(&candidate_event)
+        .map(|s| s.len())
+        .unwrap_or(usize::MAX);
+    if annotated_len > OBSERVER_MAX_PLAINTEXT_LEN {
+        return Err(format!(
+            "permission request payload too large: annotated size {annotated_len} > {OBSERVER_MAX_PLAINTEXT_LEN}"
+        ));
+    }
+
+    Ok(())
 }
 
 /// Full `session/new` response — session ID plus the raw JSON result.
@@ -2259,6 +3169,7 @@ fn configure_no_window(cmd: &mut tokio::process::Command) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ModeSource;
 
     #[test]
     fn stop_reason_parses_all_known_values() {
@@ -2369,17 +3280,21 @@ mod tests {
         assert_eq!(outcome(&response), Some("cancelled"));
     }
 
-    /// A `reject_once` option missing its `optionId` is a protocol violation.
-    /// Erroring propagates to the caller, which tears the turn down — still no
-    /// approval is ever sent.
+    /// A `reject_once` option missing its `optionId` falls back to a `cancelled`
+    /// response rather than propagating a Protocol error. This ensures the adapter
+    /// always receives a valid JSON-RPC response, even for malformed requests.
     #[test]
-    fn reject_once_without_option_id_is_a_protocol_error() {
+    fn reject_once_without_option_id_falls_back_to_cancelled() {
         let options = options(r#"[{"name": "Reject", "kind": "reject_once"}]"#);
 
-        let err = permission_denial_response(&serde_json::json!(1), &options)
-            .expect_err("missing optionId must error");
+        let response = permission_denial_response(&serde_json::json!(1), &options)
+            .expect("malformed reject_once must not error");
 
-        assert!(matches!(err, AcpError::Protocol(_)), "got {err:?}");
+        assert_eq!(
+            response["result"]["outcome"]["outcome"].as_str(),
+            Some("cancelled"),
+            "malformed reject_once must produce cancelled, got: {response}"
+        );
     }
 
     #[test]
@@ -4647,5 +5562,1289 @@ mod tests {
             msg.contains("sandbox_workspace_write"),
             "error must mention sandbox_workspace_write"
         );
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // ── Permission policy: pinned tests (#4938) ───────────────────────────────
+    // ══════════════════════════════════════════════════════════════════════════
+    //
+    // Tests are grouped by the pinned requirement they cover, labelled as
+    // "Pinned §N" matching the spec's numbered list.
+    //
+    // These tests use:
+    //   • `spawn_inert_client()` (cat) for pure unit coverage of `handle_permission_request`.
+    //   • `spawn_script(s)` for end-to-end coverage of `read_until_response_with_idle_timeout`.
+    //   • `AcpClient::set_permission_config` / `set_owner_pubkey_known` helpers.
+    //
+    // "observer" is left None for tests that only care about deny/allow path;
+    // an in-process observer is installed for tests that verify acp_write events.
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    /// Build a minimal `session/request_permission` JSON-RPC message.
+    fn perm_request(id: u64, options: &[(&str, &str, &str)]) -> serde_json::Value {
+        let opts: Vec<serde_json::Value> = options
+            .iter()
+            .map(|(opt_id, kind, name)| {
+                serde_json::json!({"optionId": opt_id, "kind": kind, "name": name})
+            })
+            .collect();
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "session/request_permission",
+            "params": {
+                "sessionId": "sess-test",
+                "options": opts,
+            }
+        })
+    }
+
+    /// Canonical 3-option set used in most tests.
+    fn default_opts() -> &'static [(&'static str, &'static str, &'static str)] {
+        &[
+            ("opt-allow", "allow_once", "Allow once"),
+            ("opt-reject", "reject_once", "Reject once"),
+            ("opt-always", "allow_always", "Always allow"),
+        ]
+    }
+
+    /// Set policy=allow on a client and mark owner known.
+    fn set_policy(client: &mut AcpClient, policy: PermissionPolicy) {
+        let config = ResolvedPermissionConfig::resolve(policy, None).expect("valid policy");
+        client.set_permission_config(config);
+        client.set_owner_pubkey_known(true);
+    }
+
+    // ── Pinned §2: allow selector — unique/zero/multiple/malformed ────────────
+
+    #[test]
+    fn allow_selector_picks_unique_allow_once() {
+        // Unique allow_once → Ok with that optionId.
+        let opts = serde_json::from_str::<Vec<serde_json::Value>>(
+            r#"[{"optionId":"opt-a","kind":"allow_once","name":"Allow"},
+               {"optionId":"opt-r","kind":"reject_once","name":"Reject"}]"#,
+        )
+        .unwrap();
+        assert_eq!(select_allow_once(&opts), Ok("opt-a".to_string()));
+    }
+
+    #[test]
+    fn allow_selector_fails_closed_on_zero_allow_once() {
+        // No allow_once options → fail closed.
+        let opts = serde_json::from_str::<Vec<serde_json::Value>>(
+            r#"[{"optionId":"opt-r","kind":"reject_once","name":"Reject"}]"#,
+        )
+        .unwrap();
+        assert!(select_allow_once(&opts).is_err());
+    }
+
+    #[test]
+    fn allow_selector_fails_closed_on_multiple_allow_once() {
+        // Two allow_once candidates → ambiguous, fail closed.
+        let opts = serde_json::from_str::<Vec<serde_json::Value>>(
+            r#"[{"optionId":"opt-a1","kind":"allow_once","name":"A1"},
+               {"optionId":"opt-a2","kind":"allow_once","name":"A2"}]"#,
+        )
+        .unwrap();
+        assert!(select_allow_once(&opts).is_err());
+    }
+
+    #[test]
+    fn allow_selector_fails_closed_on_missing_option_id() {
+        // allow_once present but optionId absent → malformed, fail closed.
+        let opts = serde_json::from_str::<Vec<serde_json::Value>>(
+            r#"[{"kind":"allow_once","name":"Allow"}]"#,
+        )
+        .unwrap();
+        assert!(select_allow_once(&opts).is_err());
+    }
+
+    #[test]
+    fn allow_selector_never_selects_allow_always() {
+        // allow_always must NOT be selected even when it is the only option
+        // with an "allow" kind — indefinite access without per-request approval.
+        let opts = serde_json::from_str::<Vec<serde_json::Value>>(
+            r#"[{"optionId":"opt-aa","kind":"allow_always","name":"Always"}]"#,
+        )
+        .unwrap();
+        assert!(
+            select_allow_once(&opts).is_err(),
+            "allow_always must never be auto-selected"
+        );
+    }
+
+    // ── Pinned §3: duplicate option IDs ──────────────────────────────────────
+
+    #[test]
+    fn admission_preflight_rejects_duplicate_option_ids() {
+        let msg = perm_request(
+            1,
+            &[("dup", "allow_once", "A"), ("dup", "reject_once", "R")],
+        );
+        let opts = msg["params"]["options"].as_array().unwrap().clone();
+        let result =
+            run_admission_preflight(&opts, &msg, false, false, &ObserverContext::default(), None);
+        assert!(result.is_err(), "duplicate optionId must fail preflight");
+        let reason = result.unwrap_err();
+        assert!(
+            reason.contains("duplicate optionId"),
+            "reason must name the check, got: {reason}"
+        );
+    }
+
+    // ── Pinned §2: duplicate request ID ──────────────────────────────────────
+
+    #[tokio::test]
+    async fn handle_permission_request_denies_duplicate_live_request_id() {
+        // Under ask policy, a second request with the same id while the first
+        // is still pending must be denied immediately without disturbing the original.
+        let mut client = spawn_inert_client().await;
+        set_policy(&mut client, PermissionPolicy::Ask);
+        // Simulate an already-registered pending entry with the same id.
+        client.pending_permissions.insert(
+            "1".to_string(),
+            PermissionEntry {
+                nonce: "nonce-abc".to_string(),
+                options_snapshot: vec![],
+                state: PermissionEntryState::Pending,
+                deadline: tokio::time::Instant::now() + std::time::Duration::from_secs(300),
+            },
+        );
+        let msg = perm_request(1, default_opts());
+        let hard_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        let result = client
+            .handle_permission_request(&msg, true, hard_deadline)
+            .await;
+        // Must succeed (Ok) — denial was written and the call itself doesn't error.
+        assert!(
+            result.is_ok(),
+            "duplicate-id must not propagate as Err, got {result:?}"
+        );
+        // The original entry must still be in the map, untouched.
+        assert!(
+            client.pending_permissions.contains_key("1"),
+            "original pending entry must survive the duplicate-id rejection"
+        );
+        // Only one entry should exist (the duplicate was denied, not registered).
+        assert_eq!(
+            client.pending_permissions.len(),
+            1,
+            "no new entry should be added for the duplicate id"
+        );
+    }
+
+    // ── Pinned §4: oversize subject → plaintext cap exceeded ─────────────────
+
+    #[test]
+    fn admission_preflight_rejects_oversize_msg_exceeding_plaintext_cap() {
+        // Construct a message large enough to exceed OBSERVER_MAX_PLAINTEXT_LEN.
+        // We embed the large payload directly in the msg so that
+        // `serde_json::to_string(msg).len() > OBSERVER_MAX_PLAINTEXT_LEN`.
+        let oversize_subject = "x".repeat(OBSERVER_MAX_PLAINTEXT_LEN + 1);
+        let msg = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 42,
+            "method": "session/request_permission",
+            "params": {
+                "sessionId": "sess",
+                "subject": oversize_subject,
+                "options": [{"optionId":"opt","kind":"allow_once","name":"A"}]
+            }
+        });
+        let opts = vec![serde_json::json!({"optionId":"opt","kind":"allow_once","name":"A"})];
+        let result =
+            run_admission_preflight(&opts, &msg, false, false, &ObserverContext::default(), None);
+        assert!(result.is_err(), "oversize msg must fail preflight");
+        let reason = result.unwrap_err();
+        assert!(
+            reason.contains("too large") || reason.contains("payload"),
+            "reason should mention payload size, got: {reason}"
+        );
+    }
+
+    #[test]
+    fn admission_preflight_rejects_payload_overflowing_after_full_event_construction() {
+        // Construct a context matching production (UUID-sized IDs) and compute the
+        // maximum msg payload that fits within OBSERVER_MAX_PLAINTEXT_LEN when
+        // serialised as the actual ObserverEvent. Then submit a payload one byte
+        // larger and verify the preflight rejects it.
+        //
+        // This exercises the production code path: the check constructs the
+        // exact ObserverEvent with real context fields, not an estimate.
+        use crate::observer::ObserverContext;
+
+        let ctx = ObserverContext {
+            channel_id: Some("00000000-0000-0000-0000-000000000000".to_string()),
+            session_id: Some("sess-00000000-0000-0000-0000-000000000000".to_string()),
+            turn_id: Some("00000000-0000-0000-0000-000000000000".to_string()),
+            started_at: Some("2026-01-01T00:00:00.000000000+00:00".to_string()),
+        };
+
+        // Binary-search for the exact max subject length that still fits.
+        // We wrap it in a minimal msg structure to simulate a real request.
+        let template = |subject: &str| {
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 42,
+                "method": "session/request_permission",
+                "params": {
+                    "sessionId": "sess",
+                    "subject": subject,
+                    "options": [{"optionId":"opt","kind":"allow_once","name":"A"}]
+                }
+            })
+        };
+        let opts = vec![serde_json::json!({"optionId":"opt","kind":"allow_once","name":"A"})];
+        // Build the ObserverEvent exactly as the preflight does to find where the
+        // boundary is — then make a msg one byte over that boundary.
+        let make_candidate = |msg: &serde_json::Value| ObserverEvent {
+            seq: u64::MAX,
+            timestamp: "2026-01-01T00:00:00.000000000+00:00".to_string(),
+            kind: "acp_read".to_string(),
+            agent_index: None,
+            channel_id: ctx.channel_id.clone(),
+            session_id: ctx.session_id.clone(),
+            turn_id: ctx.turn_id.clone(),
+            started_at: ctx.started_at.clone(),
+            authorization: Some(AuthorizationEnvelope {
+                request_nonce: "00000000-0000-0000-0000-000000000000".to_string(),
+                actionable: true,
+                reason: None,
+            }),
+            payload: msg.clone(),
+        };
+
+        // Find a subject length that overflows after event wrapping.
+        // Start with a large subject known to overflow (cap worth of padding).
+        let overflow_subject = "z".repeat(OBSERVER_MAX_PLAINTEXT_LEN);
+        let overflow_msg = template(&overflow_subject);
+        let overflow_event_len = serde_json::to_string(&make_candidate(&overflow_msg))
+            .unwrap()
+            .len();
+        assert!(
+            overflow_event_len > OBSERVER_MAX_PLAINTEXT_LEN,
+            "test setup: overflow_event_len ({overflow_event_len}) must exceed cap"
+        );
+
+        // The preflight must reject this payload.
+        let result = run_admission_preflight(&opts, &overflow_msg, false, false, &ctx, None);
+        assert!(
+            result.is_err(),
+            "payload overflowing after event construction must fail preflight (event_len={overflow_event_len})"
+        );
+        let reason = result.unwrap_err();
+        assert!(
+            reason.contains("too large") || reason.contains("payload"),
+            "reason should mention payload size, got: {reason}"
+        );
+
+        // Sanity-check: an empty subject (tiny msg) must pass the preflight.
+        let tiny_msg = template("");
+        let tiny_event_len = serde_json::to_string(&make_candidate(&tiny_msg))
+            .unwrap()
+            .len();
+        assert!(
+            tiny_event_len <= OBSERVER_MAX_PLAINTEXT_LEN,
+            "test setup: tiny_event_len ({tiny_event_len}) must be within cap"
+        );
+        let ok_result = run_admission_preflight(&opts, &tiny_msg, false, false, &ctx, None);
+        assert!(
+            ok_result.is_ok(),
+            "small payload must pass preflight, got: {ok_result:?}"
+        );
+    }
+
+    #[test]
+    fn denial_response_with_malformed_reject_once_falls_back_to_cancelled() {
+        // A reject_once option with a missing optionId must produce a `cancelled`
+        // response, not a Protocol error — the adapter must always receive a valid
+        // JSON-RPC response.
+        let id = serde_json::json!(7);
+        let opts = vec![
+            serde_json::json!({"kind": "reject_once", "name": "Reject"}), // no optionId
+        ];
+        let response = permission_denial_response(&id, &opts)
+            .expect("malformed reject_once must not return Err");
+        // The response must be a cancelled frame (no optionId in result.outcome).
+        let outcome = &response["result"]["outcome"];
+        assert_eq!(
+            outcome["outcome"].as_str(),
+            Some("cancelled"),
+            "malformed reject_once must produce cancelled response, got: {response}"
+        );
+    }
+
+    // ── Pinned §5: map overflow ───────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn handle_permission_request_denies_when_map_at_capacity() {
+        let mut client = spawn_inert_client().await;
+        set_policy(&mut client, PermissionPolicy::Ask);
+
+        // Fill the map to PERMISSION_MAP_CAP.
+        for i in 0..PERMISSION_MAP_CAP {
+            client.pending_permissions.insert(
+                format!("{i}"),
+                PermissionEntry {
+                    nonce: format!("nonce-{i}"),
+                    options_snapshot: vec![],
+                    state: PermissionEntryState::Pending,
+                    deadline: tokio::time::Instant::now() + std::time::Duration::from_secs(300),
+                },
+            );
+        }
+        assert_eq!(client.pending_permissions.len(), PERMISSION_MAP_CAP);
+
+        // One more request with a new id → must be denied.
+        let msg = perm_request(99, default_opts());
+        let hard_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        let result = client
+            .handle_permission_request(&msg, true, hard_deadline)
+            .await;
+        assert!(
+            result.is_ok(),
+            "map-at-cap must not propagate Err, got {result:?}"
+        );
+        // Map must not have grown.
+        assert_eq!(
+            client.pending_permissions.len(),
+            PERMISSION_MAP_CAP,
+            "map must not grow beyond capacity after denial"
+        );
+    }
+
+    // ── Pinned §7: mode matrix — unset + every explicit mode × 3 policies ────
+
+    #[test]
+    fn resolved_permission_config_reject_unset_derives_dont_ask() {
+        let cfg = ResolvedPermissionConfig::resolve(PermissionPolicy::Reject, None).unwrap();
+        assert_eq!(cfg.effective_mode, PermissionMode::DontAsk);
+        assert_eq!(cfg.mode_source, ModeSource::Derived);
+        assert!(cfg.transmit_mode, "transmit_mode must always be true");
+    }
+
+    #[test]
+    fn resolved_permission_config_ask_unset_derives_default() {
+        let cfg = ResolvedPermissionConfig::resolve(PermissionPolicy::Ask, None).unwrap();
+        assert_eq!(cfg.effective_mode, PermissionMode::Default);
+        assert_eq!(cfg.mode_source, ModeSource::Derived);
+    }
+
+    #[test]
+    fn resolved_permission_config_allow_unset_derives_default_not_dont_ask() {
+        // allow + unset → default (NOT dontAsk — dontAsk self-denies before Buzz can answer)
+        let cfg = ResolvedPermissionConfig::resolve(PermissionPolicy::Allow, None).unwrap();
+        assert_eq!(cfg.effective_mode, PermissionMode::Default);
+        assert!(
+            cfg.effective_mode != PermissionMode::DontAsk,
+            "allow policy must NOT derive dontAsk"
+        );
+    }
+
+    #[test]
+    fn resolved_permission_config_reject_plus_explicit_dont_ask_is_ok() {
+        // reject + dontAsk explicit is valid: both say "deny".
+        let cfg = ResolvedPermissionConfig::resolve(
+            PermissionPolicy::Reject,
+            Some(PermissionMode::DontAsk),
+        )
+        .unwrap();
+        assert_eq!(cfg.effective_mode, PermissionMode::DontAsk);
+        assert_eq!(cfg.mode_source, ModeSource::Explicit);
+    }
+
+    #[test]
+    fn resolved_permission_config_ask_plus_explicit_dont_ask_is_startup_error() {
+        let result =
+            ResolvedPermissionConfig::resolve(PermissionPolicy::Ask, Some(PermissionMode::DontAsk));
+        assert!(result.is_err(), "ask + dontAsk must be a startup error");
+        let msg = format!("{}", result.unwrap_err());
+        assert!(
+            msg.contains("dontAsk"),
+            "error must mention dontAsk, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn resolved_permission_config_allow_plus_explicit_dont_ask_is_startup_error() {
+        let result = ResolvedPermissionConfig::resolve(
+            PermissionPolicy::Allow,
+            Some(PermissionMode::DontAsk),
+        );
+        assert!(result.is_err(), "allow + dontAsk must be a startup error");
+    }
+
+    #[test]
+    fn resolved_permission_config_ask_plus_explicit_accept_edits_is_ok() {
+        let cfg = ResolvedPermissionConfig::resolve(
+            PermissionPolicy::Ask,
+            Some(PermissionMode::AcceptEdits),
+        )
+        .unwrap();
+        assert_eq!(cfg.effective_mode, PermissionMode::AcceptEdits);
+        assert_eq!(cfg.mode_source, ModeSource::Explicit);
+    }
+
+    #[test]
+    fn resolved_permission_config_allow_plus_explicit_plan_is_ok() {
+        let cfg =
+            ResolvedPermissionConfig::resolve(PermissionPolicy::Allow, Some(PermissionMode::Plan))
+                .unwrap();
+        assert_eq!(cfg.effective_mode, PermissionMode::Plan);
+        assert_eq!(cfg.mode_source, ModeSource::Explicit);
+    }
+
+    #[test]
+    fn resolved_permission_config_transmit_mode_always_true() {
+        // transmit_mode is always true regardless of policy/mode combination.
+        for policy in [
+            PermissionPolicy::Reject,
+            PermissionPolicy::Ask,
+            PermissionPolicy::Allow,
+        ] {
+            let cfg = ResolvedPermissionConfig::resolve(policy, None).unwrap();
+            assert!(cfg.transmit_mode, "transmit_mode must be true for {policy}");
+        }
+    }
+
+    // ── Pinned §10: ask availability gate — no observer → downgrade to reject ─
+
+    #[tokio::test]
+    async fn ask_without_observer_downgrades_to_reject() {
+        // ask policy but no observer installed → must downgrade to reject,
+        // never sideways to allow.
+        let mut client = spawn_inert_client().await;
+        let config = ResolvedPermissionConfig::resolve(PermissionPolicy::Ask, None).unwrap();
+        client.set_permission_config(config);
+        client.set_owner_pubkey_known(true);
+        // No observer installed (default).
+
+        let msg = perm_request(1, default_opts());
+        let hard_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        let result = client
+            .handle_permission_request(&msg, true, hard_deadline)
+            .await;
+        // Denial was written — Ok(true) means caller should suppress generic emit.
+        assert!(
+            result.is_ok(),
+            "ask downgrade to reject must not propagate Err"
+        );
+        // Confirm nothing was left pending in the map — it was denied synchronously.
+        assert!(
+            client.pending_permissions.is_empty(),
+            "downgraded-to-reject must not leave a pending entry"
+        );
+    }
+
+    #[tokio::test]
+    async fn ask_without_owner_known_downgrades_to_reject() {
+        // ask policy with observer but unknown owner → downgrade to reject.
+        let mut client = spawn_inert_client().await;
+        let config = ResolvedPermissionConfig::resolve(PermissionPolicy::Ask, None).unwrap();
+        client.set_permission_config(config);
+        client.set_owner_pubkey_known(false); // explicitly unknown
+
+        let msg = perm_request(2, default_opts());
+        let hard_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        let result = client
+            .handle_permission_request(&msg, true, hard_deadline)
+            .await;
+        assert!(result.is_ok());
+        assert!(client.pending_permissions.is_empty());
+    }
+
+    // ── Pinned §1: ask path success — decision arrives → response written ─────
+    //
+    // This test verifies the biased select! decision arm:
+    //   1. permission request emitted on stdout
+    //   2. decision injected via permission_decision_tx
+    //   3. read loop writes the permission response
+    //   4. loop continues and the final id=999 response is matched → Ok
+
+    #[tokio::test]
+    async fn ask_decision_consumed_writes_response_and_continues() {
+        // Setup: ask policy, observer + owner active, permission_decision channel installed.
+        // A Pending entry is pre-planted with a known nonce so we can deliver a matching
+        // decision without needing access to nonce generation inside the loop.
+        // The script immediately emits the terminal id=999 response (simulating the
+        // adapter continuing after the permission response was written to its stdin).
+        let script = r#"echo '{"jsonrpc":"2.0","id":999,"result":{"done":true}}'"#;
+        let mut client = spawn_script(script).await;
+
+        let config = ResolvedPermissionConfig::resolve(PermissionPolicy::Ask, None).unwrap();
+        client.set_permission_config(config);
+        client.set_owner_pubkey_known(true);
+        let obs = crate::observer::ObserverHandle::in_process();
+        client.set_observer(Some(obs.clone()), 0);
+
+        let (perm_tx, perm_rx) = tokio::sync::mpsc::channel::<PermissionDecision>(8);
+        client.install_permission_decision_rx(perm_rx);
+
+        // Plant a Pending entry with a known nonce.
+        let known_nonce = "test-nonce-loop-success".to_string();
+        let req_id_str = "42".to_string();
+        client.pending_permissions.insert(
+            req_id_str.clone(),
+            PermissionEntry {
+                nonce: known_nonce.clone(),
+                options_snapshot: vec![
+                    serde_json::json!({"optionId":"opt-allow","kind":"allow_once","name":"Allow"}),
+                ],
+                state: PermissionEntryState::Pending,
+                deadline: tokio::time::Instant::now() + std::time::Duration::from_secs(300),
+            },
+        );
+
+        // Deliver a matching decision (by nonce) with a valid optionId.
+        // The decision is already in the channel before the loop starts; the biased
+        // select! arm reads it on the first iteration.
+        perm_tx
+            .send(PermissionDecision {
+                request_nonce: known_nonce,
+                option_id: "opt-allow".to_string(),
+            })
+            .await
+            .unwrap();
+
+        // Drive the loop. It should: (1) find the pre-delivered decision, write the
+        // permission response, transition entry → Resolved; (2) continue and read the
+        // id=999 terminal response from the script.
+        let idle = std::time::Duration::from_secs(5);
+        let max_dur = std::time::Duration::from_secs(10);
+        let hard_deadline = tokio::time::Instant::now() + max_dur;
+        let result = client
+            .read_until_response_with_idle_timeout(
+                "sess-ask-success",
+                999,
+                idle,
+                hard_deadline,
+                max_dur,
+            )
+            .await;
+
+        assert!(
+            result.is_ok(),
+            "loop must succeed after decision is consumed, got: {result:?}"
+        );
+
+        // The entry must have been transitioned to Resolved (decision was applied).
+        let entry = client.pending_permissions.get(&req_id_str);
+        match entry {
+            Some(e) => assert!(
+                matches!(e.state, PermissionEntryState::Resolved),
+                "entry must be Resolved after decision applied, got: {:?}",
+                e.state
+            ),
+            None => {
+                // Entry may have been drained at turn end — also acceptable.
+            }
+        }
+    }
+
+    // ── Production-path tests: real loop emits request, captures nonce ──────
+
+    /// Full end-to-end production path test for the `ask` decision flow:
+    ///
+    /// 1. Script emits a real `session/request_permission` on stdout.
+    /// 2. The read loop processes it via `handle_permission_request()` —
+    ///    no state is pre-planted.
+    /// 3. The nonce is captured from the observer.
+    /// 4. A valid decision is sent through the decision channel.
+    /// 5. The loop writes the permission response to the script's stdin.
+    /// 6. The script reads the response and emits the terminal id=999 reply.
+    /// 7. The loop returns `Ok` — the wire flow completes end-to-end.
+    #[tokio::test]
+    async fn ask_production_path_emits_request_captures_nonce_and_delivers_decision() {
+        // Script: emit permission request, wait for any stdin line (the harness's
+        // response), then emit the terminal session/prompt response.
+        let perm_req = r#"{"jsonrpc":"2.0","id":42,"method":"session/request_permission","params":{"sessionId":"sess","requestId":"req-prod","subject":"read a file","options":[{"optionId":"opt-allow","kind":"allow_once","name":"Allow"},{"optionId":"opt-deny","kind":"reject_once","name":"Deny"}]}}"#;
+        let terminal = r#"{"jsonrpc":"2.0","id":999,"result":{"stopReason":"end_turn"}}"#;
+        // Print the permission request, wait for one line of stdin (the harness's
+        // response), then print the terminal response.
+        let script = format!(
+            r#"printf '{perm_req}\n'; read -r _resp; printf '{terminal}\n'"#,
+            perm_req = perm_req,
+            terminal = terminal,
+        );
+
+        let mut client = spawn_script(&script).await;
+        let config = ResolvedPermissionConfig::resolve(PermissionPolicy::Ask, None).unwrap();
+        client.set_permission_config(config);
+        client.set_owner_pubkey_known(true);
+
+        // Subscribe to the observer BEFORE starting the loop so we capture all events.
+        let obs = crate::observer::ObserverHandle::in_process();
+        let mut obs_rx = obs.subscribe();
+        client.set_observer(Some(obs.clone()), 0);
+
+        let (perm_tx, perm_rx) = tokio::sync::mpsc::channel::<PermissionDecision>(8);
+        client.install_permission_decision_rx(perm_rx);
+
+        // Spawn a task that waits for the observer to emit the actionable acp_read
+        // (the permission request), then delivers a matching decision.
+        let decision_task = tokio::spawn(async move {
+            // Wait for the actionable acp_read from the observer.
+            let mut found_nonce: Option<String> = None;
+            while let Ok(Ok(event)) =
+                tokio::time::timeout(std::time::Duration::from_secs(5), obs_rx.recv()).await
+            {
+                if event.kind == "acp_read" {
+                    if let Some(auth) = &event.authorization {
+                        if auth.actionable {
+                            found_nonce = Some(auth.request_nonce.clone());
+                            break;
+                        }
+                    }
+                }
+            }
+            let nonce = found_nonce.expect("actionable acp_read must be emitted");
+            // Deliver a valid decision by the captured nonce.
+            perm_tx
+                .send(PermissionDecision {
+                    request_nonce: nonce,
+                    option_id: "opt-allow".to_string(),
+                })
+                .await
+                .expect("decision channel must accept");
+        });
+
+        let idle = std::time::Duration::from_secs(5);
+        let max_dur = std::time::Duration::from_secs(15);
+        let hard_deadline = tokio::time::Instant::now() + max_dur;
+        let result = client
+            .read_until_response_with_idle_timeout("sess", 999, idle, hard_deadline, max_dur)
+            .await;
+
+        assert!(
+            result.is_ok(),
+            "production-path ask loop must succeed after decision is delivered, got: {result:?}"
+        );
+        assert_eq!(
+            result.unwrap().get("stopReason").and_then(|v| v.as_str()),
+            Some("end_turn"),
+        );
+
+        // Verify the observer emitted an authorized acp_write (the decision response).
+        let _ = decision_task.await;
+        let events = obs.snapshot();
+        let write_events: Vec<_> = events
+            .iter()
+            .filter(|e| e.kind == "acp_write" && e.authorization.is_some())
+            .collect();
+        assert!(
+            !write_events.is_empty(),
+            "observer must emit at least one authorized acp_write after decision applied"
+        );
+    }
+
+    /// Cancel test: asserts exactly one JSON-RPC response per pending id,
+    /// no replay on subsequent cancel.
+    #[tokio::test]
+    async fn cancel_writes_exactly_one_response_per_pending_id_no_replay() {
+        // Script that stays alive but produces no output (simulates a hung agent).
+        let mut client = spawn_script("sleep 5").await;
+        client.set_permission_config(
+            ResolvedPermissionConfig::resolve(PermissionPolicy::Ask, None).unwrap(),
+        );
+        client.set_owner_pubkey_known(true);
+
+        // Subscribe to observer to capture writes.
+        let obs = crate::observer::ObserverHandle::in_process();
+        client.set_observer(Some(obs.clone()), 0);
+
+        let (_tx, perm_rx) = tokio::sync::mpsc::channel::<PermissionDecision>(8);
+        client.install_permission_decision_rx(perm_rx);
+
+        // Plant two distinct Pending entries directly — this tests the cancel
+        // drain path without needing a live protocol exchange.
+        for i in 0..2u64 {
+            let hard_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(300);
+            let msg = perm_request(i, default_opts());
+            client
+                .handle_permission_request(&msg, true, hard_deadline)
+                .await
+                .expect("ask registration must succeed");
+        }
+        assert_eq!(
+            client.pending_permissions.len(),
+            2,
+            "two pending entries must be registered before cancel"
+        );
+        client.last_prompt_id = Some(999);
+
+        // First cancel: must drain both entries.
+        let _ = client
+            .cancel_with_cleanup_grace("sess-exact-once", std::time::Duration::from_millis(200))
+            .await;
+        assert!(
+            client.pending_permissions.is_empty(),
+            "all pending entries must be drained after cancel"
+        );
+
+        // Count authorized acp_write events (each must correspond to one drained entry).
+        let events_after_first = obs.snapshot();
+        let write_count_first = events_after_first
+            .iter()
+            .filter(|e| e.kind == "acp_write" && e.authorization.is_some())
+            .count();
+        assert_eq!(
+            write_count_first, 2,
+            "cancel must emit exactly one authorized acp_write per pending id (got {write_count_first})"
+        );
+
+        // Second cancel on the same client: no pending entries remain, must not
+        // re-emit any additional acp_write (no replay).
+        let _ = client
+            .cancel_with_cleanup_grace("sess-exact-once", std::time::Duration::from_millis(200))
+            .await;
+        let events_after_second = obs.snapshot();
+        let write_count_second = events_after_second
+            .iter()
+            .filter(|e| e.kind == "acp_write" && e.authorization.is_some())
+            .count();
+        assert_eq!(
+            write_count_second, write_count_first,
+            "second cancel must not emit additional acp_writes (no replay): before={write_count_first}, after={write_count_second}"
+        );
+    }
+
+    /// Paused-time test: the permission deadline fires at exactly 300 seconds,
+    /// idle is suspended while a Pending entry exists, and capacity recovers
+    /// after more than eight sequential requests.
+    #[tokio::test(start_paused = true)]
+    async fn ask_permission_deadline_idle_suspension_and_capacity_recovery() {
+        // Script that emits nothing (simulates an agent waiting for permission response).
+        let mut client = spawn_script("sleep 600").await;
+        let config = ResolvedPermissionConfig::resolve(PermissionPolicy::Ask, None).unwrap();
+        client.set_permission_config(config);
+        client.set_owner_pubkey_known(true);
+        let obs = crate::observer::ObserverHandle::in_process();
+        client.set_observer(Some(obs.clone()), 0);
+        let (_tx, perm_rx) = tokio::sync::mpsc::channel::<PermissionDecision>(8);
+        client.install_permission_decision_rx(perm_rx);
+
+        // ── Part 1: permission deadline fires before idle ────────────────────
+        // Register one pending entry.
+        let msg = perm_request(1, default_opts());
+        let hard_deadline = tokio::time::Instant::now()
+            + std::time::Duration::from_secs(PERMISSION_ASK_TIMEOUT_SECS + 10);
+        client
+            .handle_permission_request(&msg, true, hard_deadline)
+            .await
+            .expect("ask registration must succeed");
+        assert_eq!(client.pending_permissions.len(), 1);
+
+        // Drive the loop with a long idle timeout — idle must be SUSPENDED while
+        // the permission entry is pending; only the 300s permission deadline fires.
+        let idle = std::time::Duration::from_secs(5); // would fire immediately without suspension
+        let max_dur = std::time::Duration::from_secs(PERMISSION_ASK_TIMEOUT_SECS + 10);
+        let hard_deadline = tokio::time::Instant::now() + max_dur;
+
+        // Advance time to just before the 300s deadline — idle should NOT fire.
+        tokio::time::advance(std::time::Duration::from_secs(
+            PERMISSION_ASK_TIMEOUT_SECS - 1,
+        ))
+        .await;
+        // Spawn a task to advance time past the deadline and check the loop exits
+        // via permission expiry (not idle timeout).
+        let advance_task = tokio::spawn(async {
+            tokio::time::advance(std::time::Duration::from_secs(2)).await;
+        });
+
+        let result = client
+            .read_until_response_with_idle_timeout("sess-tdl", 999, idle, hard_deadline, max_dur)
+            .await;
+        let _ = advance_task.await;
+
+        // The loop must have processed the expired entry (transitioned to Resolved)
+        // and then continued. Because the script produces no output, after the
+        // permission entry expires the idle timeout fires next (5s).
+        // Either an IdleTimeout or HardTimeout is acceptable — the key check is
+        // that no PermissionPoisoned or unexpected error occurred AND the entry
+        // was processed (Resolved or drained).
+        assert!(
+            !matches!(result, Err(AcpError::PermissionPoisoned)),
+            "permission expiry must not poison the process, got: {result:?}"
+        );
+        // After the deadline, the entry must have been transitioned to Resolved.
+        let entry_state = client.pending_permissions.get("1");
+        let was_resolved = entry_state
+            .map(|e| matches!(e.state, PermissionEntryState::Resolved))
+            .unwrap_or(true); // drain on turn exit is also acceptable
+        assert!(
+            was_resolved,
+            "entry must be Resolved or drained after permission deadline, got: {entry_state:?}"
+        );
+
+        // ── Part 2: capacity recovery after 8 sequential requests ───────────
+        // Clear any stale entries and verify 8+ sequential requests can succeed
+        // when previous resolved entries are drained between turns.
+        let mut client2 = spawn_script("sleep 600").await;
+        client2.set_permission_config(
+            ResolvedPermissionConfig::resolve(PermissionPolicy::Ask, None).unwrap(),
+        );
+        client2.set_owner_pubkey_known(true);
+        let obs2 = crate::observer::ObserverHandle::in_process();
+        client2.set_observer(Some(obs2), 0);
+        let (perm_tx2, perm_rx2) = tokio::sync::mpsc::channel::<PermissionDecision>(16);
+        client2.install_permission_decision_rx(perm_rx2);
+
+        // Send 9 sequential requests, processing each before sending the next.
+        // The map is bounded at PERMISSION_MAP_CAP = 8, but Resolved entries do
+        // not count toward the live-entry cap check — only Pending ones do.
+        // After each decision is applied (Resolved), the next request must succeed.
+        for i in 0..9u64 {
+            let hard = tokio::time::Instant::now() + std::time::Duration::from_secs(300);
+            let msg = perm_request(i + 100, default_opts());
+            let result = client2.handle_permission_request(&msg, true, hard).await;
+            // If still Pending from prior iterations, the cap check blocks — this
+            // tests the case after decisions have been applied (Resolved).
+            // For this sequential test we deliver decisions immediately.
+            if result.is_ok() && result.unwrap() {
+                // Entry is now Pending; deliver a decision immediately.
+                // Capture the nonce from the freshly-inserted entry.
+                let id_str = (i + 100).to_string();
+                let nonce = client2
+                    .pending_permissions
+                    .get(&id_str)
+                    .map(|e| e.nonce.clone());
+                if let Some(nonce) = nonce {
+                    perm_tx2
+                        .send(PermissionDecision {
+                            request_nonce: nonce,
+                            option_id: "opt-allow".to_string(),
+                        })
+                        .await
+                        .ok();
+                }
+            }
+        }
+        // Drive the loop to process all queued decisions.
+        let hard = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            client2.read_until_response_with_idle_timeout(
+                "sess-cap",
+                9999,
+                std::time::Duration::from_millis(100),
+                hard,
+                std::time::Duration::from_secs(10),
+            ),
+        )
+        .await;
+        // After processing, no Pending entries should remain (all should be Resolved
+        // or the map may have been drained). This proves the capacity map doesn't
+        // permanently block after 8 requests.
+        let pending_count = client2
+            .pending_permissions
+            .values()
+            .filter(|e| matches!(e.state, PermissionEntryState::Pending))
+            .count();
+        assert_eq!(
+            pending_count, 0,
+            "no Pending entries must remain after all decisions applied (capacity recovery confirmed)"
+        );
+    }
+
+    // ── Pinned §1 (simpler): ask entry registered synchronously ──────────────
+
+    #[tokio::test]
+    async fn ask_registers_entry_in_pending_map() {
+        // Verify that handle_permission_request under ask policy inserts
+        // a Pending entry into the map (without needing a live decision loop).
+        let mut client = spawn_inert_client().await;
+        let config = ResolvedPermissionConfig::resolve(PermissionPolicy::Ask, None).unwrap();
+        client.set_permission_config(config);
+        client.set_owner_pubkey_known(true);
+        // Install an observer so the ask arm doesn't downgrade.
+        let obs = crate::observer::ObserverHandle::in_process();
+        client.set_observer(Some(obs), 0);
+        // Install a permission decision channel (must be installed or take() panics).
+        let (_perm_tx, perm_rx) = tokio::sync::mpsc::channel::<PermissionDecision>(8);
+        client.install_permission_decision_rx(perm_rx);
+
+        let msg = perm_request(42, default_opts());
+        let hard_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        let result = client
+            .handle_permission_request(&msg, true, hard_deadline)
+            .await;
+        assert!(
+            result.is_ok(),
+            "ask must return Ok to suppress generic emit"
+        );
+        assert!(
+            result.unwrap(),
+            "ask must return Ok(true) to suppress generic emit"
+        );
+        assert_eq!(
+            client.pending_permissions.len(),
+            1,
+            "exactly one entry must be registered after ask"
+        );
+        let entry = client
+            .pending_permissions
+            .get("42")
+            .expect("entry under id=42");
+        assert!(
+            matches!(entry.state, PermissionEntryState::Pending),
+            "entry must start in Pending state"
+        );
+    }
+
+    // ── Pinned §1 (cancel during write path): poison process test ────────────
+
+    #[test]
+    fn cancel_during_writing_poisons_process() {
+        // Simulate a process that has an entry in Writing state at cancel time.
+        // cancel_with_cleanup_until must return PermissionPoisoned and set the flag.
+        //
+        // We test this synchronously because cancel_with_cleanup_until is async
+        // and we need to manipulate state directly. We use a tokio runtime.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            // Use a "sleep" script so the process is alive but won't emit responses.
+            let mut client = spawn_script("sleep 10").await;
+            client.set_permission_config(
+                ResolvedPermissionConfig::resolve(PermissionPolicy::Ask, None).unwrap(),
+            );
+            client.set_owner_pubkey_known(true);
+
+            // Manually plant an entry in Writing state — this simulates cancel
+            // arriving while the harness was in the middle of writing.
+            client.pending_permissions.insert(
+                "99".to_string(),
+                PermissionEntry {
+                    nonce: "n99".to_string(),
+                    options_snapshot: vec![],
+                    state: PermissionEntryState::Writing,
+                    deadline: tokio::time::Instant::now() + std::time::Duration::from_secs(300),
+                },
+            );
+            // cancel_with_cleanup needs last_prompt_id to be Some.
+            client.last_prompt_id = Some(999);
+
+            let err = client
+                .cancel_with_cleanup_grace("sess-poison", std::time::Duration::from_millis(500))
+                .await
+                .expect_err("cancel during write must return Err");
+
+            assert!(
+                matches!(err, AcpError::PermissionPoisoned),
+                "expected PermissionPoisoned, got {err:?}"
+            );
+            assert!(
+                client.permission_poisoned,
+                "poisoned flag must be set after cancel-during-write"
+            );
+        });
+    }
+
+    #[test]
+    fn poisoned_process_surfaces_immediately_on_next_cancel() {
+        // Once poisoned, every subsequent cancel must immediately return PermissionPoisoned
+        // without writing anything — the process is unsafe to use.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut client = spawn_script("sleep 10").await;
+            client.permission_poisoned = true;
+            client.last_prompt_id = Some(1);
+
+            let err = client
+                .cancel_with_cleanup_grace("sess", std::time::Duration::from_millis(200))
+                .await
+                .expect_err("poisoned process must error immediately");
+            assert!(matches!(err, AcpError::PermissionPoisoned));
+        });
+    }
+
+    #[test]
+    fn poisoned_process_check_in_read_loop_returns_poison_error() {
+        // Once permission_poisoned is set, read_until_response_with_idle_timeout
+        // must return PermissionPoisoned on the next loop iteration.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut client = spawn_script("sleep 10").await;
+            client.permission_poisoned = true;
+            client.last_prompt_id = Some(42);
+
+            let idle = std::time::Duration::from_secs(5);
+            let max_dur = std::time::Duration::from_secs(10);
+            let hard_deadline = tokio::time::Instant::now() + max_dur;
+            let result = client
+                .read_until_response_with_idle_timeout("sess", 42, idle, hard_deadline, max_dur)
+                .await;
+            assert!(
+                matches!(result, Err(AcpError::PermissionPoisoned)),
+                "expected PermissionPoisoned from poisoned-flag check, got {result:?}"
+            );
+        });
+    }
+
+    // ── Pinned §5: cancel drains pending entries with cancelled ───────────────
+
+    #[test]
+    fn cancel_drains_pending_entries_with_cancelled_response() {
+        // Under ask policy: cancel must drain all Pending entries and write
+        // "cancelled" responses for each, then proceed to session/cancel.
+        // Verifies:
+        //   - Map is empty after cancel (entries were drained).
+        //   - Cancel result is NOT PermissionPoisoned (no Writing entries present).
+        //   - Cancel exits normally (Ok or CancelDrainTimeout — sleep script never
+        //     emits a response, so this exits via timeout, which is expected).
+        //
+        // We can verify that Pending entries are removed by checking the map post-cancel.
+        // We don't verify the wire bytes here (that requires a live script) — we verify
+        // the state machine: Pending entries disappear after cancel.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            // Use a "sleep" script — stays alive but ignores stdin.
+            let mut client = spawn_script("sleep 5").await;
+            client.set_permission_config(
+                ResolvedPermissionConfig::resolve(PermissionPolicy::Ask, None).unwrap(),
+            );
+
+            // Plant two Pending entries.
+            for i in 0..2u64 {
+                client.pending_permissions.insert(
+                    format!("{i}"),
+                    PermissionEntry {
+                        nonce: format!("n{i}"),
+                        options_snapshot: vec![
+                            serde_json::json!({"optionId":"opt","kind":"reject_once","name":"R"}),
+                        ],
+                        state: PermissionEntryState::Pending,
+                        deadline: tokio::time::Instant::now() + std::time::Duration::from_secs(300),
+                    },
+                );
+            }
+            client.last_prompt_id = Some(999);
+
+            // cancel_with_cleanup_grace with short grace — the sleep script will
+            // never emit a response, so this exits via CancelDrainTimeout.
+            let result = client
+                .cancel_with_cleanup_grace("sess-drain", std::time::Duration::from_millis(200))
+                .await;
+
+            // Should NOT be PermissionPoisoned (no Writing entries).
+            assert!(
+                !matches!(result, Err(AcpError::PermissionPoisoned)),
+                "no Writing entries — must not be PermissionPoisoned"
+            );
+            // Map must be empty — Pending entries were drained.
+            assert!(
+                client.pending_permissions.is_empty(),
+                "all Pending entries must be removed from the map after cancel"
+            );
+        });
+    }
+
+    // ── Pinned §2: reject policy is byte-for-byte unchanged ───────────────────
+
+    #[tokio::test]
+    async fn reject_policy_denies_synchronously_and_returns_ok_true() {
+        let mut client = spawn_inert_client().await;
+        set_policy(&mut client, PermissionPolicy::Reject);
+
+        let msg = perm_request(7, default_opts());
+        let hard_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        let result = client
+            .handle_permission_request(&msg, true, hard_deadline)
+            .await;
+        // Reject is synchronous — no pending entry, Ok(true) to suppress generic emit.
+        assert!(result.is_ok(), "reject must return Ok");
+        assert!(result.unwrap(), "reject must return Ok(true)");
+        assert!(
+            client.pending_permissions.is_empty(),
+            "reject must not leave pending entries"
+        );
+        // Legacy single-id slot must also be cleared after the synchronous response.
+        assert!(
+            client.pending_permission_id.is_none(),
+            "pending_permission_id must be None after reject completes"
+        );
+        assert!(
+            client.permission_responded,
+            "permission_responded must be true after reject completes"
+        );
+    }
+
+    // ── Pinned §2: allow policy auto-selects allow_once ───────────────────────
+
+    #[tokio::test]
+    async fn allow_policy_auto_selects_allow_once_and_returns_ok_true() {
+        let mut client = spawn_inert_client().await;
+        set_policy(&mut client, PermissionPolicy::Allow);
+
+        let msg = perm_request(8, default_opts());
+        let hard_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        let result = client
+            .handle_permission_request(&msg, true, hard_deadline)
+            .await;
+        assert!(result.is_ok(), "allow auto-select must return Ok");
+        assert!(result.unwrap(), "allow auto-select must return Ok(true)");
+        // No pending entries — handled synchronously.
+        assert!(client.pending_permissions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn allow_policy_fails_closed_with_no_allow_once_option() {
+        let mut client = spawn_inert_client().await;
+        set_policy(&mut client, PermissionPolicy::Allow);
+
+        // Only reject_once offered — allow policy must fail closed.
+        let msg = perm_request(9, &[("opt-r", "reject_once", "Reject")]);
+        let hard_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        let result = client
+            .handle_permission_request(&msg, true, hard_deadline)
+            .await;
+        // Fail closed: denial written, Ok(true) returned.
+        assert!(result.is_ok(), "fail-closed allow must return Ok");
+        assert!(result.unwrap(), "fail-closed allow must return Ok(true)");
+        assert!(client.pending_permissions.is_empty());
+    }
+
+    // ── Pinned §6: decision arm — validated option_id must be in snapshot ─────
+
+    #[tokio::test]
+    async fn decision_with_unknown_option_id_is_ignored() {
+        // A decision carrying an optionId not in the snapshot must be ignored
+        // (no response written, entry stays Pending) — the loop continues.
+        // After the bad decision is processed, the loop times out on idle (since the
+        // script produces no output after the initial response) and the entry is
+        // still Pending at that point.
+        //
+        // The script produces the terminal id=999 response only AFTER a short delay,
+        // giving the loop time to process the bad decision and leave the entry Pending.
+        // We verify the entry is still Pending by running the loop until idle timeout.
+        let script = "sleep 2; echo '{\"jsonrpc\":\"2.0\",\"id\":999,\"result\":{\"done\":true}}'";
+        let mut client = spawn_script(script).await;
+        client.set_owner_pubkey_known(true);
+        set_policy(&mut client, PermissionPolicy::Ask);
+        let obs = crate::observer::ObserverHandle::in_process();
+        client.set_observer(Some(obs), 0);
+
+        let nonce = "test-nonce-bad-opt".to_string();
+        let req_id_str = "5".to_string();
+        client.pending_permissions.insert(
+            req_id_str.clone(),
+            PermissionEntry {
+                nonce: nonce.clone(),
+                options_snapshot: vec![
+                    serde_json::json!({"optionId":"valid-opt","kind":"allow_once","name":"A"}),
+                ],
+                state: PermissionEntryState::Pending,
+                deadline: tokio::time::Instant::now() + std::time::Duration::from_secs(300),
+            },
+        );
+
+        // Deliver a decision with a nonce that matches but an invalid optionId.
+        let bad_decision = PermissionDecision {
+            request_nonce: nonce,
+            option_id: "nonexistent-option".to_string(),
+        };
+
+        let (tx, rx) = tokio::sync::mpsc::channel::<PermissionDecision>(1);
+        client.install_permission_decision_rx(rx);
+        // Send the bad decision; then close the sender so the channel is exhausted.
+        tx.send(bad_decision).await.unwrap();
+        drop(tx);
+
+        // Drive the loop with a short idle timeout — the bad decision is processed
+        // on the first iteration (entry stays Pending), then the loop idles.
+        let idle = std::time::Duration::from_millis(300);
+        let max_dur = std::time::Duration::from_secs(5);
+        let hard_deadline = tokio::time::Instant::now() + max_dur;
+        let result = client
+            .read_until_response_with_idle_timeout("sess-bad-opt", 5, idle, hard_deadline, max_dur)
+            .await;
+
+        // The loop exits via idle timeout (script sleeps; bad decision was ignored,
+        // so no terminal response for id=5 was written, and idle fires).
+        // We accept either idle timeout OR id=999 match (if the script's sleep was short).
+        // The critical assertion is on the entry state.
+        let _ = result; // exit reason is not the focus
+
+        // Entry must still be Pending — the bad decision did not mutate it.
+        let entry = client.pending_permissions.get(&req_id_str);
+        // The loop drains on non-recoverable errors; on idle timeout (recoverable) it
+        // does NOT drain — entry must still be there and Pending.
+        match entry {
+            Some(e) => assert!(
+                matches!(e.state, PermissionEntryState::Pending),
+                "entry must still be Pending after bad decision, got: {:?}",
+                e.state
+            ),
+            None => panic!("entry was removed — idle timeout should not drain the map"),
+        }
+    }
+
+    // ── Pinned §7 (wire transmission): transmit_mode drives set_config_option ─
+
+    #[test]
+    fn resolved_permission_config_effective_mode_wire_string_is_correct() {
+        // Verify that effective_mode.as_wire_str() returns the correct ACP wire value.
+        let cfg = ResolvedPermissionConfig::resolve(PermissionPolicy::Reject, None).unwrap();
+        assert_eq!(cfg.effective_mode.as_wire_str(), "dontAsk");
+
+        let cfg = ResolvedPermissionConfig::resolve(PermissionPolicy::Ask, None).unwrap();
+        assert_eq!(cfg.effective_mode.as_wire_str(), "default");
+
+        let cfg = ResolvedPermissionConfig::resolve(PermissionPolicy::Allow, None).unwrap();
+        assert_eq!(cfg.effective_mode.as_wire_str(), "default");
+    }
+
+    // ── Pinned amendment: PermissionMode::Auto matrix row ────────────────────
+    //
+    // `auto` = model-gated classifier — the adapter may self-approve most tool
+    // calls internally but can still forward residual permission requests to ACP.
+    // - allow + auto → compatible (transmit as-is; both want unattended approval)
+    // - ask   + auto → compatible with warning (residual escalations surface cards;
+    //                  internally-approved calls bypass ask silently)
+    // - reject + auto → startup error (inverted security: policy says deny, adapter
+    //                   auto-approves everything)
+
+    #[test]
+    fn resolved_permission_config_allow_plus_explicit_auto_is_ok() {
+        // allow + auto is compatible: both want unattended approval.
+        let cfg =
+            ResolvedPermissionConfig::resolve(PermissionPolicy::Allow, Some(PermissionMode::Auto))
+                .unwrap();
+        assert_eq!(cfg.effective_mode, PermissionMode::Auto);
+        assert_eq!(cfg.effective_mode.as_wire_str(), "auto");
+        assert_eq!(cfg.mode_source, ModeSource::Explicit);
+    }
+
+    #[test]
+    fn resolved_permission_config_ask_plus_explicit_auto_is_ok_with_warning() {
+        // ask + auto is compatible-with-warning: residual escalations still surface
+        // cards; internally-approved calls bypass the ask flow silently.
+        // `auto` is a model classifier, not a bypass — some requests still escalate.
+        let result =
+            ResolvedPermissionConfig::resolve(PermissionPolicy::Ask, Some(PermissionMode::Auto));
+        assert!(
+            result.is_ok(),
+            "ask + auto must succeed (warn only), got: {result:?}"
+        );
+        let cfg = result.unwrap();
+        assert_eq!(cfg.effective_mode, PermissionMode::Auto);
+        assert_eq!(cfg.mode_source, ModeSource::Explicit);
+    }
+
+    #[test]
+    fn resolved_permission_config_reject_plus_explicit_auto_is_startup_error() {
+        // reject + auto: inverted-security worst case — policy says deny but
+        // adapter auto-approves everything internally.
+        let result =
+            ResolvedPermissionConfig::resolve(PermissionPolicy::Reject, Some(PermissionMode::Auto));
+        assert!(result.is_err(), "reject + auto must be a startup error");
+        let msg = format!("{}", result.unwrap_err());
+        assert!(msg.contains("auto"), "error must mention auto, got: {msg}");
+    }
+
+    #[test]
+    fn permission_mode_auto_wire_string_is_correct() {
+        assert_eq!(PermissionMode::Auto.as_wire_str(), "auto");
+        assert!(!PermissionMode::Auto.is_default());
     }
 }

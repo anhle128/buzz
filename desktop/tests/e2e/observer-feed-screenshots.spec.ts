@@ -75,6 +75,11 @@ async function seedObserverEvents(
     sessionId: string | null;
     turnId: string | null;
     payload: unknown;
+    authorization?: {
+      requestNonce: string;
+      actionable: boolean;
+      reason?: string;
+    };
   }>,
 ) {
   await page.evaluate(
@@ -282,6 +287,72 @@ test.describe("observer feed screenshots", () => {
     await settleAnimations(feedPanel);
     await feedPanel.screenshot({
       path: `${SHOTS}/03-permission-approved.png`,
+    });
+  });
+
+  test("permission request stays actionable for a human decision", async ({
+    page,
+  }) => {
+    await installMockBridge(page, { managedAgents: MANAGED_AGENTS });
+    const feedPanel = await openObserverFeedPanel(page, OBSERVER_AGENT_PUBKEY);
+
+    await seedObserverEvents(page, OBSERVER_AGENT_PUBKEY, [
+      {
+        seq: 1,
+        timestamp: NOW,
+        kind: "acp_read",
+        agentIndex: 0,
+        channelId: CHANNEL_ID,
+        sessionId: "session-001",
+        turnId: "turn-001",
+        payload: {
+          jsonrpc: "2.0",
+          id: "permission-ask-1",
+          method: "session/request_permission",
+          params: {
+            title: "Write publishing plan",
+            options: [
+              { optionId: "allow_once", kind: "allow_once", name: "Allow" },
+              { optionId: "reject_once", kind: "reject_once", name: "Deny" },
+            ],
+          },
+        },
+        authorization: {
+          requestNonce: "permission-nonce-1",
+          actionable: true,
+          reason: "Waiting for a human decision",
+        },
+      },
+    ]);
+
+    await expect(
+      feedPanel.getByText("Waiting for a human decision"),
+    ).toBeVisible();
+    const allow = feedPanel.getByTestId("permission-decision-allow_once");
+    await expect(allow).toHaveText("Allow");
+    await expect(
+      feedPanel.getByTestId("permission-decision-reject_once"),
+    ).toHaveText("Deny");
+
+    await allow.click();
+    await page.waitForFunction(() =>
+      window.__BUZZ_E2E_COMMAND_LOG__?.some(
+        (entry) => entry.command === "build_observer_control_event",
+      ),
+    );
+    const command = await page.evaluate(() =>
+      window.__BUZZ_E2E_COMMAND_LOG__?.find(
+        (entry) => entry.command === "build_observer_control_event",
+      ),
+    );
+    expect(command?.payload).toEqual({
+      agentPubkey: OBSERVER_AGENT_PUBKEY,
+      payload: {
+        type: "permission_decision",
+        channelId: CHANNEL_ID,
+        requestNonce: "permission-nonce-1",
+        optionId: "allow_once",
+      },
     });
   });
 
