@@ -1692,6 +1692,16 @@ pub enum MediaCmd {
         #[arg(short, long)]
         output: Option<String>,
     },
+    /// Create a stable public URL for an external media fetcher
+    Publish {
+        /// Relay media URL or sha256[.ext] path segment
+        input: String,
+    },
+    /// Revoke a public media URL created by `media publish`
+    Unpublish {
+        /// Share event ID returned by `media publish`
+        share_event: String,
+    },
 }
 
 /// Subcommands for `buzz mem`.
@@ -2267,7 +2277,7 @@ mod tests {
             names(&cmd, "issues"),
             vec!["create", "get", "list", "status"]
         );
-        assert_eq!(names(&cmd, "media"), vec!["get"]);
+        assert_eq!(names(&cmd, "media"), vec!["get", "publish", "unpublish"]);
         assert_eq!(names(&cmd, "upload"), vec!["file"]);
         assert_eq!(names(&cmd, "pack"), vec!["inspect", "validate"]);
         assert_eq!(
@@ -2295,7 +2305,7 @@ mod tests {
             ("emoji", 5),
             ("feed", 1),
             ("issues", 4),
-            ("media", 1),
+            ("media", 3),
             ("messages", 8),
             ("pack", 2),
             ("patches", 4),
