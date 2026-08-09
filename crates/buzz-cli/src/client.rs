@@ -267,7 +267,7 @@ fn is_safe_media_ext(value: &str) -> bool {
         && value.chars().all(|c| matches!(c, 'a'..='z' | '0'..='9'))
 }
 
-fn media_url_from_input(relay_url: &str, input: &str) -> Result<String, CliError> {
+pub(crate) fn media_url_from_input(relay_url: &str, input: &str) -> Result<String, CliError> {
     let input = input.trim();
     if input.starts_with("http://") || input.starts_with("https://") {
         let parsed = url::Url::parse(input)
@@ -1250,6 +1250,34 @@ impl BuzzClient {
                     return Err(CliError::Relay { status, body });
                 }
                 resp.bytes().await.map_err(CliError::Network)
+            }
+        })
+        .await
+    }
+
+    /// Verify that a Blossom media blob exists using BUD-01 `t=get` auth.
+    pub async fn head_media(&self, input: &str) -> Result<(), CliError> {
+        let url = media_url_from_input(&self.relay_url, input)?;
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|e| CliError::Other(format!("http client init failed: {e}")))?;
+        self.with_retry_body(|| {
+            let url = url.clone();
+            let client = client.clone();
+            async move {
+                let auth_header = sign_blossom_get(&self.keys, &url)?;
+                let resp = self
+                    .with_auth_tag(client.head(&url).header("Authorization", auth_header))
+                    .send()
+                    .await?;
+                if !resp.status().is_success() {
+                    let status = resp.status().as_u16();
+                    let body = resp.text().await.unwrap_or_default();
+                    return Err(CliError::Relay { status, body });
+                }
+                Ok(())
             }
         })
         .await

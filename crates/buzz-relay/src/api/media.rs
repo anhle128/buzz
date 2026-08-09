@@ -11,14 +11,14 @@ use std::time::{Duration, Instant};
 
 use axum::http::header;
 use axum::{
-    extract::{FromRequestParts, Path, State},
-    http::{request::Parts, HeaderMap, StatusCode},
+    extract::{FromRequestParts, Path, Query, State},
+    http::{request::Parts, HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
 use base64::Engine;
 use buzz_audit::{AuditAction, NewAuditEntry};
-use buzz_core::tenant::TenantContext;
+use buzz_core::{kind::KIND_FILE_METADATA, tenant::TenantContext};
 use buzz_media::{BlobDescriptor, MediaError, UploadAttribution, UploadNetworkInfo};
 
 use crate::state::AppState;
@@ -61,7 +61,17 @@ fn upload_route_mode(path: &str) -> Result<UploadRouteMode, MediaError> {
 
 struct MediaReadAuth {
     tenant: TenantContext,
+    public_share: bool,
 }
+
+/// Optional query authorization for an explicitly published media share.
+#[derive(Default, serde::Deserialize)]
+pub struct MediaReadQuery {
+    share: Option<String>,
+}
+
+const PUBLIC_SHARE_MARKER: &str = "buzz-public";
+const PUBLIC_SHARE_CACHE_CONTROL: &str = "public, max-age=300";
 
 const MEDIA_UPLOAD_RATE_WINDOW: Duration = Duration::from_secs(60);
 
@@ -490,11 +500,23 @@ async fn authenticate_media_read(
     state: &AppState,
     headers: &HeaderMap,
     sha256_ext: &str,
+    share_event: Option<&str>,
 ) -> Result<MediaReadAuth, MediaError> {
     let tenant = bind_media_read_tenant(state, headers).await?;
 
     if !state.config.require_media_get_auth {
-        return Ok(MediaReadAuth { tenant });
+        return Ok(MediaReadAuth {
+            tenant,
+            public_share: false,
+        });
+    }
+
+    if let Some(share_event) = share_event {
+        authorize_public_share(state, &tenant, share_event, sha256_ext).await?;
+        return Ok(MediaReadAuth {
+            tenant,
+            public_share: true,
+        });
     }
 
     let auth_event = extract_blossom_auth(headers)?;
@@ -511,7 +533,55 @@ async fn authenticate_media_read(
     .await
     .map_err(|_| MediaError::RelayMembershipRequired)?;
 
-    Ok(MediaReadAuth { tenant })
+    Ok(MediaReadAuth {
+        tenant,
+        public_share: false,
+    })
+}
+
+fn public_share_event_allows(event: &nostr::Event, sha256: &str) -> bool {
+    event.kind == nostr::Kind::Custom(KIND_FILE_METADATA as u16)
+        && event.tags.iter().any(|tag| tag.as_slice() == ["x", sha256])
+        && event
+            .tags
+            .iter()
+            .any(|tag| tag.as_slice() == ["t", PUBLIC_SHARE_MARKER])
+}
+
+async fn authorize_public_share(
+    state: &AppState,
+    tenant: &TenantContext,
+    share_event: &str,
+    sha256_ext: &str,
+) -> Result<(), MediaError> {
+    if share_event.len() != 64
+        || !share_event
+            .chars()
+            .all(|c| matches!(c, '0'..='9' | 'a'..='f'))
+    {
+        return Err(MediaError::NotFound);
+    }
+    let event_id = hex::decode(share_event).map_err(|_| MediaError::NotFound)?;
+    let stored = state
+        .db
+        .get_event_by_id(tenant.community(), &event_id)
+        .await
+        .map_err(|_| MediaError::Internal)?
+        .ok_or(MediaError::NotFound)?;
+    let sha256 = sha256_ext.split('.').next().unwrap_or(sha256_ext);
+    if !public_share_event_allows(&stored.event, sha256) {
+        return Err(MediaError::NotFound);
+    }
+    Ok(())
+}
+
+fn apply_public_share_cache(response: &mut Response, public_share: bool) {
+    if public_share {
+        response.headers_mut().insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static(PUBLIC_SHARE_CACHE_CONTROL),
+        );
+    }
 }
 
 fn blob_cache_control(require_auth: bool) -> &'static str {
@@ -604,11 +674,16 @@ const MAX_RANGE_CHUNK: u64 = 16 * 1024 * 1024;
 pub async fn get_blob(
     State(state): State<Arc<AppState>>,
     Path(sha256_ext): Path<String>,
+    Query(query): Query<MediaReadQuery>,
     req_headers: HeaderMap,
 ) -> Result<Response, MediaError> {
     validate_media_path(&sha256_ext)?;
-    let media_auth = authenticate_media_read(&state, &req_headers, &sha256_ext).await?;
-    serve_blob_for_tenant(&state, &media_auth.tenant, &sha256_ext, &req_headers).await
+    let media_auth =
+        authenticate_media_read(&state, &req_headers, &sha256_ext, query.share.as_deref()).await?;
+    let mut response =
+        serve_blob_for_tenant(&state, &media_auth.tenant, &sha256_ext, &req_headers).await?;
+    apply_public_share_cache(&mut response, media_auth.public_share);
+    Ok(response)
 }
 
 /// Serve a validated blob from an already-authorized tenant context.
@@ -799,11 +874,14 @@ pub async fn head_blob(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(sha256_ext): Path<String>,
+    Query(query): Query<MediaReadQuery>,
 ) -> Result<Response, MediaError> {
     validate_media_path(&sha256_ext)?;
     let require_media_get_auth = state.config.require_media_get_auth;
-    let media_auth = authenticate_media_read(&state, &headers, &sha256_ext).await?;
-    let tenant = media_auth.tenant;
+    let MediaReadAuth {
+        tenant,
+        public_share,
+    } = authenticate_media_read(&state, &headers, &sha256_ext, query.share.as_deref()).await?;
     let cache_control = blob_cache_control(require_media_get_auth);
 
     // Sidecar gate FIRST — reject before any blob I/O.
@@ -839,7 +917,7 @@ pub async fn head_blob(
     match state.media_storage.head_with_metadata(&key).await? {
         Some(meta) => {
             let size_str = meta.size.to_string();
-            Ok((
+            let mut response = (
                 StatusCode::OK,
                 [
                     ("content-type", content_type.as_str()),
@@ -848,7 +926,9 @@ pub async fn head_blob(
                     ("cache-control", cache_control),
                 ],
             )
-                .into_response())
+                .into_response();
+            apply_public_share_cache(&mut response, public_share);
+            Ok(response)
         }
         None => Ok(StatusCode::NOT_FOUND.into_response()),
     }
@@ -1027,6 +1107,140 @@ mod tests {
             tags.push(Tag::parse(["x", sha256]).expect("x tag"));
         }
         tags
+    }
+
+    fn public_share_event(hash: &str, marker: &str) -> nostr::Event {
+        EventBuilder::new(Kind::from(1063), "Public Buzz media share")
+            .tags([
+                Tag::parse(["x", hash]).expect("x tag"),
+                Tag::parse(["t", marker]).expect("t tag"),
+            ])
+            .sign_with_keys(&Keys::generate())
+            .expect("sign share")
+    }
+
+    #[test]
+    fn public_share_requires_nip94_marker_and_matching_hash() {
+        let valid = public_share_event(VALID_HASH, "buzz-public");
+        assert!(public_share_event_allows(&valid, VALID_HASH));
+
+        let wrong_hash = public_share_event(&"f".repeat(64), "buzz-public");
+        assert!(!public_share_event_allows(&wrong_hash, VALID_HASH));
+
+        let wrong_marker = public_share_event(VALID_HASH, "private");
+        assert!(!public_share_event_allows(&wrong_marker, VALID_HASH));
+
+        let wrong_kind = EventBuilder::new(Kind::TextNote, "Public Buzz media share")
+            .tags([
+                Tag::parse(["x", VALID_HASH]).expect("x tag"),
+                Tag::parse(["t", "buzz-public"]).expect("t tag"),
+            ])
+            .sign_with_keys(&Keys::generate())
+            .expect("sign note");
+        assert!(!public_share_event_allows(&wrong_kind, VALID_HASH));
+    }
+
+    #[tokio::test]
+    async fn public_share_allows_anonymous_get_and_head_until_deleted() {
+        let state = test_state_with_media_get_auth(true).await;
+        let tenant = bind_media_read_tenant(
+            &state,
+            &HeaderMap::from_iter([(header::HOST, HeaderValue::from_static("relay.example"))]),
+        )
+        .await
+        .expect("bind tenant");
+        let hash = Keys::generate().public_key().to_hex();
+        let path = format!("{hash}.jpg");
+        let share = public_share_event(&hash, "buzz-public");
+        state
+            .db
+            .insert_event(tenant.community(), &share, None)
+            .await
+            .expect("insert share event");
+        state
+            .media_storage
+            .put(&path, b"public-share-test", "image/jpeg")
+            .await
+            .expect("put media");
+        state
+            .media_storage
+            .put_sidecar(
+                &tenant,
+                &hash,
+                &buzz_media::BlobMeta {
+                    ext: "jpg".into(),
+                    mime_type: "image/jpeg".into(),
+                    size: 17,
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("put sidecar");
+
+        let router = axum::Router::new()
+            .route(
+                "/media/{sha256_ext}",
+                axum::routing::get(get_blob).head(head_blob),
+            )
+            .with_state(state.clone());
+        let request = |method: &str, query: &str| {
+            Request::builder()
+                .method(method)
+                .uri(format!("/media/{path}{query}"))
+                .header(header::HOST, "relay.example")
+                .body(Body::empty())
+                .expect("request")
+        };
+
+        let private = router
+            .clone()
+            .oneshot(request("GET", ""))
+            .await
+            .expect("private response");
+        assert_eq!(private.status(), StatusCode::UNAUTHORIZED);
+
+        for method in ["GET", "HEAD"] {
+            let response = router
+                .clone()
+                .oneshot(request(method, &format!("?share={}", share.id.to_hex())))
+                .await
+                .expect("public response");
+            assert_eq!(response.status(), StatusCode::OK, "{method}");
+            assert_eq!(
+                response.headers().get(header::CACHE_CONTROL),
+                Some(&HeaderValue::from_static(PUBLIC_SHARE_CACHE_CONTROL)),
+                "{method}"
+            );
+        }
+
+        let mismatched = router
+            .clone()
+            .oneshot(request("GET", &format!("?share={}", "f".repeat(64))))
+            .await
+            .expect("mismatched response");
+        assert_eq!(mismatched.status(), StatusCode::NOT_FOUND);
+
+        state
+            .db
+            .soft_delete_event(tenant.community(), share.id.as_bytes())
+            .await
+            .expect("delete share event");
+        let revoked = router
+            .oneshot(request("GET", &format!("?share={}", share.id.to_hex())))
+            .await
+            .expect("revoked response");
+        assert_eq!(revoked.status(), StatusCode::NOT_FOUND);
+
+        state
+            .media_storage
+            .delete(&path)
+            .await
+            .expect("delete media");
+        state
+            .media_storage
+            .delete(&buzz_media::MediaStorage::ctx_sidecar_key(&tenant, &hash))
+            .await
+            .expect("delete sidecar");
     }
 
     fn media_request(method: &str, auth: Option<String>) -> Request<Body> {
