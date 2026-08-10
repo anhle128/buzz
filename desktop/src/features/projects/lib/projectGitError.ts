@@ -9,6 +9,7 @@ function errorText(error: unknown) {
 }
 
 function isGitHubUrl(cloneUrl: string | null | undefined) {
+  if (cloneUrl?.startsWith("git@github.com:")) return true;
   try {
     return new URL(cloneUrl ?? "").hostname.toLowerCase() === "github.com";
   } catch {

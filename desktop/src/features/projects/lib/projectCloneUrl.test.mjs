@@ -76,6 +76,13 @@ test("projectRepoHost identifies an external repository by host", () => {
     projectRepoHost("https://github.com/block/buzz.git", ORIGIN),
     { kind: "external", host: "github.com" },
   );
+  assert.deepEqual(
+    projectRepoHost(
+      "git@github.com:oceanlabs-holding/x10.oh.agentic-os-plan.git",
+      ORIGIN,
+    ),
+    { kind: "external", host: "github.com" },
+  );
 });
 
 test("projectRepoHost treats a non-repository relay path as external", () => {

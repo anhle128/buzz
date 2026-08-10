@@ -25,29 +25,42 @@ pub(crate) struct GitHubRepoRef {
 
 impl GitHubRepoRef {
     pub(crate) fn is_github_host(raw: &str) -> bool {
-        Url::parse(raw)
-            .ok()
-            .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
-            .is_some_and(|host| host == "github.com")
+        raw.starts_with("git@github.com:")
+            || Url::parse(raw)
+                .ok()
+                .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
+                .is_some_and(|host| host == "github.com")
     }
 
     pub(crate) fn parse(raw: &str) -> Result<Self, String> {
         if raw.chars().any(char::is_whitespace) {
             return Err("GitHub repository URL must not contain whitespace.".to_string());
         }
-        if !raw.starts_with("https://github.com/") {
-            return Err("GitHub repository URL must use https://github.com/.".to_string());
-        }
+        let normalized;
+        let raw = if let Some(path) = raw.strip_prefix("git@github.com:") {
+            normalized = format!("ssh://git@github.com/{path}");
+            normalized.as_str()
+        } else if raw.starts_with("https://github.com/") || raw.starts_with("ssh://git@github.com/")
+        {
+            raw
+        } else {
+            return Err(
+                "GitHub repository URL must use a plain github.com HTTPS or SSH URL.".to_string(),
+            );
+        };
         let url = Url::parse(raw).map_err(|_| "Invalid GitHub repository URL.".to_string())?;
-        if url.scheme() != "https"
+        let https = url.scheme() == "https" && url.username().is_empty();
+        let ssh = url.scheme() == "ssh" && url.username() == "git";
+        if !(https || ssh)
             || url.host_str() != Some("github.com")
             || url.port().is_some()
-            || !url.username().is_empty()
             || url.password().is_some()
             || url.query().is_some()
             || url.fragment().is_some()
         {
-            return Err("GitHub repository URL must be a plain github.com HTTPS URL.".to_string());
+            return Err(
+                "GitHub repository URL must be a plain github.com HTTPS or SSH URL.".to_string(),
+            );
         }
 
         let segments = url

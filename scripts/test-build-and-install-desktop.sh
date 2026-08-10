@@ -7,6 +7,8 @@ set -euo pipefail
 }
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+grep -Fq 'pnpm install --frozen-lockfile --no-optimistic-repeat-install' \
+  "$repo_root/scripts/build-and-install-desktop.sh"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 

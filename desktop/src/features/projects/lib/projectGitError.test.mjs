@@ -19,6 +19,16 @@ test("explains unsupported authenticated GitHub clones without exposing git outp
   );
 });
 
+test("recognizes authentication errors from GitHub SCP clone URLs", () => {
+  assert.equal(
+    projectCloneErrorPresentation(
+      new Error("Permission denied (publickey)"),
+      "git@github.com:oceanlabs-holding/x10.oh.agentic-os-plan.git",
+    ).title,
+    "Repository access required",
+  );
+});
+
 test("presents missing and network failures clearly", () => {
   assert.equal(
     projectCloneErrorPresentation(new Error("Repository not found")).title,

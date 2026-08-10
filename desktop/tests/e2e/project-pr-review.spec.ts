@@ -1599,6 +1599,30 @@ test("project without a checkout offers fetch feedback and dropdown cloning", as
   expect(commands).toContain("clone_project_repository");
 });
 
+test("GitHub SCP clone URLs offer local cloning", async ({ page }) => {
+  const cloneUrl =
+    "git@github.com:oceanlabs-holding/x10.oh.agentic-os-plan.git";
+  await enableProjectsFeature(page);
+  await page.addInitScript((url) => {
+    window.__BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__ = url;
+  }, cloneUrl);
+  await installMockBridge(page);
+  await openBuzzProject(page);
+
+  await expect(page.getByText("Code hosted on github.com")).toBeVisible();
+  await page.getByRole("button", { name: "Clone locally" }).click();
+  await expect(page.getByText("Cloned repository.")).toBeVisible();
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        window.__BUZZ_E2E_COMMAND_PAYLOADS__?.find(
+          (entry) => entry.command === "clone_project_repository",
+        ),
+      ),
+    )
+    .toMatchObject({ payload: { cloneUrl } });
+});
+
 test("project branches can be created from the selected remote branch", async ({
   page,
 }) => {

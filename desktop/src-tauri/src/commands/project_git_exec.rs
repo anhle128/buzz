@@ -309,21 +309,7 @@ pub(crate) fn validate_clone_url(clone_url: &str) -> Result<(), String> {
 }
 
 fn validate_github_clone_url(clone_url: &str) -> Result<(), String> {
-    if GitHubRepoRef::parse(clone_url).is_ok() {
-        return Ok(());
-    }
-    let parsed = Url::parse(clone_url).map_err(|error| format!("invalid clone URL: {error}"))?;
-    if parsed.scheme() != "ssh"
-        || parsed.username() != "git"
-        || parsed.host_str() != Some("github.com")
-        || parsed.port().is_some()
-        || parsed.password().is_some()
-        || parsed.query().is_some()
-        || parsed.fragment().is_some()
-    {
-        return Err("GitHub clone URL must use https://github.com/owner/repository or ssh://git@github.com/owner/repository".into());
-    }
-    GitHubRepoRef::parse(&format!("https://github.com{}", parsed.path())).map(|_| ())
+    GitHubRepoRef::parse(clone_url).map(|_| ())
 }
 
 pub(crate) fn validate_local_clone_url(clone_url: &str) -> Result<(), String> {
@@ -499,17 +485,18 @@ mod tests {
     }
 
     #[test]
-    fn local_clone_url_allows_github_https_and_url_ssh_urls() {
+    fn local_clone_url_allows_github_https_and_ssh_urls() {
         assert!(validate_local_clone_url("https://github.com/block/buzz").is_ok());
         assert!(validate_local_clone_url("https://github.com/block/buzz.git").is_ok());
         assert!(validate_local_clone_url("ssh://git@github.com/block/buzz").is_ok());
         assert!(validate_local_clone_url("ssh://git@github.com/block/buzz.git").is_ok());
+        assert!(validate_local_clone_url("git@github.com:block/buzz.git").is_ok());
         assert!(validate_local_clone_url("http://github.com/block/buzz").is_err());
         assert!(validate_local_clone_url("https://github.com/block/buzz/issues").is_err());
         assert!(validate_local_clone_url("https://user@github.com/block/buzz").is_err());
         assert!(validate_local_clone_url("ssh://github.com/block/buzz").is_err());
         assert!(validate_local_clone_url("ssh://git@github.com/block/buzz/issues").is_err());
-        assert!(validate_local_clone_url("git@github.com:block/buzz.git").is_err());
+        assert!(validate_local_clone_url("git@github.com:block/buzz/issues").is_err());
         assert!(validate_local_clone_url("https://github.com.evil.test/block/buzz").is_err());
         assert!(validate_local_clone_url("https://gitlab.com/block/buzz").is_err());
     }

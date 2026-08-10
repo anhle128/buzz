@@ -890,6 +890,16 @@ fn github_repo_parser_accepts_only_strict_repository_urls() {
             "Ocean-Labs",
             "buzz_desktop",
         ),
+        (
+            "ssh://git@github.com/oceanlabs-holding/x10.oh.agentic-os-plan.git",
+            "oceanlabs-holding",
+            "x10.oh.agentic-os-plan",
+        ),
+        (
+            "git@github.com:oceanlabs-holding/x10.oh.agentic-os-plan.git",
+            "oceanlabs-holding",
+            "x10.oh.agentic-os-plan",
+        ),
     ];
     for (raw, owner, repo) in accepted {
         let parsed = GitHubRepoRef::parse(raw).unwrap_or_else(|error| panic!("{raw}: {error}"));
@@ -918,6 +928,9 @@ fn github_repo_parser_accepts_only_strict_repository_urls() {
 fn github_repo_host_detection_preserves_malformed_github_intent() {
     assert!(GitHubRepoRef::is_github_host(
         "https://github.com/anhle128/buzz?tab=readme"
+    ));
+    assert!(GitHubRepoRef::is_github_host(
+        "git@github.com:oceanlabs-holding/x10.oh.agentic-os-plan.git"
     ));
 }
 

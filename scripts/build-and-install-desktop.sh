@@ -108,7 +108,7 @@ build_app() {
   cd "$repo_root"
   # shellcheck source=/dev/null
   source "$repo_root/bin/activate-hermit"
-  pnpm install --frozen-lockfile
+  pnpm install --frozen-lockfile --no-optimistic-repeat-install
   cargo build --release \
     -p buzz-acp \
     -p buzz-agent \

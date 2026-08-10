@@ -17,7 +17,11 @@ export function projectRepoHost(
   if (!cloneUrl || !relayOrigin) return { kind: "unresolved" };
 
   try {
-    const clone = new URL(cloneUrl);
+    const clone = new URL(
+      cloneUrl.startsWith("git@github.com:")
+        ? cloneUrl.replace("git@github.com:", "ssh://git@github.com/")
+        : cloneUrl,
+    );
     const relay = new URL(relayOrigin);
     const isBuzzPath = /^\/git\/[0-9a-f]{64}\/[^/]+\/?$/i.test(clone.pathname);
 
