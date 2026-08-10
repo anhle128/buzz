@@ -12,7 +12,7 @@ import {
 import { getIdentity } from "@/shared/api/tauriIdentity";
 import { clearTrayAgentActivity } from "@/shared/api/trayMenu";
 import { getOverrides } from "@/shared/features";
-import { resetMediaCaches } from "@/shared/lib/mediaUrl";
+import { resetMediaCaches, setLegacyRelayUrls } from "@/shared/lib/mediaUrl";
 import { resetLinkPreviewTitleCache } from "@/shared/lib/useResolvedLinkPreviews";
 import { clearSearchHitEventCache } from "@/app/navigation/searchHitEventCache";
 import {
@@ -264,6 +264,7 @@ export function useCommunityInit(
         // leaving that stale value makes authenticated relay media look external
         // and bypass the localhost proxy.
         resetMediaCaches();
+        setLegacyRelayUrls(activeCommunity.legacyRelayUrls ?? []);
 
         try {
           const identity = await getIdentity();
@@ -298,6 +299,7 @@ export function useCommunityInit(
   }, [
     activeCommunity?.id,
     activeCommunity?.relayUrl,
+    activeCommunity?.legacyRelayUrls,
     activeCommunity?.token,
     activeCommunity?.reposDir,
     isSharedIdentity,

@@ -6,6 +6,8 @@ import {
   getCachedRelayOrigin,
   mediaProxyUrl,
   resetMediaCaches,
+  rewriteRelayUrl,
+  setLegacyRelayUrls,
   subscribeRelayOrigin,
   withDeadline,
 } from "./mediaUrl.ts";
@@ -372,4 +374,51 @@ test("rewriteRelayUrl: still passes external Blossom URLs through unchanged", as
   } finally {
     globalThis.window = previousWindow;
   }
+});
+
+test("rewriteRelayUrl: migrated relay media uses the active relay proxy", async () => {
+  const previousWindow = globalThis.window;
+
+  globalThis.window = {
+    __TAURI_INTERNALS__: {
+      invoke(command) {
+        if (command === "get_media_proxy_port") return Promise.resolve(54321);
+        if (command === "get_relay_http_url") {
+          return Promise.resolve("https://new-relay.example");
+        }
+        return Promise.reject(new Error(`Unexpected command: ${command}`));
+      },
+    },
+  };
+
+  try {
+    const mediaUrl = await import(`./mediaUrl.ts?legacy=${Date.now()}`);
+    mediaUrl.setLegacyRelayUrls(["wss://old-relay.example"]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.equal(
+      mediaUrl.rewriteRelayUrl(`https://old-relay.example/media/${HASH}.png`),
+      `http://127.0.0.1:54321/media/${HASH}.png`,
+    );
+    assert.equal(
+      mediaUrl.rewriteRelayUrl(`https://old-relay.example/media/${HASH}.thumb`),
+      `http://127.0.0.1:54321/media/${HASH}.thumb.jpg`,
+    );
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
+test("resetMediaCaches: clears migrated relay origins", () => {
+  resetMediaCaches();
+  setLegacyRelayUrls(["wss://old-relay.example"]);
+  resetMediaCaches();
+  beginRelayOriginFetch()("https://new-relay.example");
+  const legacyUrl = `https://old-relay.example/media/${HASH}.png`;
+  assert.equal(
+    // The port is deliberately unresolved; a retained alias would rewrite to
+    // buzz-media://, while a cleared alias leaves the external URL untouched.
+    rewriteRelayUrl(legacyUrl),
+    legacyUrl,
+  );
 });

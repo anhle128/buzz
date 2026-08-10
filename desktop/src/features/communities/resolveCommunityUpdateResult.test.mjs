@@ -5,7 +5,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { resolveCommunityUpdateResult } from "./useCommunities.tsx";
+import {
+  mergeCommunityUpdate,
+  resolveCommunityUpdateResult,
+} from "./useCommunities.tsx";
 
 const COMMUNITIES = [
   {
@@ -104,4 +107,18 @@ test("resolveCommunityUpdateResult_same_relay_url_is_not_duplicate_of_self", () 
     relayUrl: "wss://relay-a.example.com",
   });
   assert.deepEqual(result, { kind: "unchanged" });
+});
+
+test("mergeCommunityUpdate remembers each previous relay URL once", () => {
+  const first = mergeCommunityUpdate(COMMUNITIES[0], {
+    relayUrl: "wss://relay-c.example.com",
+  });
+  const second = mergeCommunityUpdate(first, {
+    relayUrl: "wss://relay-d.example.com",
+  });
+
+  assert.deepEqual(second.legacyRelayUrls, [
+    "wss://relay-a.example.com",
+    "wss://relay-c.example.com",
+  ]);
 });

@@ -77,6 +77,31 @@ export function resolveCommunityUpdateResult(
   return { kind: "updated", requiresReinit: backendFieldsChanged };
 }
 
+/** Merge an edit while retaining old relay URLs for migrated media. */
+export function mergeCommunityUpdate(
+  community: Community,
+  updates: Partial<
+    Pick<Community, "name" | "relayUrl" | "token" | "pubkey" | "reposDir">
+  >,
+): Community {
+  const relayChanged =
+    updates.relayUrl !== undefined && updates.relayUrl !== community.relayUrl;
+  return {
+    ...community,
+    ...updates,
+    ...(relayChanged
+      ? {
+          legacyRelayUrls: [
+            ...new Set([
+              ...(community.legacyRelayUrls ?? []),
+              community.relayUrl,
+            ]),
+          ],
+        }
+      : {}),
+  };
+}
+
 /**
  * Permute `communities` so that its order matches `orderedIds`.
  *
@@ -288,7 +313,7 @@ function useCommunitiesInternal(): UseCommunitiesReturn {
       if (result.kind === "updated") {
         setCommunitiesState((prev) => {
           const next = prev.map((w) =>
-            w.id === id ? { ...w, ...updates } : w,
+            w.id === id ? mergeCommunityUpdate(w, updates) : w,
           );
           saveCommunities(next);
           return next;

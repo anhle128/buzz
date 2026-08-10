@@ -18,9 +18,9 @@
 import { invoke } from "@tauri-apps/api/core";
 
 // Matches: https://anything.com/media/{64-hex}.{ext}
-// Also matches thumbnails: /media/{64-hex}.thumb.jpg
+// Also matches current and legacy thumbnails: `.thumb.jpg` and `.thumb`.
 const RELAY_MEDIA_RE =
-  /^(?:https?:\/\/[^/]+)\/media\/([\da-f]{64}(?:\.thumb)?\.(?:jpg|png|gif|webp|mp4|webm|mov)(?:\?.*)?)$/;
+  /^(?:https?:\/\/[^/]+)\/media\/([\da-f]{64}(?:(?:\.thumb(?:\.jpg)?)|\.(?:jpg|png|gif|webp|mp4|webm|mov))(?:\?.*)?)$/;
 
 /** Cached proxy port — fetched once from the Tauri backend. */
 let cachedPort: number | null = null;
@@ -31,6 +31,9 @@ let portPromise: Promise<number | null> | null = null;
  * canonicalized via {@link canonicalOrigin} so comparisons are stable.
  */
 let cachedRelayOrigin: string | null = null;
+
+/** Previous relay origins whose media blobs were migrated to the active relay. */
+let legacyRelayOrigins = new Set<string>();
 
 /**
  * Canonicalize a URL to its origin with a lowercased scheme/host.
@@ -50,6 +53,22 @@ function canonicalOrigin(url: string): string | null {
   } catch {
     return null;
   }
+}
+
+/** Configure previous relay URLs that should resolve through the active relay. */
+export function setLegacyRelayUrls(urls: readonly string[]): void {
+  legacyRelayOrigins = new Set(
+    urls.flatMap((url) => {
+      try {
+        const parsed = new URL(url);
+        if (parsed.protocol === "ws:") parsed.protocol = "http:";
+        if (parsed.protocol === "wss:") parsed.protocol = "https:";
+        return [parsed.origin];
+      } catch {
+        return [];
+      }
+    }),
+  );
 }
 
 /**
@@ -272,6 +291,7 @@ export function resetMediaCaches(): void {
     cachedRelayOrigin = null;
     notifyRelayOriginListeners();
   }
+  legacyRelayOrigins = new Set();
 }
 
 /**
@@ -322,18 +342,23 @@ export function rewriteRelayUrl(url: string): string {
   // was typed with uppercase (e.g. wss://PENDING-SEED.communities.buzz.xyz).
   if (cachedRelayOrigin) {
     const urlOrigin = canonicalOrigin(url);
-    if (urlOrigin !== cachedRelayOrigin) {
+    if (
+      urlOrigin !== cachedRelayOrigin &&
+      (urlOrigin === null || !legacyRelayOrigins.has(urlOrigin))
+    ) {
       return url;
     }
   }
 
+  const mediaPath = m[1].replace(/\.thumb(\?.*)?$/, ".thumb.jpg$1");
+
   if (cachedPort && cachedPort > 0) {
-    return mediaProxyUrl(cachedPort, m[1]);
+    return mediaProxyUrl(cachedPort, mediaPath);
   }
 
   if (!portPromise && typeof window !== "undefined") {
     ensureRelayOriginFetch();
   }
 
-  return `buzz-media://localhost/media/${m[1]}`;
+  return `buzz-media://localhost/media/${mediaPath}`;
 }

@@ -2,6 +2,8 @@ export type Community = {
   id: string;
   name: string;
   relayUrl: string;
+  /** Previous relay URLs whose migrated media now lives on this relay. */
+  legacyRelayUrls?: string[];
   token?: string;
   /**
    * The pubkey associated with the active identity at the time the community
