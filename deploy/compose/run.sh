@@ -21,8 +21,9 @@ require_env() {
     cat >&2 <<'MSG'
 Missing deploy/compose/.env.
 
-Copy .env.example to .env and replace every CHANGE_ME value, or run the bootstrap
-script once it lands. Do not start production with generated secrets missing.
+Run ./bootstrap-local.sh with a relay hostname and owner pubkey, or copy
+.env.example to .env and replace every CHANGE_ME value. Do not start production
+with generated secrets missing.
 MSG
     exit 1
   fi
@@ -100,6 +101,8 @@ case "${1:-help}" in
 Usage: ./run.sh <command>
 
 Commands:
+  bootstrap-local <relay-hostname> <owner-pubkey-hex>
+                Create a local .env file with generated secrets
   start         Start Buzz with docker compose up -d --wait
   stop          Stop containers without deleting volumes
   restart       Recreate the relay after env/image changes
@@ -124,6 +127,10 @@ Environment switches:
   BUZZ_COMPOSE_TLS=true   Include compose.caddy.yml for automatic HTTPS
   BUZZ_COMPOSE_DEV=true   Include compose.dev.yml for local admin ports/tools
 MSG
+    ;;
+  bootstrap-local)
+    shift
+    exec "${SCRIPT_DIR}/bootstrap-local.sh" "$@"
     ;;
   *)
     echo "Unknown command: $1" >&2
