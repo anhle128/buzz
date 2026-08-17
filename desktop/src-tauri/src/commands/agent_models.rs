@@ -5,6 +5,7 @@ use serde::Deserialize;
 use tauri::{AppHandle, State};
 
 use super::agent_model_process::run_agent_models_command;
+use super::managed_agent_definition::apply_model_provider_prompt_update;
 // The map-only lookup is reached solely from the base-URL helpers that exist for
 // their unit tests; discovery itself always goes through the process-env variant.
 #[cfg(test)]
@@ -697,7 +698,7 @@ use databricks::{
 use databricks::{discover_databricks_models, DatabricksAuthIntent};
 #[path = "agent_models_update.rs"]
 mod update;
-use update::{apply_model_provider_prompt_update, apply_permission_policy_update};
+use update::apply_permission_policy_update;
 
 /// Update mutable fields on an existing managed agent record.
 ///
@@ -743,7 +744,7 @@ pub async fn update_managed_agent(
             input.model,
             input.provider,
             input.system_prompt,
-        );
+        )?;
         if let Some(parallelism) = input.parallelism {
             record.parallelism = parallelism;
         }

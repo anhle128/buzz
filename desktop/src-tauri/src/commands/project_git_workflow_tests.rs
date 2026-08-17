@@ -1,7 +1,7 @@
 use super::{
     align_unborn_head_branch, build_merged_status_event, build_pull_request_status_event,
-    build_review_request_event, classify_pull_request_route, complete_pull_request_merge,
-    normalize_commit, project_repo_merge_result, same_repository, validate_merge_status_metadata,
+    classify_pull_request_route, complete_pull_request_merge, normalize_commit,
+    project_repo_merge_result, same_repository, validate_merge_status_metadata,
     ProjectRepoMergeGitResult, PullRequestRepoRoute,
 };
 use crate::commands::project_git_exec::{build_test_git_auth_config, run_git};
@@ -296,36 +296,4 @@ fn lifecycle_status_rejects_merged_alias() {
         Timestamp::now().as_secs(),
     )
     .is_err());
-}
-
-#[test]
-fn review_request_is_signed_by_repository_owner() {
-    let keys = Keys::generate();
-    let owner = keys.public_key().to_hex();
-    let reviewer = "b".repeat(64);
-    let repo_address = format!("30617:{owner}:buzz");
-    let event = Event::from_json(
-        build_review_request_event(
-            &keys,
-            &repo_address,
-            &"d".repeat(64),
-            std::slice::from_ref(&reviewer),
-            "Bob",
-        )
-        .unwrap(),
-    )
-    .unwrap();
-
-    assert_eq!(event.pubkey, keys.public_key());
-    assert_eq!(event.kind, nostr::Kind::TextNote);
-    assert_eq!(event.content, "Requested a review from Bob");
-    assert!(event
-        .tags
-        .iter()
-        .any(|tag| tag.as_slice() == ["p", reviewer.as_str()]));
-    assert!(event
-        .tags
-        .iter()
-        .any(|tag| tag.as_slice() == ["t", "review-request"]));
-    assert!(event.verify().is_ok());
 }
