@@ -478,7 +478,7 @@ mod tests {
         let path = dir.path().join("gh");
         let script = format!(
             "#!/bin/sh\nset -eu\nroot=${{0%/gh}}\nprintf '%s\\n' \"$*\" >> \"$root/calls\"\ncase \"$*\" in\n  *auth*status*) exit 0 ;;\n  *) printf '%s' '{}' ; printf '%s' '{}' >&2; exit {} ;;\nesac\n",
-            output.to_string(),
+            output,
             stderr,
             status,
         );
