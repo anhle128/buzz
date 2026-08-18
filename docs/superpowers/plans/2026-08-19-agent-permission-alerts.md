@@ -1,156 +1,155 @@
-# Agent permission alerts Implementation Plan
+# Agent Permission Alerts Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task.
 > Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** When an owned agent emits an actionable `session/request_permission`, Buzz Desktop tells the owner even if they are in another thread, and a click opens the existing process transcript.
+**Goal:** When an owned agent emits a new actionable `session/request_permission`, Buzz Desktop alerts the owner outside the already-open matching transcript and opens that existing transcript on click.
 
-**Architecture:** Keep grant/deny on the existing `LifecycleActivity` card.
-Subscribe to the already app-wide observer store from a new AppShell hook.
-Post a sonner toast when the app is focused, or an OS notification when it is not.
-Route either click through `useOpenAgentActivity`.
-Do not add a Nostr kind, Home inbox row, grant buttons on the notification, or a `resetCommunityState` singleton.
+**Architecture:** Keep the permission decision UI in `LifecycleActivity` and add an AppShell-level observer-store consumer for alert delivery.
+Gate delivery behind the observer subscription's initial EOSE so the existing 300-second replay window seeds nonces instead of notifying them.
+Use the existing AppShell notification settings instance, route focused delivery to a sonner toast, route background delivery to the native notification helper, and route both click paths through `useOpenAgentActivity`.
 
-**Tech Stack:** TypeScript, React 19, sonner, existing Tauri `sendDesktopNotification` / `show_native_notification` JSON target blob, Node `node:test` via `just desktop-test`.
+**Tech Stack:** TypeScript, React 19, TanStack Router, sonner, Tauri notification helpers, Node `node:test`, Testing Library only where an existing hook test requires it, Biome, and the repository `just` recipes.
 
 **Spec:** [2026-08-19-agent-permission-alerts-design.md](../specs/2026-08-19-agent-permission-alerts-design.md)
 
-**Product contract:** [VISION.md](../../../VISION.md) keeps Stream at zero notifications for chat and already notifies for workflow approvals.
-Agent permission is an owner approval, not a channel message, so this alert is in the same class as those approvals.
-[VISION_ACTIVITY.md](../../../VISION_ACTIVITY.md) treats Permission as the control gate and says grant stays on the transcript card.
-This plan advances that contract: the owner is fetched to the existing card, and the card's option list is unchanged.
+**Product contract:** [VISION.md](../../../VISION.md) gives Stream a zero-notification default but already treats approval work as actionable.
+[VISION_ACTIVITY.md](../../../VISION_ACTIVITY.md) defines Permission as the agent activity control gate.
+This change fetches the owner to the existing gate without moving grant or deny controls into a notification.
+The main-window-only mount is an intentional boundary choice: it preserves owner approval coverage while avoiding duplicate delivery from the huddle companion webview.
 
 ## Global Constraints
 
 - Desktop only.
-- Do not change `buzz-acp`, nonce binding, ACP admission, `permission_decision`, or the 300s fail-closed timeout.
-- Do not change `LifecycleActivity` / `PermissionDecisionButtons`.
-- Do not add grant/deny controls to the toast or OS notification.
-- Do not add a new event kind, Home `needs_action` row, or relay persistence.
-- Do not implement mobile.
-- Do not add a notification-settings slot.
+- Treat the user-supplied design document as the approved brainstorm input even though its header still says `Draft — awaiting user review`.
+- Do not change `buzz-acp`, ACP admission, nonce binding, `permission_decision`, or the 300-second fail-closed timeout.
+- Do not change `LifecycleActivity` or `PermissionDecisionButtons`.
+- Do not add grant or deny controls to the toast or OS notification.
+- Do not add an event kind, Home `needs_action` row, relay persistence, mobile behavior, or a notification-settings slot.
 - Do not withdraw OS notifications after a decision.
-- Do not notify anyone except the owner.
-- Do not apply channel mute or `notifyWhileViewing`.
-- Respect `desktopEnabled` on the OS path only.
-- Still fire the in-app toast when desktop notifications are off.
-- Play `needs_action` sound only when that slot is enabled, on both toast and successful OS paths.
-- Do not add a module-level seen-nonce cache or a `resetCommunityState` entry.
-- Seen nonces live in React state on the new hook so `AppReady` community remount clears them.
-- `AppShell.tsx` is 956 lines and must stay under the 1000-line ratchet.
-- Add only the import plus `usePendingPermissionAlerts();` immediately after `useAgentObserverIngestion();`.
-- Activate Hermit in every shell: `. ./bin/activate-hermit && …`.
-- Shell CWD does not persist across commands.
-- No production `unsafe`, `unwrap()`, or `expect()`.
-- New public TypeScript APIs get doc comments.
-- Use rem-based text tokens if any UI text is added; this slice should not add new visible text nodes outside sonner / OS notification copy.
-- Sign every commit with `git commit -s`.
-- GitNexus MCP and `.gitnexus/run.cjs` are not available in the planning workspace.
-- Before each existing-symbol edit, run `rg -n '<symbol>' desktop/src` and report direct callers.
-- If GitNexus later becomes available, run `impact({ target, direction: "upstream" })` before those same edits and stop if risk is HIGH or CRITICAL.
-- Before every commit, run `git diff --stat && git diff --name-only && git diff --check` after `git add`.
-- If `.gitnexus/run.cjs` exists at commit time, also run `node .gitnexus/run.cjs detect` on the staged scope.
+- Do not apply channel mute, `notifyWhileViewing`, or huddle silent-channel rules to this owner approval.
+- Respect `desktopEnabled` only when selecting the OS surface.
+- A focused AppShell still shows the toast when `desktopEnabled` is false.
+- `slotAlertsEnabled.needs_action` controls sound only for this feature.
+- Play the `needs_action` sound for a toast immediately and for an OS notification only after `sendDesktopNotification` returns `true`.
+- Keep seen nonces in React-local state so the `AppReady` community-key remount clears them.
+- Do not add a module-level nonce cache or a `resetCommunityState` entry.
+- Do not mount the alert consumer in the dedicated huddle companion AppShell.
+- The main AppShell remains responsible for alerts while a huddle companion is open, matching the existing main-window notification-action listener boundary and preventing duplicate alerts from two webviews.
+- Do not add a Playwright spec.
+- Preserve the existing observer permission E2E grant-on-card flow.
+- `AppShell.tsx` must remain at or below the repository's 1000-line ratchet.
+- Activate Hermit before shell commands with `. ./bin/activate-hermit && ...`.
+- Sign implementation commits with `git commit -s`.
+- Every exported TypeScript API added by this plan must have a doc comment.
+- Keep every task in red-green-refactor order.
+- Do not write production code for a task until its named failing test has failed for the expected reason.
+
+## GitNexus Gates
+
+GitNexus MCP tools and `.gitnexus/run.cjs` are absent in this planning session.
+The implementation session must still follow the repository GitNexus policy.
+
+- Before changing an existing function, class, method, or exported type, run `impact({ target: "<symbol>", direction: "upstream" })`.
+- Report direct callers, affected execution flows, and the returned risk before editing.
+- Stop before editing if risk is HIGH or CRITICAL.
+- If the implementation session has no GitNexus index, run `npx gitnexus analyze`, then resume in a session where the GitNexus MCP tools are loaded.
+- `rg` is useful corroborating evidence but is not a substitute for the required GitNexus impact call.
+- Before each commit, stage the task files and run `detect_changes({ scope: "staged" })`.
+- Before final handoff, run `detect_changes({ scope: "compare", base_ref: "main" })`.
+- There is no GitNexus CLI `detect` command, so do not run `node .gitnexus/run.cjs detect`.
+- If `detect_changes` is unavailable, stop before the commit, leave the changes uncommitted, and do not begin the next task until the repository gate is available.
 
 ## Resolved Implementation Decisions
 
-- Toast `id` is the authorization `requestNonce`.
-- Toast `duration` is `Number.POSITIVE_INFINITY` so the toast lasts until `toast.dismiss(requestNonce)` or the user dismisses it (Open Question 1).
-- Notification title is `{agentName} needs permission` or `{agentName} needs permission in #{channel}` when a trimmed channel name is known.
-- Channel names in the title never keep a second `#`.
-- Notification body is exactly `Open the process log to allow or deny this request.`
-- Do not put ACP option names, tool call ids, or the request title in the toast or OS body.
-- `extractActionablePermission` still returns the ACP title for tests; the hook must ignore it when posting copy.
-- Agent display name is `resolveUserLabel({ pubkey: agentPubkey, profiles, preferResolvedSelfLabel: true })`.
-- Empty resolved name falls back to `Agent`.
+- Toast `id` is `authorization.requestNonce`.
+- Toast `duration` is `Number.POSITIVE_INFINITY` under the provisional default in Open Question 1.
+- Alert title is `{agentName} needs permission` or `{agentName} needs permission in #{channel}` when a trimmed channel name is known.
+- Strip every leading `#` from the stored channel name before adding one display prefix.
+- Alert body is exactly `Open the process log to allow or deny this request.`.
+- Do not include option names, tool-call ids, or the ACP request title in alert copy.
+- `extractActionablePermission` still returns the ACP title because it is part of the approved helper contract, but delivery copy ignores it.
+- Resolve the agent label with `resolveUserLabel({ pubkey: agentPubkey, profiles, preferResolvedSelfLabel: true })`.
+- An empty resolved label falls back to `Agent` inside `permissionAlertCopy`.
+- Use the existing AppShell `notificationSettings.settings` object instead of calling `useNotificationSettings` a second time.
 - `parseNotificationTarget` is exported.
-- A target is valid when `channelId`, `eventId`, or `agentPubkey` is a non-empty string.
-- Do not reuse `pubkey` as the agent identity; that field remains the message author for `toSearchHit`.
-- `resolveDesktopNotificationAction` lives in `AppShell.helpers.ts` next to `toSearchHit`.
-- `agentPubkey` wins over search-hit / home / channel routing even when `eventId` is also present.
-- Native Linux/macOS code already forwards `target` as `serde_json::Value`; do not change Rust.
-- `useAppShellDesktopNotifications` calls `useOpenAgentActivity()` itself so `AppShell.tsx` does not grow a new argument.
-- `usePendingPermissionAlerts` is self-contained and takes no props.
-- Export `useObserverIngestionAgents()` from `useAgentObserverIngestion.ts` and call it from both ingestion and the alert hook so the owner-global agent list cannot drift.
-- Seed seen nonces from `getAgentTranscript(pubkey)` for every ingestion agent whenever that list changes.
-- Subscribe with `subscribeAgentObserverStore`.
-- Ignore connection-only notifies (`update` missing or `events` empty) for alerting.
-- Process a live `update.events` batch in order through `applyPermissionAlertUpdate`.
-- If the same batch both creates and resolves a nonce, do not post an alert for that nonce (Open Question 2).
-- Suppress only when the open session pane is that agent and that channel, using the spec's matching rule.
-- Being in the same channel with the session pane closed still alerts.
-- Huddle rooms still alert; do not gate the hook on `isHuddleRoom` (Open Question 4).
-- Late OS clicks still call `openAgentActivity`; the card may already show an outcome.
-- Inaccessible-channel clicks keep the existing warning toast from `useOpenAgentActivity`.
+- A native target is valid when `channelId`, `eventId`, or `agentPubkey` is a non-empty string.
+- `pubkey` remains the message author field used by `toSearchHit` and must not be reused for agent identity.
+- `agentPubkey` wins over search-hit, Home, and channel routing even when `eventId` is present.
+- Native Linux and macOS already forward the target as opaque JSON, so no Rust change is needed.
+- `resolveDesktopNotificationAction` and `executeDesktopNotificationAction` live in `desktop/src/app/AppShell.helpers.ts` beside `toSearchHit`.
+- `useAppShellDesktopNotifications` calls `useOpenAgentActivity()` itself and passes the real dependencies to `executeDesktopNotificationAction`.
+- Export `useObserverIngestionAgents()` from `useAgentObserverIngestion.ts` and use it from both observer ingestion and permission alerts.
+- The permission-alert consumer rejects store updates whose normalized agent pubkey is not in that owner-global ingestion list.
+- Initial observer history is distinguished from later events by the initial subscription EOSE, not by agent timestamps, because remote agent clocks are not a safe replay boundary.
+- `subscribeToAgentObserverFrames` forwards its optional readiness callback to `relayClient.subscribeLive`.
+- `observerRelayStore` enqueues the initial-replay-complete marker on `eventProcessingQueue` when readiness is `eose`.
+- The queue marker runs after every historical EVENT flushed immediately before EOSE and before later live events queued after EOSE.
+- Readiness values `timeout` and `closed` do not open alert delivery.
+- The alert controller seeds transcript nonces only after the initial-replay marker is complete.
+- Existing reconnect replay remains eligible to alert only for genuinely new missed events; already-ingested frames remain suppressed by observer-store dedup and the seen-nonce set.
+- Process each live `update.events` batch in order.
+- If one batch both creates and resolves the same nonce, do not post an alert for that nonce under Open Question 2's provisional default.
+- Suppress only when the open session pane matches the requesting agent and the design's channel rule.
+- Await `revealDesktopAppWindow()` before opening the transcript from either surface.
+- Late OS clicks still call `openAgentActivity`; the card may already show a terminal outcome.
+- Inaccessible-channel clicks keep the existing warning behavior from `useOpenAgentActivity`.
 
 ## File Map
 
-| File | Role |
-|------|------|
-| Create `desktop/src/features/agents/pendingPermissionAlert.ts` | Pure extract / suppress / copy / seed / batch-apply helpers |
-| Create `desktop/src/features/agents/pendingPermissionAlert.test.mjs` | Unit tests for those helpers |
-| `desktop/src/features/notifications/lib/desktop.ts` | Optional `agentPubkey` on `DesktopNotificationTarget`; export and relax `parseNotificationTarget` |
-| `desktop/src/features/notifications/lib/desktop.test.mjs` | Parse / validity cases; keep the existing constructor-failure test |
-| `desktop/src/app/AppShell.helpers.ts` | `resolveDesktopNotificationAction` |
-| `desktop/src/app/AppShell.helpers.test.mjs` | Agent-activity vs search-hit vs home routing |
-| `desktop/src/app/useAppShellDesktopNotifications.ts` | OS click branch through `openAgentActivity` |
-| `desktop/src/features/agents/useAgentObserverIngestion.ts` | Export `useObserverIngestionAgents()` and reuse it |
-| Create `desktop/src/features/agents/usePendingPermissionAlerts.ts` | Mount-time seed, store subscription, toast / OS / sound / dismiss |
-| `desktop/src/app/AppShell.tsx` | Mount the hook next to observer ingestion |
+| File | Responsibility |
+|------|----------------|
+| Create `desktop/src/features/agents/pendingPermissionAlert.ts` | Pure extraction, suppression, copy, seen-state, surface, and store-update controller |
+| Create `desktop/src/features/agents/pendingPermissionAlert.test.mjs` | Unit coverage for every permission-alert decision and replay-seed transition |
+| Modify `desktop/src/shared/api/observerRelay.ts` | Forward initial live-subscription readiness |
+| Modify `desktop/src/shared/api/observerRelay.test.mjs` | Pin readiness forwarding without changing the 300-second replay filter |
+| Modify `desktop/src/features/agents/observerRelayStore.ts` | Publish an initial-replay-complete barrier after EOSE history is processed |
+| Create `desktop/src/features/agents/observerInitialReplay.test.mjs` | Pin replay readiness initialization, notification, and reset |
+| Modify `desktop/src/features/notifications/lib/desktop.ts` | Add optional `agentPubkey` and relax notification-target parsing |
+| Modify `desktop/src/features/notifications/lib/desktop.test.mjs` | Pin agent-only, author-only, and event-only target parsing |
+| Modify `desktop/src/app/AppShell.helpers.ts` | Resolve and execute desktop-notification click destinations |
+| Modify `desktop/src/app/AppShell.helpers.test.mjs` | Pin agent routing precedence and real executor call order |
+| Modify `desktop/src/app/useAppShellDesktopNotifications.ts` | Use the tested click executor and `useOpenAgentActivity` |
+| Modify `desktop/src/app/routes/channels.$channelId.tsx` | Preserve `agentSessionChannel` in validated channel-route search |
+| Create `desktop/src/app/routes/channels.$channelId.test.mjs` | Pin the route-search contract used by suppression |
+| Modify `desktop/src/features/agents/useAgentObserverIngestion.ts` | Export the canonical owner-global ingestion-agent hook |
+| Modify `desktop/src/features/agents/useAgentObserverIngestion.test.mjs` | Re-run existing ownership-combination characterization tests unchanged |
+| Create `desktop/src/features/agents/pendingPermissionAlertDelivery.ts` | Execute one tested toast, OS, sound, bounce, and click effect plan |
+| Create `desktop/src/features/agents/pendingPermissionAlertDelivery.test.mjs` | Pin surface effects and reveal-before-open ordering |
+| Create `desktop/src/features/agents/usePendingPermissionAlerts.ts` | React adapter for store subscription and toast, OS, sound, and dismissal effects |
+| Modify `desktop/src/app/AppShell.tsx` | Mount the alert hook with the existing notification settings and main-window gate |
 
-Do not create other files.
-Do not add a Playwright spec.
-
-## Required Impact Checks
-
-Run these before the named task's first production edit.
-GitNexus MCP is unavailable in this workspace, so use `rg` unless a later session has GitNexus.
-
-- Task 2: `parseNotificationTarget`, `DesktopNotificationTarget`, `sendDesktopNotification`.
-- Task 3: `toSearchHit`, `handleDesktopNotificationAction`, `useAppShellDesktopNotifications`.
-- Task 4: `useAgentObserverIngestion`, `combineObserverIngestionAgents`, `subscribeAgentObserverStore`, `getAgentTranscript`, `useOpenAgentActivity`, `AppShell`.
-- Direct callers of `parseNotificationTarget` today are only `listenForDesktopNotificationActions` in `desktop.ts`.
-- Direct callers of `handleDesktopNotificationAction` are the desktop-notification action listener in `useAppShellDesktopNotifications`.
-- `toSearchHit` is only used by that same click path.
-- `useAgentObserverIngestion` is mounted only from `AppShell.tsx`.
-- Warn and stop if a later GitNexus `impact` report is HIGH or CRITICAL.
+Do not create or modify any other product file.
 
 ## Open Questions
 
 1. **Toast duration.**
-   The spec does not say how long the in-app toast stays up.
-   **Provisional default:** `duration: Number.POSITIVE_INFINITY`, dismissed by `toast.dismiss(requestNonce)` on resolution or by the user.
-   A default 4s sonner toast would recreate the original miss for an owner who is mid-keystroke.
+   The approved design does not specify duration.
+   **Provisional default:** use `Number.POSITIVE_INFINITY`, let the user dismiss manually, and dismiss programmatically on terminal resolution.
 
 2. **Request and resolution in one observer batch.**
-   The spec does not say what to do if `update.events` contains both the actionable `acp_read` and its terminal `acp_write`.
-   **Provisional default:** do not post an alert for a nonce that is also dismissed in the same batch.
+   The approved design does not define a same-batch outcome.
+   **Provisional default:** do not post an alert for a nonce that is terminal in the same batch.
 
 3. **Unknown agent name.**
-   The spec says `{agentName}` but does not define the missing-profile fallback.
-   **Provisional default:** `resolveUserLabel` (display name, then nip05, then truncated pubkey), then `Agent` if that string is empty.
+   The approved design does not define the missing-profile label.
+   **Provisional default:** use `resolveUserLabel`, which falls back to a truncated pubkey, and use `Agent` only if the resulting string is empty.
 
-4. **Huddle window.**
-   Channel notifications are disabled in a huddle room.
-   **Provisional default:** permission alerts still fire.
-   This is an owner approval, not a channel message.
-
-5. **Spec header status.**
-   `docs/superpowers/specs/2026-08-19-agent-permission-alerts-design.md` is still marked `Draft — awaiting user review`.
-   **Provisional default:** treat that file as the approved product contract for this plan.
+4. **Initial subscription without EOSE.**
+   The relay client can report `timeout` or `closed` before EOSE, which does not provide a trustworthy replay boundary.
+   **Provisional default:** keep permission-alert delivery closed until an actual EOSE callback establishes the boundary, while transcript ingestion continues normally.
+   A late EOSE after `timeout` may establish the boundary, but a pre-EOSE `closed` that clears the readiness callback leaves alerts disabled for that observer-store generation.
 
 ---
 
-### Task 1: Pure permission-alert helpers
+### Task 1: Build the pure permission-alert controller
 
 **Files:**
 
-- Create: `desktop/src/features/agents/pendingPermissionAlert.ts`
 - Create: `desktop/src/features/agents/pendingPermissionAlert.test.mjs`
+- Create: `desktop/src/features/agents/pendingPermissionAlert.ts`
 
 **Interfaces:**
-
-- Consumes: `ObserverEvent`, `TranscriptItem`, `normalizePubkey`, `asRecord`, `asString`.
-- Produces:
 
 ```ts
 export type ActionablePermissionAlert = {
@@ -159,14 +158,19 @@ export type ActionablePermissionAlert = {
   title: string;
 };
 
-export function extractActionablePermission(
-  event: ObserverEvent,
-): ActionablePermissionAlert | null;
+export type PermissionAlertStoreState = {
+  seededAgentPubkeys: Set<string>;
+  seenNonces: Set<string>;
+};
 
-export function extractResolvedPermissionNonce(
-  event: ObserverEvent,
-): string | null;
+export type PermissionAlertStoreUpdate = {
+  agentPubkey: string;
+  events: readonly ObserverEvent[];
+};
 
+export function createPermissionAlertStoreState(): PermissionAlertStoreState;
+export function extractActionablePermission(event: ObserverEvent): ActionablePermissionAlert | null;
+export function extractResolvedPermissionNonce(event: ObserverEvent): string | null;
 export function shouldSuppressPermissionAlert(input: {
   agentPubkey: string;
   channelId: string | null;
@@ -174,20 +178,11 @@ export function shouldSuppressPermissionAlert(input: {
   openAgentSessionChannel: string | null | undefined;
   currentChannelId: string | null | undefined;
 }): boolean;
-
 export function permissionAlertCopy(input: {
   agentName: string;
   channelName: string | null | undefined;
 }): { title: string; body: string };
-
-export function collectSeenPermissionNonces(
-  items: readonly TranscriptItem[],
-): string[];
-
-export function seedSeenPermissionNonces(
-  transcripts: readonly (readonly TranscriptItem[])[],
-): Set<string>;
-
+export function collectSeenPermissionNonces(items: readonly TranscriptItem[]): string[];
 export function applyPermissionAlertUpdate(input: {
   events: readonly ObserverEvent[];
   seenNonces: ReadonlySet<string>;
@@ -196,36 +191,61 @@ export function applyPermissionAlertUpdate(input: {
   alerts: ActionablePermissionAlert[];
   dismissNonces: string[];
 };
-
+export function applyPermissionAlertStoreNotification(input: {
+  state: PermissionAlertStoreState;
+  initialReplayComplete: boolean;
+  agents: readonly {
+    pubkey: string;
+    transcript: readonly TranscriptItem[];
+  }[];
+  update?: PermissionAlertStoreUpdate;
+}): {
+  nextState: PermissionAlertStoreState;
+  alerts: ActionablePermissionAlert[];
+  dismissNonces: string[];
+};
 export function selectPermissionAlertSurface(input: {
   focused: boolean;
   desktopEnabled: boolean;
 }): "toast" | "os" | null;
+export function startPermissionAlertStoreSubscription(input: {
+  handleUpdate: (update?: PermissionAlertStoreUpdate) => void;
+  subscribe: (
+    listener: (update?: PermissionAlertStoreUpdate) => void,
+  ) => () => void;
+}): () => void;
 ```
 
-- [ ] **Step 1: Write the failing tests**
+- [ ] **Step 1: Run the required impact checks for consumed symbols**
 
-Create `desktop/src/features/agents/pendingPermissionAlert.test.mjs` with the exact contents below.
-Do not create the production module yet.
+Run GitNexus upstream impact for `normalizePubkey`, `ObserverEvent`, `TranscriptItem`, `asRecord`, and `asString`.
+These symbols are consumed but not modified, so record their interfaces and continue unless the proposed use contradicts a HIGH or CRITICAL warning.
+
+- [ ] **Step 2: Write the failing tests**
+
+Create `desktop/src/features/agents/pendingPermissionAlert.test.mjs`.
+Use literal observer frames and literal expected values.
+The file must contain separate tests with these exact names and assertions:
 
 ```js
 import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  applyPermissionAlertStoreNotification,
   applyPermissionAlertUpdate,
   collectSeenPermissionNonces,
+  createPermissionAlertStoreState,
   extractActionablePermission,
   extractResolvedPermissionNonce,
   permissionAlertCopy,
-  seedSeenPermissionNonces,
   selectPermissionAlertSurface,
   shouldSuppressPermissionAlert,
+  startPermissionAlertStoreSubscription,
 } from "./pendingPermissionAlert.ts";
 
 const AGENT = "a".repeat(64);
-const AGENT_UPPER = AGENT.toUpperCase();
-const OTHER = "b".repeat(64);
+const OTHER_AGENT = "b".repeat(64);
 const CHANNEL = "11111111-1111-4111-8111-111111111111";
 const OTHER_CHANNEL = "22222222-2222-4222-8222-222222222222";
 
@@ -233,12 +253,13 @@ function permissionRead({
   nonce = "nonce-1",
   actionable = true,
   channelId = CHANNEL,
-  method = "session/request_permission",
-  title = "Confirm push",
   kind = "acp_read",
+  method = "session/request_permission",
+  seq = 1,
+  title = "Confirm push",
 } = {}) {
   return {
-    seq: 1,
+    seq,
     timestamp: "2026-08-19T10:00:00.000Z",
     kind,
     agentIndex: 0,
@@ -247,7 +268,7 @@ function permissionRead({
     turnId: "turn-1",
     payload: {
       jsonrpc: "2.0",
-      id: "req-1",
+      id: "request-1",
       method,
       params: { title },
     },
@@ -255,219 +276,194 @@ function permissionRead({
   };
 }
 
-test("extractActionablePermission returns nonce, channel, and ACP title", () => {
-  const extracted = extractActionablePermission(permissionRead());
-  assert.deepEqual(extracted, {
+function permissionWrite({ nonce = "nonce-1", seq = 2 } = {}) {
+  return {
+    ...permissionRead({ nonce, seq, kind: "acp_write" }),
+    payload: {
+      jsonrpc: "2.0",
+      id: "request-1",
+      result: { outcome: { outcome: "selected", optionId: "allow_once" } },
+    },
+    authorization: {
+      requestNonce: nonce,
+      actionable: false,
+      reason: "applied",
+    },
+  };
+}
+
+function permissionItem(nonce) {
+  return {
+    id: `permission:channel:nonce:${nonce}`,
+    type: "lifecycle",
+    renderClass: "permission",
+    title: "Permission requested",
+    text: "Confirm push",
+    timestamp: "2026-08-19T10:00:00.000Z",
+    requestNonce: nonce,
+    actionable: true,
+  };
+}
+
+test("extractActionablePermission returns the admitted nonce channel and title", () => {
+  assert.deepEqual(extractActionablePermission(permissionRead()), {
     requestNonce: "nonce-1",
     channelId: CHANNEL,
     title: "Confirm push",
   });
 });
 
-test("extractActionablePermission returns null for non-permission and non-actionable frames", () => {
-  assert.equal(
-    extractActionablePermission(
-      permissionRead({ method: "session/prompt" }),
-    ),
-    null,
-  );
-  assert.equal(
-    extractActionablePermission(permissionRead({ actionable: false })),
-    null,
-  );
-  assert.equal(
-    extractActionablePermission(permissionRead({ kind: "acp_write" })),
-    null,
-  );
+test("extractActionablePermission rejects wrong method wrong kind non-actionable and missing envelope", () => {
+  assert.equal(extractActionablePermission(permissionRead({ method: "session/prompt" })), null);
+  assert.equal(extractActionablePermission(permissionRead({ kind: "acp_write" })), null);
+  assert.equal(extractActionablePermission(permissionRead({ actionable: false })), null);
   const missingEnvelope = permissionRead();
   delete missingEnvelope.authorization;
   assert.equal(extractActionablePermission(missingEnvelope), null);
 });
 
-test("extractResolvedPermissionNonce reads acp_write and non-actionable follow-up", () => {
-  assert.equal(
-    extractResolvedPermissionNonce(permissionRead({ kind: "acp_write" })),
-    "nonce-1",
-  );
-  assert.equal(
-    extractResolvedPermissionNonce(permissionRead({ actionable: false })),
-    "nonce-1",
-  );
+test("extractResolvedPermissionNonce reads terminal acp_write and non-actionable follow-up", () => {
+  assert.equal(extractResolvedPermissionNonce(permissionWrite()), "nonce-1");
+  assert.equal(extractResolvedPermissionNonce(permissionRead({ actionable: false })), "nonce-1");
   assert.equal(extractResolvedPermissionNonce(permissionRead()), null);
 });
 
-test("shouldSuppressPermissionAlert is true only for that agent and that channel", () => {
-  assert.equal(
-    shouldSuppressPermissionAlert({
-      agentPubkey: AGENT,
-      channelId: CHANNEL,
-      openAgentSession: AGENT,
-      openAgentSessionChannel: CHANNEL,
-      currentChannelId: CHANNEL,
-    }),
-    true,
-  );
-  assert.equal(
-    shouldSuppressPermissionAlert({
-      agentPubkey: AGENT,
-      channelId: CHANNEL,
-      openAgentSession: AGENT_UPPER,
-      openAgentSessionChannel: null,
-      currentChannelId: CHANNEL,
-    }),
-    true,
-  );
-  assert.equal(
-    shouldSuppressPermissionAlert({
-      agentPubkey: AGENT,
-      channelId: null,
-      openAgentSession: AGENT,
-      openAgentSessionChannel: OTHER_CHANNEL,
-      currentChannelId: OTHER_CHANNEL,
-    }),
-    true,
-  );
-  assert.equal(
-    shouldSuppressPermissionAlert({
-      agentPubkey: AGENT,
-      channelId: CHANNEL,
-      openAgentSession: null,
-      openAgentSessionChannel: null,
-      currentChannelId: CHANNEL,
-    }),
-    false,
-  );
-  assert.equal(
-    shouldSuppressPermissionAlert({
-      agentPubkey: AGENT,
-      channelId: CHANNEL,
-      openAgentSession: OTHER,
-      openAgentSessionChannel: CHANNEL,
-      currentChannelId: CHANNEL,
-    }),
-    false,
-  );
-  assert.equal(
-    shouldSuppressPermissionAlert({
-      agentPubkey: AGENT,
-      channelId: CHANNEL,
-      openAgentSession: AGENT,
-      openAgentSessionChannel: OTHER_CHANNEL,
-      currentChannelId: OTHER_CHANNEL,
-    }),
-    false,
-  );
+test("shouldSuppressPermissionAlert requires the same normalized agent and matching channel scope", () => {
+  assert.equal(shouldSuppressPermissionAlert({
+    agentPubkey: AGENT,
+    channelId: CHANNEL,
+    openAgentSession: AGENT.toUpperCase(),
+    openAgentSessionChannel: null,
+    currentChannelId: CHANNEL,
+  }), true);
+  assert.equal(shouldSuppressPermissionAlert({
+    agentPubkey: AGENT,
+    channelId: null,
+    openAgentSession: AGENT,
+    openAgentSessionChannel: OTHER_CHANNEL,
+    currentChannelId: OTHER_CHANNEL,
+  }), true);
+  assert.equal(shouldSuppressPermissionAlert({
+    agentPubkey: AGENT,
+    channelId: CHANNEL,
+    openAgentSession: null,
+    openAgentSessionChannel: null,
+    currentChannelId: CHANNEL,
+  }), false);
+  assert.equal(shouldSuppressPermissionAlert({
+    agentPubkey: AGENT,
+    channelId: CHANNEL,
+    openAgentSession: OTHER_AGENT,
+    openAgentSessionChannel: CHANNEL,
+    currentChannelId: CHANNEL,
+  }), false);
+  assert.equal(shouldSuppressPermissionAlert({
+    agentPubkey: AGENT,
+    channelId: CHANNEL,
+    openAgentSession: AGENT,
+    openAgentSessionChannel: OTHER_CHANNEL,
+    currentChannelId: OTHER_CHANNEL,
+  }), false);
 });
 
-test("permissionAlertCopy never lists options", () => {
-  assert.deepEqual(permissionAlertCopy({ agentName: "Ada", channelName: "eng" }), {
+test("permissionAlertCopy uses pinned copy and strips duplicate channel hashes", () => {
+  assert.deepEqual(permissionAlertCopy({ agentName: "Ada", channelName: "#eng" }), {
     title: "Ada needs permission in #eng",
     body: "Open the process log to allow or deny this request.",
   });
-  assert.deepEqual(
-    permissionAlertCopy({ agentName: "Ada", channelName: "#eng" }),
-    {
-      title: "Ada needs permission in #eng",
-      body: "Open the process log to allow or deny this request.",
-    },
-  );
-  assert.deepEqual(
-    permissionAlertCopy({ agentName: "  ", channelName: null }),
-    {
-      title: "Agent needs permission",
-      body: "Open the process log to allow or deny this request.",
-    },
-  );
+  assert.deepEqual(permissionAlertCopy({ agentName: "  ", channelName: null }), {
+    title: "Agent needs permission",
+    body: "Open the process log to allow or deny this request.",
+  });
 });
 
-test("seedSeenPermissionNonces collects existing transcript nonces", () => {
-  const seeded = seedSeenPermissionNonces([
-    [
-      {
-        id: "permission:ch:nonce:old-1",
-        type: "lifecycle",
-        renderClass: "permission",
-        title: "Permission requested",
-        text: "Confirm push",
-        timestamp: "2026-08-19T10:00:00.000Z",
-        requestNonce: "old-1",
-        actionable: true,
-      },
-      {
-        id: "message:1",
-        type: "message",
-        renderClass: "message",
-        role: "assistant",
-        title: "Ada",
-        text: "hi",
-        timestamp: "2026-08-19T10:00:01.000Z",
-      },
-    ],
-    [
-      {
-        id: "permission:ch:nonce:old-2",
-        type: "lifecycle",
-        renderClass: "permission",
-        title: "Permission requested",
-        text: "done",
-        timestamp: "2026-08-19T10:00:02.000Z",
-        requestNonce: "old-2",
-        actionable: false,
-        outcome: "Approved (allow_once)",
-      },
-    ],
-  ]);
-  assert.deepEqual([...seeded].sort(), ["old-1", "old-2"]);
-  assert.deepEqual(collectSeenPermissionNonces([]), []);
-});
-
-test("applyPermissionAlertUpdate skips seen nonces and same-batch resolutions", () => {
-  const first = applyPermissionAlertUpdate({
-    events: [permissionRead({ nonce: "new-1" })],
+test("applyPermissionAlertUpdate alerts concurrent unseen nonces once and suppresses same-batch resolution", () => {
+  const concurrent = applyPermissionAlertUpdate({
+    events: [permissionRead({ nonce: "new-1", seq: 1 }), permissionRead({ nonce: "new-2", seq: 2 })],
     seenNonces: new Set(["old-1"]),
   });
-  assert.deepEqual(
-    first.alerts.map((alert) => alert.requestNonce),
-    ["new-1"],
-  );
-  assert.equal(first.nextSeenNonces.has("new-1"), true);
-  assert.equal(first.nextSeenNonces.has("old-1"), true);
-
+  assert.deepEqual(concurrent.alerts.map((alert) => alert.requestNonce), ["new-1", "new-2"]);
+  assert.equal(concurrent.nextSeenNonces.has("old-1"), true);
   const replay = applyPermissionAlertUpdate({
     events: [permissionRead({ nonce: "old-1" })],
     seenNonces: new Set(["old-1"]),
   });
   assert.deepEqual(replay.alerts, []);
-
-  const resolved = applyPermissionAlertUpdate({
+  const terminal = applyPermissionAlertUpdate({
     events: [
-      permissionRead({ nonce: "flash-1" }),
-      permissionRead({ nonce: "flash-1", kind: "acp_write" }),
+      permissionRead({ nonce: "flash-1", seq: 3 }),
+      permissionWrite({ nonce: "flash-1", seq: 4 }),
     ],
     seenNonces: new Set(),
   });
-  assert.deepEqual(resolved.alerts, []);
-  assert.deepEqual(resolved.dismissNonces, ["flash-1"]);
-  assert.equal(resolved.nextSeenNonces.has("flash-1"), true);
+  assert.deepEqual(terminal.alerts, []);
+  assert.deepEqual(terminal.dismissNonces, ["flash-1"]);
 });
 
-test("selectPermissionAlertSurface splits focus and desktopEnabled", () => {
-  assert.equal(
-    selectPermissionAlertSurface({ focused: true, desktopEnabled: false }),
-    "toast",
-  );
-  assert.equal(
-    selectPermissionAlertSurface({ focused: false, desktopEnabled: true }),
-    "os",
-  );
-  assert.equal(
-    selectPermissionAlertSurface({ focused: false, desktopEnabled: false }),
-    null,
-  );
+test("store controller seeds initial replay before admitting later owned-agent updates", () => {
+  const state = createPermissionAlertStoreState();
+  const replayUpdate = applyPermissionAlertStoreNotification({
+    state,
+    initialReplayComplete: false,
+    agents: [{ pubkey: AGENT, transcript: [permissionItem("replayed")] }],
+    update: { agentPubkey: AGENT, events: [permissionRead({ nonce: "replayed" })] },
+  });
+  assert.deepEqual(replayUpdate.alerts, []);
+  assert.equal(replayUpdate.nextState.seenNonces.has("replayed"), false);
+
+  const seeded = applyPermissionAlertStoreNotification({
+    state: replayUpdate.nextState,
+    initialReplayComplete: true,
+    agents: [{ pubkey: AGENT, transcript: [permissionItem("replayed")] }],
+  });
+  assert.equal(seeded.nextState.seenNonces.has("replayed"), true);
+  assert.equal(seeded.nextState.seededAgentPubkeys.has(AGENT), true);
+
+  const live = applyPermissionAlertStoreNotification({
+    state: seeded.nextState,
+    initialReplayComplete: true,
+    agents: [{ pubkey: AGENT, transcript: [permissionItem("replayed")] }],
+    update: { agentPubkey: AGENT, events: [permissionRead({ nonce: "live" })] },
+  });
+  assert.deepEqual(live.alerts.map((alert) => alert.requestNonce), ["live"]);
+
+  const outsider = applyPermissionAlertStoreNotification({
+    state: live.nextState,
+    initialReplayComplete: true,
+    agents: [{ pubkey: AGENT, transcript: [permissionItem("replayed")] }],
+    update: { agentPubkey: OTHER_AGENT, events: [permissionRead({ nonce: "outsider" })] },
+  });
+  assert.deepEqual(outsider.alerts, []);
+  assert.equal(outsider.nextState.seenNonces.has("outsider"), false);
+  assert.deepEqual(collectSeenPermissionNonces([]), []);
+});
+
+test("selectPermissionAlertSurface keeps focused toast independent of desktopEnabled", () => {
+  assert.equal(selectPermissionAlertSurface({ focused: true, desktopEnabled: false }), "toast");
+  assert.equal(selectPermissionAlertSurface({ focused: false, desktopEnabled: true }), "os");
+  assert.equal(selectPermissionAlertSurface({ focused: false, desktopEnabled: false }), null);
+});
+
+test("startPermissionAlertStoreSubscription processes the current snapshot before live updates", () => {
+  const calls = [];
+  let listener;
+  const unsubscribe = startPermissionAlertStoreSubscription({
+    handleUpdate: (update) => calls.push(update?.agentPubkey ?? "snapshot"),
+    subscribe: (nextListener) => {
+      calls.push("subscribe");
+      listener = nextListener;
+      return () => calls.push("unsubscribe");
+    },
+  });
+
+  assert.deepEqual(calls, ["snapshot", "subscribe"]);
+  listener({ agentPubkey: AGENT, events: [] });
+  unsubscribe();
+  assert.deepEqual(calls, ["snapshot", "subscribe", AGENT, "unsubscribe"]);
 });
 ```
 
-- [ ] **Step 2: Run the tests and confirm they fail**
+- [ ] **Step 3: Run the test and verify RED**
 
 ```bash
 . ./bin/activate-hermit && cd desktop && pnpm exec node --import ./test-loader.mjs --experimental-strip-types --test src/features/agents/pendingPermissionAlert.test.mjs
@@ -475,28 +471,37 @@ test("selectPermissionAlertSurface splits focus and desktopEnabled", () => {
 
 Expected: FAIL because `pendingPermissionAlert.ts` does not exist.
 
-- [ ] **Step 3: Implement the helpers**
+- [ ] **Step 4: Implement the minimum pure module**
 
-Create `desktop/src/features/agents/pendingPermissionAlert.ts` with the exact production behavior below.
+Create `desktop/src/features/agents/pendingPermissionAlert.ts`.
+Use this implementation:
 
 ```ts
 import { normalizePubkey } from "@/shared/lib/pubkey";
-import type {
-  ObserverEvent,
-  TranscriptItem,
-} from "./ui/agentSessionTypes";
+import type { ObserverEvent, TranscriptItem } from "./ui/agentSessionTypes";
 import { asRecord, asString } from "./ui/agentSessionUtils";
 
+/** An admitted owner-actionable permission request. */
 export type ActionablePermissionAlert = {
   requestNonce: string;
   channelId: string | null;
   title: string;
 };
 
+/** React-local replay and duplicate suppression state. */
+export type PermissionAlertStoreState = {
+  seededAgentPubkeys: Set<string>;
+  seenNonces: Set<string>;
+};
+
+/** The event-bearing subset of an observer-store notification. */
+export type PermissionAlertStoreUpdate = {
+  agentPubkey: string;
+  events: readonly ObserverEvent[];
+};
+
 const PERMISSION_METHOD = "session/request_permission";
-const DEFAULT_AGENT_NAME = "Agent";
-const ALERT_BODY =
-  "Open the process log to allow or deny this request.";
+const ALERT_BODY = "Open the process log to allow or deny this request.";
 
 function payloadMethod(payload: unknown): string | null {
   return asString(asRecord(payload).method);
@@ -512,23 +517,24 @@ function payloadTitle(payload: unknown): string {
   );
 }
 
-function nonEmptyNonce(value: string | undefined): string | null {
+function nonEmptyNonce(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
-/**
- * Return the actionable permission payload from an observer frame, or null.
- */
+/** Create empty React-local permission-alert state. */
+export function createPermissionAlertStoreState(): PermissionAlertStoreState {
+  return { seededAgentPubkeys: new Set(), seenNonces: new Set() };
+}
+
+/** Extract an admitted actionable permission request from an observer frame. */
 export function extractActionablePermission(
   event: ObserverEvent,
 ): ActionablePermissionAlert | null {
-  if (event.kind !== "acp_read") {
-    return null;
-  }
-  if (payloadMethod(event.payload) !== PERMISSION_METHOD) {
-    return null;
-  }
-  if (event.authorization?.actionable !== true) {
+  if (
+    event.kind !== "acp_read" ||
+    payloadMethod(event.payload) !== PERMISSION_METHOD ||
+    event.authorization?.actionable !== true
+  ) {
     return null;
   }
   const requestNonce = nonEmptyNonce(event.authorization.requestNonce);
@@ -542,9 +548,7 @@ export function extractActionablePermission(
   };
 }
 
-/**
- * Return the nonce of a resolved permission frame, or null.
- */
+/** Extract a terminal permission nonce from an observer frame. */
 export function extractResolvedPermissionNonce(
   event: ObserverEvent,
 ): string | null {
@@ -565,10 +569,7 @@ export function extractResolvedPermissionNonce(
   return null;
 }
 
-/**
- * True when the owner is already looking at this agent's session pane
- * for this request's channel.
- */
+/** Return true only for the already-open matching agent and channel pane. */
 export function shouldSuppressPermissionAlert(input: {
   agentPubkey: string;
   channelId: string | null;
@@ -576,34 +577,27 @@ export function shouldSuppressPermissionAlert(input: {
   openAgentSessionChannel: string | null | undefined;
   currentChannelId: string | null | undefined;
 }): boolean {
-  if (!input.openAgentSession) {
-    return false;
-  }
   if (
+    !input.openAgentSession ||
     normalizePubkey(input.openAgentSession) !==
-    normalizePubkey(input.agentPubkey)
+      normalizePubkey(input.agentPubkey)
   ) {
     return false;
   }
-  if (input.channelId == null) {
-    return true;
-  }
   return (
+    input.channelId === null ||
     input.channelId === input.currentChannelId ||
     input.channelId === input.openAgentSessionChannel
   );
 }
 
-/**
- * Build in-app / OS copy for an owner permission alert.
- */
+/** Build pinned toast and native-notification copy. */
 export function permissionAlertCopy(input: {
   agentName: string;
   channelName: string | null | undefined;
 }): { title: string; body: string } {
-  const agentName = input.agentName.trim() || DEFAULT_AGENT_NAME;
-  const rawChannel = input.channelName?.trim() ?? "";
-  const channelName = rawChannel.replace(/^#+/, "");
+  const agentName = input.agentName.trim() || "Agent";
+  const channelName = (input.channelName?.trim() ?? "").replace(/^#+/, "");
   return {
     title: channelName
       ? `${agentName} needs permission in #${channelName}`
@@ -612,43 +606,24 @@ export function permissionAlertCopy(input: {
   };
 }
 
-/**
- * Collect request nonces already present on a transcript.
- */
+/** Collect permission nonces already represented in a transcript. */
 export function collectSeenPermissionNonces(
   items: readonly TranscriptItem[],
 ): string[] {
   const nonces: string[] = [];
   for (const item of items) {
-    if ("requestNonce" in item && typeof item.requestNonce === "string") {
-      const nonce = nonEmptyNonce(item.requestNonce);
-      if (nonce) {
-        nonces.push(nonce);
-      }
+    if (!("requestNonce" in item)) {
+      continue;
+    }
+    const requestNonce = nonEmptyNonce(item.requestNonce);
+    if (requestNonce) {
+      nonces.push(requestNonce);
     }
   }
   return nonces;
 }
 
-/**
- * Seed the seen-nonce set from current transcripts so reconnect snapshots
- * do not alert.
- */
-export function seedSeenPermissionNonces(
-  transcripts: readonly (readonly TranscriptItem[])[],
-): Set<string> {
-  const seen = new Set<string>();
-  for (const items of transcripts) {
-    for (const nonce of collectSeenPermissionNonces(items)) {
-      seen.add(nonce);
-    }
-  }
-  return seen;
-}
-
-/**
- * Fold a live observer batch into new alerts and toast dismissals.
- */
+/** Fold one admitted live batch into alerts, seen nonces, and dismissals. */
 export function applyPermissionAlertUpdate(input: {
   events: readonly ObserverEvent[];
   seenNonces: ReadonlySet<string>;
@@ -671,15 +646,12 @@ export function applyPermissionAlertUpdate(input: {
         dismissNonces.push(resolved);
       }
     }
-    const extracted = extractActionablePermission(event);
-    if (!extracted) {
+    const alert = extractActionablePermission(event);
+    if (!alert || nextSeenNonces.has(alert.requestNonce)) {
       continue;
     }
-    if (nextSeenNonces.has(extracted.requestNonce)) {
-      continue;
-    }
-    nextSeenNonces.add(extracted.requestNonce);
-    alerts.push(extracted);
+    nextSeenNonces.add(alert.requestNonce);
+    alerts.push(alert);
   }
 
   return {
@@ -689,9 +661,61 @@ export function applyPermissionAlertUpdate(input: {
   };
 }
 
-/**
- * Choose the focused toast path, the background OS path, or silence.
- */
+/** Gate initial replay, seed each owned agent once, and apply one live update. */
+export function applyPermissionAlertStoreNotification(input: {
+  state: PermissionAlertStoreState;
+  initialReplayComplete: boolean;
+  agents: readonly {
+    pubkey: string;
+    transcript: readonly TranscriptItem[];
+  }[];
+  update?: PermissionAlertStoreUpdate;
+}): {
+  nextState: PermissionAlertStoreState;
+  alerts: ActionablePermissionAlert[];
+  dismissNonces: string[];
+} {
+  const nextState: PermissionAlertStoreState = {
+    seededAgentPubkeys: new Set(input.state.seededAgentPubkeys),
+    seenNonces: new Set(input.state.seenNonces),
+  };
+  if (!input.initialReplayComplete) {
+    return { nextState, alerts: [], dismissNonces: [] };
+  }
+
+  const ownedAgentPubkeys = new Set<string>();
+  for (const agent of input.agents) {
+    const pubkey = normalizePubkey(agent.pubkey);
+    ownedAgentPubkeys.add(pubkey);
+    if (nextState.seededAgentPubkeys.has(pubkey)) {
+      continue;
+    }
+    for (const nonce of collectSeenPermissionNonces(agent.transcript)) {
+      nextState.seenNonces.add(nonce);
+    }
+    nextState.seededAgentPubkeys.add(pubkey);
+  }
+
+  if (
+    !input.update ||
+    !ownedAgentPubkeys.has(normalizePubkey(input.update.agentPubkey))
+  ) {
+    return { nextState, alerts: [], dismissNonces: [] };
+  }
+
+  const applied = applyPermissionAlertUpdate({
+    events: input.update.events,
+    seenNonces: nextState.seenNonces,
+  });
+  nextState.seenNonces = applied.nextSeenNonces;
+  return {
+    nextState,
+    alerts: applied.alerts,
+    dismissNonces: applied.dismissNonces,
+  };
+}
+
+/** Choose focused toast, background OS delivery, or no surface. */
 export function selectPermissionAlertSurface(input: {
   focused: boolean;
   desktopEnabled: boolean;
@@ -699,14 +723,39 @@ export function selectPermissionAlertSurface(input: {
   if (input.focused) {
     return "toast";
   }
-  if (input.desktopEnabled) {
-    return "os";
-  }
-  return null;
+  return input.desktopEnabled ? "os" : null;
+}
+
+/** Process the current snapshot before subscribing to later store updates. */
+export function startPermissionAlertStoreSubscription(input: {
+  handleUpdate: (update?: PermissionAlertStoreUpdate) => void;
+  subscribe: (
+    listener: (update?: PermissionAlertStoreUpdate) => void,
+  ) => () => void;
+}): () => void {
+  input.handleUpdate();
+  return input.subscribe(input.handleUpdate);
 }
 ```
 
-- [ ] **Step 4: Run the tests and confirm they pass**
+Implementation rules:
+
+- `extractActionablePermission` accepts only `kind === "acp_read"`, payload method `session/request_permission`, `authorization.actionable === true`, and a non-empty nonce.
+- Read title from `params.title`, then `params.message`, then `params.reason`, then `Permission requested`.
+- `extractResolvedPermissionNonce` accepts any enveloped `acp_write`, plus a non-actionable enveloped permission `acp_read`.
+- `shouldSuppressPermissionAlert` normalizes only agent pubkeys and applies the design's channel OR rule.
+- `collectSeenPermissionNonces` includes actionable and already-resolved permission transcript items.
+- `applyPermissionAlertUpdate` adds every terminal nonce to `dismissNonces`, deduplicates dismissals, and filters alerts whose nonce resolves in the same batch.
+- `createPermissionAlertStoreState` returns two new empty sets.
+- `applyPermissionAlertStoreNotification` clones both sets before changing them.
+- `startPermissionAlertStoreSubscription` processes an update-less current snapshot before registering the same callback for live store notifications.
+- When `initialReplayComplete` is false, the store controller returns no alerts and does not seed or consume the update nonce.
+- When replay is complete, seed only agents not already in `seededAgentPubkeys`.
+- Build the owned-agent set from the same `agents` input and reject any update outside it.
+- After seeding, delegate the live batch to `applyPermissionAlertUpdate`.
+- Add doc comments to every exported type or function.
+
+- [ ] **Step 5: Run the test and verify GREEN**
 
 ```bash
 . ./bin/activate-hermit && cd desktop && pnpm exec node --import ./test-loader.mjs --experimental-strip-types --test src/features/agents/pendingPermissionAlert.test.mjs
@@ -714,35 +763,266 @@ export function selectPermissionAlertSurface(input: {
 
 Expected: PASS.
 
-- [ ] **Step 5: Refactor if needed and re-run the same command**
+- [ ] **Step 6: Refactor and verify**
 
-Do not change the pinned copy strings.
-Do not fold option lists into the body.
+Remove duplication only if the same test remains green.
+Do not change pinned copy or add option text.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Run staged change detection and commit**
 
 ```bash
-. ./bin/activate-hermit && git add desktop/src/features/agents/pendingPermissionAlert.ts desktop/src/features/agents/pendingPermissionAlert.test.mjs && git diff --stat && git diff --name-only && git diff --check && git commit -s -m "$(cat <<'EOF'
-test(desktop): add agent permission alert helpers
+. ./bin/activate-hermit && git add desktop/src/features/agents/pendingPermissionAlert.ts desktop/src/features/agents/pendingPermissionAlert.test.mjs && git diff --cached --stat && git diff --cached --name-only && git diff --cached --check
+```
 
-Pure extract, suppress, copy, seed, and batch-apply helpers for owner
-permission toasts. No hook wiring yet.
-EOF
-)"
+Run `detect_changes({ scope: "staged" })` and confirm only the new permission-alert helper symbols are affected.
+
+```bash
+. ./bin/activate-hermit && git commit -s -m "feat(desktop): add permission alert controller"
 ```
 
 ---
 
-### Task 2: Accept `agentPubkey` on desktop notification targets
+### Task 2: Establish an initial observer-replay barrier
 
 **Files:**
 
-- Modify: `desktop/src/features/notifications/lib/desktop.ts`
-- Modify: `desktop/src/features/notifications/lib/desktop.test.mjs`
+- Modify: `desktop/src/shared/api/observerRelay.ts`
+- Modify: `desktop/src/shared/api/observerRelay.test.mjs`
+- Modify: `desktop/src/features/agents/observerRelayStore.ts`
+- Create: `desktop/src/features/agents/observerInitialReplay.test.mjs`
 
 **Interfaces:**
 
-- Change `DesktopNotificationTarget` to:
+```ts
+export function subscribeToAgentObserverFrames(
+  ownerPubkey: string,
+  onEvent: (event: RelayEvent) => void,
+  onReady?: (readiness: LiveSubscriptionReadiness) => void,
+): Promise<() => Promise<void>>;
+
+export function isAgentObserverInitialReplayComplete(): boolean;
+
+export function _testEnqueueObserverStoreWork(
+  work: () => Promise<void>,
+): void;
+
+export function _testQueueInitialObserverReplayComplete(): Promise<void>;
+```
+
+The store may expose only the two documented `_test*` helpers above for the focused readiness test.
+
+- [ ] **Step 1: Run required impact analysis**
+
+Run upstream impact for `subscribeToAgentObserverFrames`, `ensureRelayObserverSubscription`, `notifyListeners`, `resetAgentObserverStore`, and `AgentObserverStoreUpdate`.
+Confirm `subscribeToAgentObserverFrames` is consumed by `observerRelayStore`, and confirm store listeners tolerate an update-less `notifyListeners()` because connection and archive paths already use it.
+
+- [ ] **Step 2: Write failing readiness-forwarding coverage**
+
+Append this test to `desktop/src/shared/api/observerRelay.test.mjs`:
+
+```js
+test("subscribeToAgentObserverFrames forwards initial subscription readiness", () => {
+  const readiness = [];
+  mock.method(relayClient, "subscribeLive", (_filter, _onEvent, onReady) => {
+    onReady?.("eose");
+    return async () => {};
+  });
+
+  subscribeToAgentObserverFrames(
+    "owner-pubkey",
+    () => {},
+    (value) => readiness.push(value),
+  );
+
+  assert.deepEqual(readiness, ["eose"]);
+  mock.reset();
+});
+```
+
+Create `desktop/src/features/agents/observerInitialReplay.test.mjs` with:
+
+```js
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import {
+  _testEnqueueObserverStoreWork,
+  _testQueueInitialObserverReplayComplete,
+  isAgentObserverInitialReplayComplete,
+  resetAgentObserverStore,
+  subscribeAgentObserverStore,
+} from "./observerRelayStore.ts";
+
+test("initial observer replay completes once after the queued EOSE barrier and resets", async () => {
+  resetAgentObserverStore();
+  const notifications = [];
+  const unsubscribe = subscribeAgentObserverStore((update) => notifications.push(update));
+
+  assert.equal(isAgentObserverInitialReplayComplete(), false);
+  let releaseQueuedWork;
+  const queuedWork = new Promise((resolve) => {
+    releaseQueuedWork = resolve;
+  });
+  _testEnqueueObserverStoreWork(() => queuedWork);
+  const completion = _testQueueInitialObserverReplayComplete();
+  await Promise.resolve();
+  assert.equal(isAgentObserverInitialReplayComplete(), false);
+  assert.deepEqual(notifications, []);
+  releaseQueuedWork();
+  await completion;
+  assert.equal(isAgentObserverInitialReplayComplete(), true);
+  assert.deepEqual(notifications, [undefined]);
+
+  await _testQueueInitialObserverReplayComplete();
+  assert.deepEqual(notifications, [undefined]);
+
+  resetAgentObserverStore();
+  assert.equal(isAgentObserverInitialReplayComplete(), false);
+  unsubscribe();
+});
+```
+
+- [ ] **Step 3: Run both tests and verify RED**
+
+```bash
+. ./bin/activate-hermit && cd desktop && pnpm exec node --import ./test-loader.mjs --experimental-strip-types --test src/shared/api/observerRelay.test.mjs src/features/agents/observerInitialReplay.test.mjs
+```
+
+Expected: FAIL because readiness is not forwarded and the store readiness APIs do not exist.
+
+- [ ] **Step 4: Forward readiness from the relay wrapper**
+
+In `desktop/src/shared/api/observerRelay.ts`, add `import type { LiveSubscriptionReadiness } from "./relayClientShared";`.
+Add the optional `onReady` parameter and pass it as the third argument to `relayClient.subscribeLive`.
+Do not change `limit: 1000`, the 300-second `since`, or the event callback.
+The resulting function call must have this shape:
+
+```ts
+export function subscribeToAgentObserverFrames(
+  ownerPubkey: string,
+  onEvent: (event: RelayEvent) => void,
+  onReady?: (readiness: LiveSubscriptionReadiness) => void,
+) {
+  return relayClient.subscribeLive(
+    {
+      kinds: [KIND_AGENT_OBSERVER_FRAME],
+      "#p": [ownerPubkey],
+      limit: 1000,
+      since: Math.floor(Date.now() / 1_000) - OBSERVER_LIVE_LOOKBACK_SECS,
+    },
+    onEvent,
+    onReady,
+  );
+}
+```
+
+- [ ] **Step 5: Add the queued EOSE barrier to the observer store**
+
+In `desktop/src/features/agents/observerRelayStore.ts`:
+
+1. Add module state `let initialReplayComplete = false;` beside the other connection state.
+2. Add a private `queueInitialObserverReplayComplete(activeGeneration: number)` function.
+3. Return the current `eventProcessingQueue` immediately when the flag is already true.
+4. Otherwise append a callback to `eventProcessingQueue`.
+5. In the callback, return when `activeGeneration !== generation` or the flag became true.
+6. Set the flag to true and call `notifyListeners()` without an event update.
+7. Export a documented `isAgentObserverInitialReplayComplete()` getter.
+8. Pass a readiness callback to `subscribeToAgentObserverFrames` inside `ensureRelayObserverSubscription`.
+9. Queue completion only for `readiness === "eose"` and pass the captured `activeGeneration`.
+10. Set `initialReplayComplete = false` in `resetAgentObserverStore()` before its final `notifyListeners()`.
+11. Export a documented `_testEnqueueObserverStoreWork(work)` helper that appends controlled work to `eventProcessingQueue` without notifying listeners.
+12. Export a documented `_testQueueInitialObserverReplayComplete()` that calls the private queue helper with the current generation and returns its promise.
+
+Use these exact store functions:
+
+```ts
+let initialReplayComplete = false;
+
+function queueInitialObserverReplayComplete(
+  activeGeneration: number,
+): Promise<void> {
+  if (initialReplayComplete) {
+    return eventProcessingQueue;
+  }
+  eventProcessingQueue = eventProcessingQueue.then(() => {
+    if (activeGeneration !== generation || initialReplayComplete) {
+      return;
+    }
+    initialReplayComplete = true;
+    notifyListeners();
+  });
+  return eventProcessingQueue;
+}
+
+/** Return whether the first observer subscription replay reached EOSE. */
+export function isAgentObserverInitialReplayComplete(): boolean {
+  return initialReplayComplete;
+}
+
+/** Test-only: append controlled work before the initial replay barrier. */
+export function _testEnqueueObserverStoreWork(
+  work: () => Promise<void>,
+): void {
+  eventProcessingQueue = eventProcessingQueue.then(work);
+}
+
+/** Test-only: queue and await initial replay completion. */
+export function _testQueueInitialObserverReplayComplete(): Promise<void> {
+  return queueInitialObserverReplayComplete(generation);
+}
+```
+
+Pass this third callback in `ensureRelayObserverSubscription`:
+
+```ts
+(readiness) => {
+  if (readiness === "eose") {
+    void queueInitialObserverReplayComplete(activeGeneration);
+  }
+},
+```
+
+Do not put readiness on `AgentObserverStoreUpdate`.
+The existing update-less store notification is the readiness signal, and consumers read the getter.
+
+- [ ] **Step 6: Run both tests and verify GREEN**
+
+```bash
+. ./bin/activate-hermit && cd desktop && pnpm exec node --import ./test-loader.mjs --experimental-strip-types --test src/shared/api/observerRelay.test.mjs src/features/agents/observerInitialReplay.test.mjs
+```
+
+Expected: PASS, including the existing replay-filter tests.
+
+- [ ] **Step 7: Run observer-store regression tests**
+
+```bash
+. ./bin/activate-hermit && cd desktop && pnpm exec node --import ./test-loader.mjs --experimental-strip-types --test src/features/agents/activeAgentTurnsStore.test.mjs src/features/agents/ingestArchivedObserverEvents.test.mjs src/features/agents/observerTranscriptRetention.test.mjs
+```
+
+Expected: PASS.
+
+- [ ] **Step 8: Run staged change detection and commit**
+
+```bash
+. ./bin/activate-hermit && git add desktop/src/shared/api/observerRelay.ts desktop/src/shared/api/observerRelay.test.mjs desktop/src/features/agents/observerRelayStore.ts desktop/src/features/agents/observerInitialReplay.test.mjs && git diff --cached --stat && git diff --cached --name-only && git diff --cached --check
+```
+
+Run `detect_changes({ scope: "staged" })` and confirm the observer subscription, observer ingestion, active-turn, and transcript flows are the expected affected scope.
+
+```bash
+. ./bin/activate-hermit && git commit -s -m "fix(desktop): gate permission alerts after observer replay"
+```
+
+---
+
+### Task 3: Accept `agentPubkey` in desktop notification targets
+
+**Files:**
+
+- Modify: `desktop/src/features/notifications/lib/desktop.test.mjs`
+- Modify: `desktop/src/features/notifications/lib/desktop.ts`
+
+**Interface change:**
 
 ```ts
 export type DesktopNotificationTarget = {
@@ -756,55 +1036,55 @@ export type DesktopNotificationTarget = {
   pubkey?: string;
   threadRootId?: string | null;
 };
+
+export function parseNotificationTarget(value: unknown): DesktopNotificationTarget | null;
 ```
 
-- Export `parseNotificationTarget(value: unknown): DesktopNotificationTarget | null`.
-- A target is valid when `channelId`, `eventId`, or `agentPubkey` is a non-empty string.
-- Empty-string `agentPubkey` does not count.
-- `pubkey` without `agentPubkey` still requires `channelId` or `eventId`.
-- Return `agentPubkey` only when it is a non-empty string.
+- [ ] **Step 1: Run required impact analysis**
 
-- [ ] **Step 1: Run the impact grep**
+Run upstream impact for `DesktopNotificationTarget`, `parseNotificationTarget`, `listenForDesktopNotificationActions`, and `sendDesktopNotification`.
+Confirm native Linux and macOS accept `Option<serde_json::Value>` and need no Rust schema edit.
 
-```bash
-. ./bin/activate-hermit && rg -n "parseNotificationTarget|DesktopNotificationTarget" desktop/src desktop/src-tauri
+- [ ] **Step 2: Write failing parser tests**
+
+In `desktop.test.mjs`, preserve the constructor-failure test and change the dynamic import to bind both exports:
+
+```js
+const { parseNotificationTarget, sendDesktopNotification } = await import("./desktop.ts");
 ```
 
-Confirm Rust still takes `Option<serde_json::Value>` and does not need a schema change.
-If a later GitNexus impact on `parseNotificationTarget` is HIGH or CRITICAL, stop.
-
-- [ ] **Step 2: Write the failing parse tests**
-
-Keep the existing constructor-failure test in `desktop/src/features/notifications/lib/desktop.test.mjs`.
-Change the dynamic import to also bind `parseNotificationTarget`.
-Append these tests after the existing one:
+Append:
 
 ```js
 test("parseNotificationTarget accepts agentPubkey without channel or event", () => {
-  const target = parseNotificationTarget({
+  assert.deepEqual(parseNotificationTarget({
     agentPubkey: "aa".repeat(32),
     channelId: null,
     eventId: null,
     kind: null,
+  }), {
+    agentPubkey: "aa".repeat(32),
+    channelId: null,
+    channelName: null,
+    content: undefined,
+    createdAt: null,
+    eventId: null,
+    kind: null,
+    pubkey: undefined,
+    threadRootId: null,
   });
-  assert.equal(target?.agentPubkey, "aa".repeat(32));
-  assert.equal(target?.channelId, null);
-  assert.equal(target?.eventId, null);
 });
 
-test("parseNotificationTarget still requires channel or event when only pubkey is set", () => {
-  assert.equal(
-    parseNotificationTarget({
-      pubkey: "aa".repeat(32),
-      channelId: null,
-      eventId: null,
-      kind: 1,
-    }),
-    null,
-  );
+test("parseNotificationTarget does not reinterpret message pubkey as agent identity", () => {
+  assert.equal(parseNotificationTarget({
+    pubkey: "aa".repeat(32),
+    channelId: null,
+    eventId: null,
+    kind: 1,
+  }), null);
 });
 
-test("parseNotificationTarget still accepts eventId-only join-alert targets", () => {
+test("parseNotificationTarget keeps event-only join targets valid", () => {
   const target = parseNotificationTarget({
     channelId: null,
     eventId: "ab".repeat(32),
@@ -814,85 +1094,96 @@ test("parseNotificationTarget still accepts eventId-only join-alert targets", ()
   assert.equal(target?.agentPubkey, undefined);
 });
 
-test("parseNotificationTarget rejects empty agentPubkey without other anchors", () => {
-  assert.equal(
-    parseNotificationTarget({
-      agentPubkey: "",
-      channelId: null,
-      eventId: null,
-      kind: null,
-    }),
-    null,
-  );
+test("parseNotificationTarget rejects empty agentPubkey without another anchor", () => {
+  assert.equal(parseNotificationTarget({
+    agentPubkey: "",
+    channelId: null,
+    eventId: null,
+    kind: null,
+  }), null);
 });
 ```
 
-- [ ] **Step 3: Run the tests and confirm the new cases fail**
+- [ ] **Step 3: Run the test and verify RED**
 
 ```bash
 . ./bin/activate-hermit && cd desktop && pnpm exec node --import ./test-loader.mjs --experimental-strip-types --test src/features/notifications/lib/desktop.test.mjs
 ```
 
-Expected: FAIL on `parseNotificationTarget is not a function` or on the agentPubkey-only assertion.
+Expected: FAIL because `parseNotificationTarget` is not exported or the agent-only target is rejected.
 
-- [ ] **Step 4: Implement the type and parse changes**
+- [ ] **Step 4: Implement the parser change**
 
 In `desktop.ts`:
 
 1. Add `agentPubkey?: string` to `DesktopNotificationTarget`.
-2. Change `function parseNotificationTarget` to `export function parseNotificationTarget`.
-3. Parse `agentPubkey` as a non-empty string or `undefined`.
-4. Replace `if (!channelId && !eventId) return null;` with `if (!channelId && !eventId && !agentPubkey) return null;`.
-5. Include `agentPubkey` on the returned object.
+2. Export `parseNotificationTarget` with a doc comment.
+3. Parse `agentPubkey` only when it is a string with `length > 0`.
+4. Replace the validity guard with `if (!channelId && !eventId && !agentPubkey) return null;`.
+5. Include `agentPubkey` in the returned object.
+6. Leave every other parsed field unchanged.
 
-Add this doc comment on the exported parser:
+Use this exact addition inside the parser:
 
 ```ts
-/**
- * Parse a native or in-process desktop-notification click target.
- * A target is valid when it names a channel, an event, or an agent session.
- */
+const agentPubkey =
+  typeof candidate.agentPubkey === "string" &&
+  candidate.agentPubkey.length > 0
+    ? candidate.agentPubkey
+    : undefined;
+
+if (!channelId && !eventId && !agentPubkey) {
+  return null;
+}
+
+return {
+  agentPubkey,
+  channelId,
+  channelName,
+  content,
+  createdAt,
+  eventId,
+  kind,
+  pubkey,
+  threadRootId,
+};
 ```
 
-- [ ] **Step 5: Re-run the desktop notification tests**
+- [ ] **Step 5: Run the test and verify GREEN**
 
 ```bash
 . ./bin/activate-hermit && cd desktop && pnpm exec node --import ./test-loader.mjs --experimental-strip-types --test src/features/notifications/lib/desktop.test.mjs
 ```
 
-Expected: PASS, including the original constructor-failure test.
+Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 6: Run staged change detection and commit**
 
 ```bash
-. ./bin/activate-hermit && git add desktop/src/features/notifications/lib/desktop.ts desktop/src/features/notifications/lib/desktop.test.mjs && git diff --stat && git diff --name-only && git diff --check && git commit -s -m "$(cat <<'EOF'
-fix(desktop): accept agentPubkey notification targets
+. ./bin/activate-hermit && git add desktop/src/features/notifications/lib/desktop.ts desktop/src/features/notifications/lib/desktop.test.mjs && git diff --cached --stat && git diff --cached --name-only && git diff --cached --check
+```
 
-Permission-alert clicks can name an agent session without a channel or
-message event. Join-alert eventId-only targets still parse.
-EOF
-)"
+Run `detect_changes({ scope: "staged" })` and confirm only desktop notification construction and click-target parsing are affected.
+
+```bash
+. ./bin/activate-hermit && git commit -s -m "fix(desktop): accept agent notification targets"
 ```
 
 ---
 
-### Task 3: Route OS notification clicks to the process transcript
+### Task 4: Route notification clicks through agent activity
 
 **Files:**
 
-- Modify: `desktop/src/app/AppShell.helpers.ts`
 - Modify: `desktop/src/app/AppShell.helpers.test.mjs`
+- Modify: `desktop/src/app/AppShell.helpers.ts`
 - Modify: `desktop/src/app/useAppShellDesktopNotifications.ts`
 
 **Interfaces:**
 
 ```ts
 export type DesktopNotificationAction =
-  | {
-      type: "agent-activity";
-      agentPubkey: string;
-      channelId: string | null;
-    }
+  | { type: "agent-activity"; agentPubkey: string; channelId: string | null }
   | { type: "home" }
   | { type: "channel"; channelId: string }
   | { type: "search-hit"; hit: SearchHit };
@@ -900,46 +1191,39 @@ export type DesktopNotificationAction =
 export function resolveDesktopNotificationAction(
   target: DesktopNotificationTarget,
 ): DesktopNotificationAction;
+
+export type DesktopNotificationActionDependencies = {
+  revealDesktopAppWindow: () => Promise<void>;
+  openAgentActivity: (
+    pubkey: string,
+    options: { channelId: string | null },
+  ) => unknown;
+  goHome: () => Promise<unknown>;
+  goChannel: (channelId: string) => Promise<unknown>;
+  openSearchHit: (hit: SearchHit) => Promise<unknown>;
+};
+
+export async function executeDesktopNotificationAction(
+  target: DesktopNotificationTarget,
+  dependencies: DesktopNotificationActionDependencies,
+): Promise<void>;
 ```
 
-Routing order:
+- [ ] **Step 1: Run required impact analysis**
 
-1. Non-empty `target.agentPubkey` → `{ type: "agent-activity", agentPubkey, channelId: target.channelId }`.
-2. Else missing `channelId` → `{ type: "home" }`.
-3. Else `toSearchHit(target)` → `{ type: "search-hit", hit }`.
-4. Else `{ type: "channel", channelId: target.channelId }`.
+Run upstream impact for `toSearchHit`, `useAppShellDesktopNotifications`, and the local `handleDesktopNotificationAction` effect event.
+Confirm the hook is called by `AppShell` and the action listener remains main-window-only through its existing `enabled` parameter.
 
-`handleDesktopNotificationAction` must:
+- [ ] **Step 2: Write failing routing and executor tests**
 
-1. `await revealDesktopAppWindow()`.
-2. Switch on `resolveDesktopNotificationAction(target)`.
-3. On `agent-activity`, call `openAgentActivity(agentPubkey, { channelId })` and return.
-4. On `home`, `void goHome()`.
-5. On `channel`, `await goChannel(channelId)`.
-6. On `search-hit`, `await openSearchHit(hit)`.
+Add both new exports to the existing single import from `./AppShell.helpers.ts`.
+Do not add a second import from the same module.
 
-Call `useOpenAgentActivity()` inside `useAppShellDesktopNotifications`.
-Do not add parameters to the hook.
-Do not call `openSearchHit` when `agentPubkey` is set.
-
-- [ ] **Step 1: Run the impact grep**
-
-```bash
-. ./bin/activate-hermit && rg -n "toSearchHit|handleDesktopNotificationAction|useAppShellDesktopNotifications" desktop/src
-```
-
-Stop if a later GitNexus impact on `handleDesktopNotificationAction` is HIGH or CRITICAL.
-
-- [ ] **Step 2: Write the failing routing tests**
-
-Append these tests to `desktop/src/app/AppShell.helpers.test.mjs`.
-Add `resolveDesktopNotificationAction` to the import list.
+Append:
 
 ```js
-import { resolveDesktopNotificationAction } from "./AppShell.helpers.ts";
-
-test("resolveDesktopNotificationAction prefers agentPubkey over a search hit", () => {
-  const action = resolveDesktopNotificationAction({
+test("resolveDesktopNotificationAction gives agentPubkey precedence over a search hit", () => {
+  assert.deepEqual(resolveDesktopNotificationAction({
     agentPubkey: "aa".repeat(32),
     channelId: "channel-1",
     content: "ignored",
@@ -948,84 +1232,89 @@ test("resolveDesktopNotificationAction prefers agentPubkey over a search hit", (
     kind: 9,
     pubkey: "cc".repeat(32),
     threadRootId: null,
-  });
-  assert.deepEqual(action, {
+  }), {
     type: "agent-activity",
     agentPubkey: "aa".repeat(32),
     channelId: "channel-1",
   });
 });
 
-test("resolveDesktopNotificationAction opens activity with a null channel", () => {
-  const action = resolveDesktopNotificationAction({
-    agentPubkey: "aa".repeat(32),
-    channelId: null,
-    eventId: null,
-    kind: null,
-  });
-  assert.deepEqual(action, {
-    type: "agent-activity",
-    agentPubkey: "aa".repeat(32),
-    channelId: null,
-  });
-});
-
-test("resolveDesktopNotificationAction keeps eventId-only targets on home", () => {
-  const action = resolveDesktopNotificationAction({
+test("resolveDesktopNotificationAction keeps no-channel event targets on Home", () => {
+  assert.deepEqual(resolveDesktopNotificationAction({
     channelId: null,
     eventId: "ab".repeat(32),
     kind: 8000,
-    pubkey: "cc".repeat(32),
-  });
-  assert.deepEqual(action, { type: "home" });
+  }), { type: "home" });
 });
 
-test("resolveDesktopNotificationAction still builds a search hit without agentPubkey", () => {
-  const action = resolveDesktopNotificationAction({
+test("resolveDesktopNotificationAction keeps channel-only targets on channel routing", () => {
+  assert.deepEqual(resolveDesktopNotificationAction({
     channelId: "channel-1",
-    content: "hello",
-    createdAt: 42,
+    eventId: null,
+    kind: null,
+  }), { type: "channel", channelId: "channel-1" });
+});
+
+test("executeDesktopNotificationAction reveals before opening agent activity and never opens a search hit", async () => {
+  const calls = [];
+  await executeDesktopNotificationAction({
+    agentPubkey: "aa".repeat(32),
+    channelId: null,
+    eventId: "ab".repeat(32),
+    kind: 9,
+  }, {
+    revealDesktopAppWindow: async () => calls.push("reveal"),
+    openAgentActivity: (pubkey, options) => calls.push(`agent:${pubkey}:${options.channelId}`),
+    goHome: async () => calls.push("home"),
+    goChannel: async (channelId) => calls.push(`channel:${channelId}`),
+    openSearchHit: async () => calls.push("search"),
+  });
+  assert.deepEqual(calls, ["reveal", `agent:${"aa".repeat(32)}:null`]);
+});
+
+test("executeDesktopNotificationAction preserves message search-hit routing", async () => {
+  const calls = [];
+  await executeDesktopNotificationAction({
+    channelId: "channel-1",
     eventId: "ab".repeat(32),
     kind: 9,
     pubkey: "cc".repeat(32),
-    threadRootId: "cd".repeat(32),
+  }, {
+    revealDesktopAppWindow: async () => calls.push("reveal"),
+    openAgentActivity: () => calls.push("agent"),
+    goHome: async () => calls.push("home"),
+    goChannel: async () => calls.push("channel"),
+    openSearchHit: async (hit) => calls.push(`search:${hit.eventId}`),
   });
-  assert.equal(action.type, "search-hit");
-  if (action.type === "search-hit") {
-    assert.equal(action.hit.eventId, "ab".repeat(32));
-    assert.equal(action.hit.channelId, "channel-1");
-    assert.equal(action.hit.pubkey, "cc".repeat(32));
-  }
+  assert.deepEqual(calls, ["reveal", `search:${"ab".repeat(32)}`]);
 });
 ```
 
-- [ ] **Step 3: Run the helper tests and confirm the new cases fail**
+- [ ] **Step 3: Run the helper test and verify RED**
 
 ```bash
 . ./bin/activate-hermit && cd desktop && pnpm exec node --import ./test-loader.mjs --experimental-strip-types --test src/app/AppShell.helpers.test.mjs
 ```
 
-Expected: FAIL because `resolveDesktopNotificationAction` is not exported.
+Expected: FAIL because the resolver and executor are not exported.
 
-- [ ] **Step 4: Implement the helper and the click branch**
+- [ ] **Step 4: Implement the tested resolver and executor**
 
-Add this to `AppShell.helpers.ts` after `toSearchHit`:
+Add both documented exports after `toSearchHit` in `AppShell.helpers.ts`.
+Use this routing order:
+
+1. Non-empty `agentPubkey`.
+2. Missing `channelId` to Home.
+3. A valid `toSearchHit` result.
+4. Channel fallback.
+
+The executor must await reveal first, then execute exactly one resolved action.
+Await Home, channel, and search navigation promises.
+Call `openAgentActivity(agentPubkey, { channelId })` synchronously after reveal and return.
+Use this implementation:
 
 ```ts
-export type DesktopNotificationAction =
-  | {
-      type: "agent-activity";
-      agentPubkey: string;
-      channelId: string | null;
-    }
-  | { type: "home" }
-  | { type: "channel"; channelId: string }
-  | { type: "search-hit"; hit: SearchHit };
-
-/**
- * Decide where a desktop-notification click should land.
- * Agent session targets never go through search-hit routing.
- */
+/** Resolve a desktop notification target to one navigation action. */
 export function resolveDesktopNotificationAction(
   target: DesktopNotificationTarget,
 ): DesktopNotificationAction {
@@ -1040,163 +1329,208 @@ export function resolveDesktopNotificationAction(
     return { type: "home" };
   }
   const hit = toSearchHit(target);
-  if (!hit) {
-    return { type: "channel", channelId: target.channelId };
+  return hit
+    ? { type: "search-hit", hit }
+    : { type: "channel", channelId: target.channelId };
+}
+
+/** Reveal Buzz and execute exactly one resolved notification action. */
+export async function executeDesktopNotificationAction(
+  target: DesktopNotificationTarget,
+  dependencies: DesktopNotificationActionDependencies,
+): Promise<void> {
+  await dependencies.revealDesktopAppWindow();
+  const action = resolveDesktopNotificationAction(target);
+  if (action.type === "agent-activity") {
+    dependencies.openAgentActivity(action.agentPubkey, {
+      channelId: action.channelId,
+    });
+    return;
   }
-  return { type: "search-hit", hit };
+  if (action.type === "home") {
+    await dependencies.goHome();
+    return;
+  }
+  if (action.type === "channel") {
+    await dependencies.goChannel(action.channelId);
+    return;
+  }
+  await dependencies.openSearchHit(action.hit);
 }
 ```
+
+Define and document `DesktopNotificationActionDependencies` with the exact dependency signatures already declared in this task's Interfaces block.
+
+- [ ] **Step 5: Replace the hook's inline branch with the executor**
 
 In `useAppShellDesktopNotifications.ts`:
 
-1. Import `useOpenAgentActivity` from `@/features/agents/useOpenAgentActivity`.
-2. Import `resolveDesktopNotificationAction` from `@/app/AppShell.helpers`.
-3. Call `const { openAgentActivity } = useOpenAgentActivity();` at the top of the hook.
-4. Replace the body of `handleDesktopNotificationAction` with:
+1. Import `executeDesktopNotificationAction` instead of `toSearchHit`.
+2. Import `useOpenAgentActivity`.
+3. Call `const { openAgentActivity } = useOpenAgentActivity();` unconditionally at hook scope.
+4. Make the effect event return `executeDesktopNotificationAction(target, { revealDesktopAppWindow, openAgentActivity, goHome, goChannel, openSearchHit })`.
+5. Keep the listener effect's existing `if (!enabled) return;` guard so the huddle companion does not also consume native clicks.
+6. Do not add arguments to `useAppShellDesktopNotifications`.
+
+The replacement effect event is:
 
 ```ts
-await revealDesktopAppWindow();
-const action = resolveDesktopNotificationAction(target);
-if (action.type === "agent-activity") {
-  openAgentActivity(action.agentPubkey, { channelId: action.channelId });
-  return;
-}
-if (action.type === "home") {
-  void goHome();
-  return;
-}
-if (action.type === "channel") {
-  await goChannel(action.channelId);
-  return;
-}
-await openSearchHit(action.hit);
+const handleDesktopNotificationAction = React.useEffectEvent(
+  (target: DesktopNotificationTarget) =>
+    executeDesktopNotificationAction(target, {
+      revealDesktopAppWindow,
+      openAgentActivity,
+      goHome,
+      goChannel,
+      openSearchHit,
+    }),
+);
 ```
 
-Do not keep the old `if (!target.channelId) goHome()` path in front of the agent branch.
-
-- [ ] **Step 5: Re-run helper tests**
+- [ ] **Step 6: Run tests and typecheck**
 
 ```bash
-. ./bin/activate-hermit && cd desktop && pnpm exec node --import ./test-loader.mjs --experimental-strip-types --test src/app/AppShell.helpers.test.mjs
+. ./bin/activate-hermit && cd desktop && pnpm exec node --import ./test-loader.mjs --experimental-strip-types --test src/app/AppShell.helpers.test.mjs && pnpm typecheck
 ```
 
 Expected: PASS.
 
-- [ ] **Step 6: Typecheck the desktop app**
+- [ ] **Step 7: Run staged change detection and commit**
 
 ```bash
-. ./bin/activate-hermit && cd desktop && pnpm typecheck
+. ./bin/activate-hermit && git add desktop/src/app/AppShell.helpers.ts desktop/src/app/AppShell.helpers.test.mjs desktop/src/app/useAppShellDesktopNotifications.ts && git diff --cached --stat && git diff --cached --name-only && git diff --cached --check
 ```
 
-Expected: PASS.
-
-- [ ] **Step 7: Commit**
+Run `detect_changes({ scope: "staged" })` and confirm agent, message search-hit, join-alert Home, and channel fallback click flows are the expected scope.
 
 ```bash
-. ./bin/activate-hermit && git add desktop/src/app/AppShell.helpers.ts desktop/src/app/AppShell.helpers.test.mjs desktop/src/app/useAppShellDesktopNotifications.ts && git diff --stat && git diff --name-only && git diff --check && git commit -s -m "$(cat <<'EOF'
-feat(desktop): open agent transcripts from notification clicks
-
-OS permission-alert targets carry agentPubkey and skip search-hit
-routing. Existing message and join-alert clicks stay unchanged.
-EOF
-)"
+. ./bin/activate-hermit && git commit -s -m "feat(desktop): open agent activity from notifications"
 ```
 
 ---
 
-### Task 4: Mount the pending-permission alert hook
+### Task 5: Preserve the `agentSessionChannel` route contract
+
+**Files:**
+
+- Create: `desktop/src/app/routes/channels.$channelId.test.mjs`
+- Modify: `desktop/src/app/routes/channels.$channelId.tsx`
+
+**Interface:**
+
+```ts
+type ChannelRouteSearch = {
+  agentSession?: string;
+  agentSessionChannel?: string;
+  // Existing fields remain unchanged.
+};
+
+export function validateChannelSearch(
+  search: Record<string, unknown>,
+): ChannelRouteSearch;
+```
+
+- [ ] **Step 1: Run required impact analysis**
+
+Run upstream impact for the channel route `Route`, `useChannelPanelHistoryState`, and `openAgentSessionChannelId`.
+Confirm `agentSessionChannel` is already written and read by `useChannelPanelHistoryState` but is missing from the route validator.
+
+- [ ] **Step 2: Write the failing route-search test**
+
+Create `desktop/src/app/routes/channels.$channelId.test.mjs` with:
+
+```js
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import { validateChannelSearch } from "./channels.$channelId.tsx";
+
+test("channel route preserves non-empty agentSessionChannel search", () => {
+  assert.equal(validateChannelSearch({
+    agentSession: "aa".repeat(32),
+    agentSessionChannel: "channel-2",
+  }).agentSessionChannel, "channel-2");
+});
+
+test("channel route drops empty agentSessionChannel search", () => {
+  assert.equal(validateChannelSearch({
+    agentSessionChannel: "",
+  }).agentSessionChannel, undefined);
+});
+```
+
+- [ ] **Step 3: Run the test and verify RED**
+
+```bash
+. ./bin/activate-hermit && cd desktop && pnpm exec node --import ./test-loader.mjs --experimental-strip-types --test 'src/app/routes/channels.$channelId.test.mjs'
+```
+
+Expected: FAIL because `validateChannelSearch` is not exported and the validated type omits `agentSessionChannel`.
+
+- [ ] **Step 4: Implement the route contract**
+
+In `channels.$channelId.tsx`:
+
+1. Add `agentSessionChannel?: string` beside `agentSession` in `ChannelRouteSearch`.
+2. Export `validateChannelSearch` with a doc comment.
+3. Return `agentSessionChannel: nonEmptyString(search.agentSessionChannel)` beside `agentSession`.
+4. Leave every existing search field and route component unchanged.
+
+- [ ] **Step 5: Run the test and verify GREEN**
+
+```bash
+. ./bin/activate-hermit && cd desktop && pnpm exec node --import ./test-loader.mjs --experimental-strip-types --test 'src/app/routes/channels.$channelId.test.mjs' && pnpm typecheck
+```
+
+Expected: PASS.
+
+- [ ] **Step 6: Run staged change detection and commit**
+
+```bash
+. ./bin/activate-hermit && git add 'desktop/src/app/routes/channels.$channelId.tsx' 'desktop/src/app/routes/channels.$channelId.test.mjs' && git diff --cached --stat && git diff --cached --name-only && git diff --cached --check
+```
+
+Run `detect_changes({ scope: "staged" })` and confirm only channel-route search validation and its existing panel consumers are affected.
+
+```bash
+. ./bin/activate-hermit && git commit -s -m "fix(desktop): preserve agent session channel search"
+```
+
+---
+
+### Task 6: Share the canonical owner-global ingestion-agent list
 
 **Files:**
 
 - Modify: `desktop/src/features/agents/useAgentObserverIngestion.ts`
-- Create: `desktop/src/features/agents/usePendingPermissionAlerts.ts`
-- Modify: `desktop/src/app/AppShell.tsx`
+- Test unchanged: `desktop/src/features/agents/useAgentObserverIngestion.test.mjs`
 
-**Interfaces:**
+**Interface:**
 
 ```ts
 export function useObserverIngestionAgents(): Array<
   Pick<ManagedAgent, "pubkey" | "status">
 >;
-
-export function usePendingPermissionAlerts(): void;
 ```
 
-`useAgentObserverIngestion` must call `useObserverIngestionAgents()` instead of inlining the same query graph.
-`usePendingPermissionAlerts` must use that same list for seed and name lookup.
+- [ ] **Step 1: Run required impact analysis**
 
-Hook behavior:
+Run upstream impact for `useAgentObserverIngestion` and `combineObserverIngestionAgents`.
+Confirm `useAgentObserverIngestion` has one production caller in `AppShell.tsx`.
 
-1. Hold `const [seenNonces] = React.useState(() => new Set<string>());`.
-2. On `ingestionAgents` change, add `collectSeenPermissionNonces(getAgentTranscript(agent.pubkey))` into `seenNonces`.
-3. Subscribe to `subscribeAgentObserverStore` for the hook lifetime.
-4. On `update` with events, run `applyPermissionAlertUpdate` and copy returned nonces into `seenNonces`.
-5. `toast.dismiss(nonce)` for each `dismissNonces` entry.
-6. For each remaining alert, skip when `shouldSuppressPermissionAlert` is true using `useChannelPanelHistoryState()` plus `deriveShellRoute(useLocation().pathname).selectedChannelId`.
-7. Build copy with `permissionAlertCopy` and `resolveUserLabel`.
-8. `selectPermissionAlertSurface({ focused: isAppFocused(), desktopEnabled: settings.desktopEnabled })`.
-9. Toast path:
-
-```ts
-toast(copy.title, {
-  id: alert.requestNonce,
-  description: copy.body,
-  duration: Number.POSITIVE_INFINITY,
-  onClick: () => {
-    void revealDesktopAppWindow();
-    openAgentActivity(update.agentPubkey, { channelId: alert.channelId });
-  },
-});
-```
-
-10. OS path:
-
-```ts
-void sendDesktopNotification({
-  title: copy.title,
-  body: copy.body,
-  target: {
-    agentPubkey: update.agentPubkey,
-    channelId: alert.channelId,
-    eventId: null,
-    kind: null,
-  },
-}).then((didSend) => {
-  if (!didSend) return;
-  void requestDockBounce();
-  if (settings.slotAlertsEnabled.needs_action) {
-    playNotificationSound(resolveSlotSound(settings, "needs_action"));
-  }
-});
-```
-
-11. Toast path plays the same sound immediately when `settings.slotAlertsEnabled.needs_action` is true.
-12. Do not consult mute sets, huddle silent channels, or `notifyWhileViewing`.
-13. Read current `agentSession` / `agentSessionChannel` from `useChannelPanelHistoryState()`.
-14. Mount in `AppShell` immediately after `useAgentObserverIngestion();` with no readiness guard.
-
-`AppShell.tsx` is 956 lines.
-The only allowed production edits there are one import and one hook call.
-
-- [ ] **Step 1: Run the impact grep**
+- [ ] **Step 2: Establish the green refactor baseline**
 
 ```bash
-. ./bin/activate-hermit && rg -n "useAgentObserverIngestion|combineObserverIngestionAgents|subscribeAgentObserverStore|getAgentTranscript|useOpenAgentActivity" desktop/src
+. ./bin/activate-hermit && cd desktop && pnpm exec node --import ./test-loader.mjs --experimental-strip-types --test src/features/agents/useAgentObserverIngestion.test.mjs
 ```
 
-Report that `useAgentObserverIngestion` has one production caller (`AppShell`).
-Stop if a later GitNexus impact is HIGH or CRITICAL.
+Expected: PASS.
 
-- [ ] **Step 2: Extract `useObserverIngestionAgents` first**
+- [ ] **Step 3: Extract the hook without changing behavior**
 
-In `useAgentObserverIngestion.ts`, move the identity / managed / relay / profile query graph into:
-
-```ts
-export function useObserverIngestionAgents(): IngestionAgent[] {
-  // existing query + combineObserverIngestionAgents body
-}
-```
-
+Move the identity, managed-agent, relay-agent, profile, and `React.useMemo` query graph from `useAgentObserverIngestion` into the documented exported hook.
+Return the existing `ingestionAgents` value.
+Do not change `combineObserverIngestionAgents`.
 Keep `useAgentObserverIngestion` as:
 
 ```ts
@@ -1207,58 +1541,356 @@ export function useAgentObserverIngestion() {
 }
 ```
 
-Do not change the exported combine helper.
-Do not add a readiness guard.
+- [ ] **Step 4: Re-run characterization tests and typecheck**
 
-- [ ] **Step 3: Write the hook**
+```bash
+. ./bin/activate-hermit && cd desktop && pnpm exec node --import ./test-loader.mjs --experimental-strip-types --test src/features/agents/useAgentObserverIngestion.test.mjs && pnpm typecheck
+```
 
-Create `desktop/src/features/agents/usePendingPermissionAlerts.ts`:
+Expected: PASS.
+
+- [ ] **Step 5: Run staged change detection and commit**
+
+```bash
+. ./bin/activate-hermit && git add desktop/src/features/agents/useAgentObserverIngestion.ts && git diff --cached --stat && git diff --cached --name-only && git diff --cached --check
+```
+
+Run `detect_changes({ scope: "staged" })` and confirm observer ingestion and active-turn bridges are unchanged consumers of the extracted list.
+
+```bash
+. ./bin/activate-hermit && git commit -s -m "refactor(desktop): share observer ingestion agents"
+```
+
+---
+
+### Task 7: Mount and deliver pending-permission alerts
+
+**Files:**
+
+- Create: `desktop/src/features/agents/pendingPermissionAlertDelivery.test.mjs`
+- Create: `desktop/src/features/agents/pendingPermissionAlertDelivery.ts`
+- Create: `desktop/src/features/agents/usePendingPermissionAlerts.ts`
+- Modify: `desktop/src/app/AppShell.tsx`
+
+**Interface:**
 
 ```ts
-import * as React from "react";
-import { useLocation } from "@tanstack/react-router";
-import { toast } from "sonner";
+export function usePendingPermissionAlerts(input: {
+  enabled: boolean;
+  notificationSettings: NotificationSettings;
+}): void;
+```
 
-import { deriveShellRoute } from "@/app/AppShell.helpers";
-import { useChannelPanelHistoryState } from "@/features/channels/ui/useChannelPanelHistoryState";
-import { useChannelsQuery } from "@/features/channels/hooks";
-import { useNotificationSettings } from "@/features/notifications/hooks";
-import {
-  requestDockBounce,
-  revealDesktopAppWindow,
-  sendDesktopNotification,
-} from "@/features/notifications/lib/desktop";
-import {
-  playNotificationSound,
-  resolveSlotSound,
-} from "@/features/notifications/lib/sound";
-import { resolveUserLabel } from "@/features/profile/lib/identity";
-import { useUsersBatchQuery } from "@/features/profile/hooks";
-import { useIdentityQuery } from "@/shared/api/hooks";
-import { isAppFocused } from "@/shared/lib/useDocumentVisible";
+```ts
+export type PermissionAlertDeliveryInput = {
+  agentPubkey: string;
+  channelId: string | null;
+  copy: { title: string; body: string };
+  requestNonce: string;
+  soundEnabled: boolean;
+  surface: "toast" | "os" | null;
+};
 
-import {
-  getAgentTranscript,
-  subscribeAgentObserverStore,
-  type AgentObserverStoreUpdate,
-} from "./observerRelayStore";
-import {
-  applyPermissionAlertUpdate,
-  collectSeenPermissionNonces,
-  permissionAlertCopy,
-  selectPermissionAlertSurface,
-  shouldSuppressPermissionAlert,
-} from "./pendingPermissionAlert";
-import { useObserverIngestionAgents } from "./useAgentObserverIngestion";
-import { useOpenAgentActivity } from "./useOpenAgentActivity";
+export type PermissionAlertDeliveryDependencies = {
+  showToast: (toast: {
+    body: string;
+    duration: number;
+    id: string;
+    onClick: () => Promise<void>;
+    title: string;
+  }) => void;
+  sendOsNotification: (notification: {
+    title: string;
+    body: string;
+    target: {
+      agentPubkey: string;
+      channelId: string | null;
+      eventId: null;
+      kind: null;
+    };
+  }) => Promise<boolean>;
+  revealDesktopAppWindow: () => Promise<void>;
+  openAgentActivity: (
+    pubkey: string,
+    options: { channelId: string | null },
+  ) => unknown;
+  requestDockBounce: () => Promise<void>;
+  playSound: () => void;
+};
 
-/**
- * App-level owner permission alerts.
- * Mount once in AppShell next to observer ingestion.
- */
-export function usePendingPermissionAlerts(): void {
-  const identityQuery = useIdentityQuery();
-  const currentPubkey = identityQuery.data?.pubkey;
+export async function deliverPermissionAlert(
+  input: PermissionAlertDeliveryInput,
+  dependencies: PermissionAlertDeliveryDependencies,
+): Promise<void>;
+```
+
+The hook consumes the Task 1 controller, Task 2 readiness getter, Task 3 target, Task 4 click ingress, Task 5 route contract, and Task 6 agent list.
+
+- [ ] **Step 1: Run required impact analysis**
+
+Run upstream impact for `subscribeAgentObserverStore`, `getAgentTranscript`, `isAgentObserverInitialReplayComplete`, `useOpenAgentActivity`, `resolveUserLabel`, `sendDesktopNotification`, `requestDockBounce`, `playNotificationSound`, `useChannelPanelHistoryState`, and `AppShell`.
+Warn and stop before editing if `AppShell` or any notification path is HIGH or CRITICAL.
+
+- [ ] **Step 2: Write failing delivery-effect tests**
+
+Create `desktop/src/features/agents/pendingPermissionAlertDelivery.test.mjs` with:
+
+```js
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import { deliverPermissionAlert } from "./pendingPermissionAlertDelivery.ts";
+
+const AGENT = "a".repeat(64);
+
+function dependencies(calls, { capture, didSend = true } = {}) {
+  return {
+    showToast: (toast) => {
+      calls.push(`toast:${toast.id}:${toast.title}:${toast.body}:${toast.duration}`);
+      if (capture) {
+        capture.toastClick = toast.onClick;
+      }
+    },
+    sendOsNotification: async (notification) => {
+      calls.push(["os", notification]);
+      return didSend;
+    },
+    revealDesktopAppWindow: async () => {
+      calls.push("reveal");
+    },
+    openAgentActivity: (pubkey, options) => {
+      calls.push(`open:${pubkey}:${options.channelId}`);
+    },
+    requestDockBounce: async () => {
+      calls.push("bounce");
+    },
+    playSound: () => {
+      calls.push("sound");
+    },
+  };
+}
+
+test("focused delivery shows a persistent toast sounds and reveals before opening", async () => {
+  const calls = [];
+  const capture = {};
+  await deliverPermissionAlert({
+    agentPubkey: AGENT,
+    channelId: "channel-1",
+    copy: { title: "Ada needs permission", body: "Open the process log." },
+    requestNonce: "nonce-1",
+    soundEnabled: true,
+    surface: "toast",
+  }, dependencies(calls, { capture }));
+
+  assert.deepEqual(calls, [
+    "toast:nonce-1:Ada needs permission:Open the process log.:Infinity",
+    "sound",
+  ]);
+  await capture.toastClick();
+  assert.deepEqual(calls.slice(-2), ["reveal", `open:${AGENT}:channel-1`]);
+});
+
+test("successful OS delivery bounces and sounds after send", async () => {
+  const calls = [];
+  await deliverPermissionAlert({
+    agentPubkey: AGENT,
+    channelId: null,
+    copy: { title: "Ada needs permission", body: "Open the process log." },
+    requestNonce: "nonce-2",
+    soundEnabled: true,
+    surface: "os",
+  }, dependencies(calls));
+  assert.deepEqual(calls, [
+    ["os", {
+      title: "Ada needs permission",
+      body: "Open the process log.",
+      target: {
+        agentPubkey: AGENT,
+        channelId: null,
+        eventId: null,
+        kind: null,
+      },
+    }],
+    "bounce",
+    "sound",
+  ]);
+});
+
+test("failed OS delivery and null surface have no follow-up effects", async () => {
+  const failed = [];
+  await deliverPermissionAlert({
+    agentPubkey: AGENT,
+    channelId: null,
+    copy: { title: "Ada needs permission", body: "Open the process log." },
+    requestNonce: "nonce-3",
+    soundEnabled: true,
+    surface: "os",
+  }, dependencies(failed, { didSend: false }));
+  assert.deepEqual(failed, [["os", {
+    title: "Ada needs permission",
+    body: "Open the process log.",
+    target: {
+      agentPubkey: AGENT,
+      channelId: null,
+      eventId: null,
+      kind: null,
+    },
+  }]]);
+
+  const mutedToast = [];
+  await deliverPermissionAlert({
+    agentPubkey: AGENT,
+    channelId: null,
+    copy: { title: "Ada needs permission", body: "Open the process log." },
+    requestNonce: "nonce-muted",
+    soundEnabled: false,
+    surface: "toast",
+  }, dependencies(mutedToast));
+  assert.deepEqual(mutedToast, [
+    "toast:nonce-muted:Ada needs permission:Open the process log.:Infinity",
+  ]);
+
+  const silent = [];
+  await deliverPermissionAlert({
+    agentPubkey: AGENT,
+    channelId: null,
+    copy: { title: "Ada needs permission", body: "Open the process log." },
+    requestNonce: "nonce-4",
+    soundEnabled: false,
+    surface: null,
+  }, dependencies(silent));
+  assert.deepEqual(silent, []);
+});
+
+test("successful muted OS delivery bounces without playing sound", async () => {
+  const calls = [];
+  await deliverPermissionAlert({
+    agentPubkey: AGENT,
+    channelId: null,
+    copy: { title: "Ada needs permission", body: "Open the process log." },
+    requestNonce: "nonce-muted-os",
+    soundEnabled: false,
+    surface: "os",
+  }, dependencies(calls));
+  assert.deepEqual(calls, [
+    ["os", {
+      title: "Ada needs permission",
+      body: "Open the process log.",
+      target: {
+        agentPubkey: AGENT,
+        channelId: null,
+        eventId: null,
+        kind: null,
+      },
+    }],
+    "bounce",
+  ]);
+});
+```
+
+- [ ] **Step 3: Run the delivery test and verify RED**
+
+```bash
+. ./bin/activate-hermit && cd desktop && pnpm exec node --import ./test-loader.mjs --experimental-strip-types --test src/features/agents/pendingPermissionAlertDelivery.test.mjs
+```
+
+Expected: FAIL because `pendingPermissionAlertDelivery.ts` does not exist.
+
+- [ ] **Step 4: Implement the minimum tested delivery executor**
+
+Create `desktop/src/features/agents/pendingPermissionAlertDelivery.ts` with the declared documented type and function.
+For a null surface, return without calling a dependency.
+For `toast`, call `showToast` with `Number.POSITIVE_INFINITY`, call `playSound` only when enabled, and make `onClick` await reveal before opening activity.
+For `os`, await `sendOsNotification`, return on false, await `requestDockBounce` on true, and call `playSound` only when enabled.
+Use this implementation after the documented type declarations:
+
+```ts
+/** Execute one permission-alert surface and its follow-up effects. */
+export async function deliverPermissionAlert(
+  input: PermissionAlertDeliveryInput,
+  dependencies: PermissionAlertDeliveryDependencies,
+): Promise<void> {
+  if (input.surface === null) {
+    return;
+  }
+  if (input.surface === "toast") {
+    dependencies.showToast({
+      body: input.copy.body,
+      duration: Number.POSITIVE_INFINITY,
+      id: input.requestNonce,
+      title: input.copy.title,
+      onClick: async () => {
+        await dependencies.revealDesktopAppWindow();
+        dependencies.openAgentActivity(input.agentPubkey, {
+          channelId: input.channelId,
+        });
+      },
+    });
+    if (input.soundEnabled) {
+      dependencies.playSound();
+    }
+    return;
+  }
+
+  const didSend = await dependencies.sendOsNotification({
+    title: input.copy.title,
+    body: input.copy.body,
+    target: {
+      agentPubkey: input.agentPubkey,
+      channelId: input.channelId,
+      eventId: null,
+      kind: null,
+    },
+  });
+  if (!didSend) {
+    return;
+  }
+  await dependencies.requestDockBounce();
+  if (input.soundEnabled) {
+    dependencies.playSound();
+  }
+}
+```
+
+Name and export the dependency type as `PermissionAlertDeliveryDependencies`, using the exact dependency signatures from this task's Interfaces block.
+
+- [ ] **Step 5: Run the delivery test and verify GREEN**
+
+```bash
+. ./bin/activate-hermit && cd desktop && pnpm exec node --import ./test-loader.mjs --experimental-strip-types --test src/features/agents/pendingPermissionAlertDelivery.test.mjs
+```
+
+Expected: PASS.
+
+- [ ] **Step 6: Create the React adapter**
+
+Create `desktop/src/features/agents/usePendingPermissionAlerts.ts` with these imports and responsibilities:
+
+- React and sonner `toast`.
+- `useLocation` and `deriveShellRoute` for `selectedChannelId`.
+- `useChannelPanelHistoryState` for `openAgentSessionPubkey` and `openAgentSessionChannelId`.
+- `useChannelsQuery` for the optional channel name.
+- `NotificationSettings` as a type only.
+- `requestDockBounce`, `revealDesktopAppWindow`, and `sendDesktopNotification`.
+- `playNotificationSound` and `resolveSlotSound`.
+- `resolveUserLabel` and `useUsersBatchQuery`.
+- `isAppFocused`.
+- `getAgentTranscript`, `isAgentObserverInitialReplayComplete`, `subscribeAgentObserverStore`, and `AgentObserverStoreUpdate`.
+- Task 1 helper/controller exports.
+- `deliverPermissionAlert` from the tested delivery executor.
+- `useObserverIngestionAgents` and `useOpenAgentActivity`.
+
+Use this exact state and subscription shape:
+
+```ts
+/** Deliver app-level owner permission alerts from the observer store. */
+export function usePendingPermissionAlerts({
+  enabled,
+  notificationSettings,
+}: {
+  enabled: boolean;
+  notificationSettings: NotificationSettings;
+}): void {
   const ingestionAgents = useObserverIngestionAgents();
   const agentPubkeys = React.useMemo(
     () => ingestionAgents.map((agent) => agent.pubkey),
@@ -1269,175 +1901,191 @@ export function usePendingPermissionAlerts(): void {
   });
   const channelsQuery = useChannelsQuery();
   const channels = channelsQuery.data ?? [];
-  const notificationSettings = useNotificationSettings(currentPubkey);
   const { openAgentActivity } = useOpenAgentActivity();
   const location = useLocation();
   const { selectedChannelId } = deriveShellRoute(location.pathname);
-  const { openAgentSessionPubkey, openAgentSessionChannelId } =
+  const { openAgentSessionChannelId, openAgentSessionPubkey } =
     useChannelPanelHistoryState();
-  const [seenNonces] = React.useState(() => new Set<string>());
-
-  React.useEffect(() => {
-    for (const agent of ingestionAgents) {
-      for (const nonce of collectSeenPermissionNonces(
-        getAgentTranscript(agent.pubkey),
-      )) {
-        seenNonces.add(nonce);
-      }
-    }
-  }, [ingestionAgents, seenNonces]);
+  const [alertState] = React.useState(createPermissionAlertStoreState);
 
   const handleStoreUpdate = React.useEffectEvent(
     (update?: AgentObserverStoreUpdate) => {
-      if (!update || update.events.length === 0) {
-        return;
-      }
-      const applied = applyPermissionAlertUpdate({
-        events: update.events,
-        seenNonces,
+      const applied = applyPermissionAlertStoreNotification({
+        state: alertState,
+        initialReplayComplete: isAgentObserverInitialReplayComplete(),
+        agents: ingestionAgents.map((agent) => ({
+          pubkey: agent.pubkey,
+          transcript: getAgentTranscript(agent.pubkey),
+        })),
+        update,
       });
-      for (const nonce of applied.nextSeenNonces) {
-        seenNonces.add(nonce);
+
+      alertState.seededAgentPubkeys.clear();
+      for (const pubkey of applied.nextState.seededAgentPubkeys) {
+        alertState.seededAgentPubkeys.add(pubkey);
       }
+      alertState.seenNonces.clear();
+      for (const nonce of applied.nextState.seenNonces) {
+        alertState.seenNonces.add(nonce);
+      }
+
       for (const nonce of applied.dismissNonces) {
         toast.dismiss(nonce);
       }
 
-      const settings = notificationSettings.settings;
-      const profiles = profilesQuery.data?.profiles;
+      if (!update) {
+        return;
+      }
+
       const agentName = resolveUserLabel({
         pubkey: update.agentPubkey,
-        profiles,
+        profiles: profilesQuery.data?.profiles,
         preferResolvedSelfLabel: true,
       });
 
       for (const alert of applied.alerts) {
-        if (
-          shouldSuppressPermissionAlert({
-            agentPubkey: update.agentPubkey,
-            channelId: alert.channelId,
-            openAgentSession: openAgentSessionPubkey,
-            openAgentSessionChannel: openAgentSessionChannelId,
-            currentChannelId: selectedChannelId,
-          })
-        ) {
+        if (shouldSuppressPermissionAlert({
+          agentPubkey: update.agentPubkey,
+          channelId: alert.channelId,
+          openAgentSession: openAgentSessionPubkey,
+          openAgentSessionChannel: openAgentSessionChannelId,
+          currentChannelId: selectedChannelId,
+        })) {
           continue;
         }
 
-        const channel = channels.find(
-          (entry) => entry.id === alert.channelId,
-        );
+        const channel = channels.find((entry) => entry.id === alert.channelId);
         const copy = permissionAlertCopy({
           agentName,
           channelName: channel?.name ?? null,
         });
         const surface = selectPermissionAlertSurface({
           focused: isAppFocused(),
-          desktopEnabled: settings.desktopEnabled,
+          desktopEnabled: notificationSettings.desktopEnabled,
         });
-        if (surface === "toast") {
-          toast(copy.title, {
-            id: alert.requestNonce,
-            description: copy.body,
-            duration: Number.POSITIVE_INFINITY,
-            onClick: () => {
-              void revealDesktopAppWindow();
-              openAgentActivity(update.agentPubkey, {
-                channelId: alert.channelId,
-              });
-            },
-          });
-          if (settings.slotAlertsEnabled.needs_action) {
-            playNotificationSound(
-              resolveSlotSound(settings, "needs_action"),
-            );
-          }
-          continue;
-        }
-        if (surface !== "os") {
-          continue;
-        }
-        void sendDesktopNotification({
-          title: copy.title,
-          body: copy.body,
-          target: {
-            agentPubkey: update.agentPubkey,
-            channelId: alert.channelId,
-            eventId: null,
-            kind: null,
+
+        void deliverPermissionAlert({
+          agentPubkey: update.agentPubkey,
+          channelId: alert.channelId,
+          copy,
+          requestNonce: alert.requestNonce,
+          soundEnabled: notificationSettings.slotAlertsEnabled.needs_action,
+          surface,
+        }, {
+          showToast: (alertToast) => {
+            toast(alertToast.title, {
+              id: alertToast.id,
+              description: alertToast.body,
+              duration: alertToast.duration,
+              onClick: alertToast.onClick,
+            });
           },
-        }).then((didSend) => {
-          if (!didSend) {
-            return;
-          }
-          void requestDockBounce();
-          if (settings.slotAlertsEnabled.needs_action) {
+          sendOsNotification: sendDesktopNotification,
+          revealDesktopAppWindow,
+          openAgentActivity,
+          requestDockBounce,
+          playSound: () => {
             playNotificationSound(
-              resolveSlotSound(settings, "needs_action"),
+              resolveSlotSound(notificationSettings, "needs_action"),
             );
-          }
+          },
         });
       }
     },
   );
 
   React.useEffect(() => {
-    return subscribeAgentObserverStore(handleStoreUpdate);
-  }, [handleStoreUpdate]);
+    if (!enabled) {
+      return;
+    }
+    return startPermissionAlertStoreSubscription({
+      handleUpdate: handleStoreUpdate,
+      subscribe: subscribeAgentObserverStore,
+    });
+  }, [enabled, ingestionAgents]);
 }
 ```
 
-`normalizePubkey` is not needed in the hook; `shouldSuppressPermissionAlert` already normalizes.
+Import `startPermissionAlertStoreSubscription` with the other Task 1 helpers.
+The tested subscription helper makes the update-less current-snapshot call before it attaches the live listener.
+The update-less notification from Task 2 covers a hook already mounted when EOSE completes.
+Because the controller seeds each ingestion agent only once, a later live store update cannot seed its own nonce from the transcript that was just updated.
 
-If `AgentObserverStoreUpdate` is not already exported from `observerRelayStore.ts`, export the existing type instead of duplicating it.
-It is already exported.
+- [ ] **Step 7: Verify suppression, copy, surface, and effects in the adapter**
 
-- [ ] **Step 4: Mount the hook in AppShell**
+For each `applied.alerts` entry:
 
-In `desktop/src/app/AppShell.tsx` add:
+1. Call `shouldSuppressPermissionAlert` with `update.agentPubkey`, alert channel, `openAgentSessionPubkey`, `openAgentSessionChannelId`, and `selectedChannelId`.
+2. Skip on true.
+3. Resolve the channel name from `channels.find((channel) => channel.id === alert.channelId)?.name ?? null`.
+4. Resolve the agent name from the batch profiles with `preferResolvedSelfLabel: true`.
+5. Build pinned copy with `permissionAlertCopy`.
+6. Select the surface with `isAppFocused()` and `notificationSettings.desktopEnabled`.
+7. Delegate the concrete effects to `deliverPermissionAlert` exactly as shown in Step 6.
+
+The tested delivery executor does nothing for a null surface.
+Do not call `useNotificationSettings` in this hook.
+Do not consult mute sets, `notifyWhileViewing`, or huddle silent-channel ids.
+
+- [ ] **Step 8: Mount with live AppShell settings and the main-window gate**
+
+In `AppShell.tsx`, add the import for `usePendingPermissionAlerts`.
+Immediately after the existing `useHomeFeedNotifications(identityQuery.data?.pubkey)` call has produced `notificationSettings`, add:
 
 ```ts
-import { usePendingPermissionAlerts } from "@/features/agents/usePendingPermissionAlerts";
+usePendingPermissionAlerts({
+  enabled: !isHuddleRoom,
+  notificationSettings: notificationSettings.settings,
+});
 ```
 
-Immediately after `useAgentObserverIngestion();` add:
+Do not call the hook beside `useAgentObserverIngestion` before settings exist.
+Do not call `useNotificationSettings` again.
+Do not add a `startupReady` guard.
 
-```ts
-  usePendingPermissionAlerts();
-```
+- [ ] **Step 9: Format the touched desktop files**
 
-Do not wrap it in `startupReady`.
-Do not pass props.
-Confirm `wc -l desktop/src/app/AppShell.tsx` is still `<= 1000`.
-
-- [ ] **Step 5: Run the helper tests plus typecheck**
+Run the repository formatter before the no-write static check so the exact snippets above can be normalized to the repository's line wrapping.
 
 ```bash
-. ./bin/activate-hermit && cd desktop && pnpm exec node --import ./test-loader.mjs --experimental-strip-types --test src/features/agents/pendingPermissionAlert.test.mjs src/app/AppShell.helpers.test.mjs src/features/notifications/lib/desktop.test.mjs && pnpm typecheck && pnpm exec biome check src/features/agents/pendingPermissionAlert.ts src/features/agents/pendingPermissionAlert.test.mjs src/features/agents/usePendingPermissionAlerts.ts src/features/agents/useAgentObserverIngestion.ts src/app/AppShell.tsx src/app/AppShell.helpers.ts src/app/useAppShellDesktopNotifications.ts src/features/notifications/lib/desktop.ts src/features/notifications/lib/desktop.test.mjs
+. ./bin/activate-hermit && cd desktop && pnpm exec biome check --write src/features/agents/pendingPermissionAlert.ts src/features/agents/pendingPermissionAlert.test.mjs src/features/agents/pendingPermissionAlertDelivery.ts src/features/agents/pendingPermissionAlertDelivery.test.mjs src/features/agents/observerRelayStore.ts src/features/agents/observerInitialReplay.test.mjs src/features/agents/useAgentObserverIngestion.ts src/features/agents/usePendingPermissionAlerts.ts src/shared/api/observerRelay.ts src/shared/api/observerRelay.test.mjs src/features/notifications/lib/desktop.ts src/features/notifications/lib/desktop.test.mjs src/app/AppShell.helpers.ts src/app/AppShell.helpers.test.mjs 'src/app/routes/channels.$channelId.tsx' 'src/app/routes/channels.$channelId.test.mjs' src/app/useAppShellDesktopNotifications.ts src/app/AppShell.tsx
 ```
 
-Expected: PASS.
-If biome wants import-order or unused-import fixes, apply them and re-run.
-
-- [ ] **Step 6: Commit**
+- [ ] **Step 10: Run focused tests, typecheck, and Biome**
 
 ```bash
-. ./bin/activate-hermit && git add desktop/src/features/agents/usePendingPermissionAlerts.ts desktop/src/features/agents/useAgentObserverIngestion.ts desktop/src/app/AppShell.tsx && git diff --stat && git diff --name-only && git diff --check && git commit -s -m "$(cat <<'EOF'
-feat(desktop): alert owners about pending agent permissions
+. ./bin/activate-hermit && cd desktop && pnpm exec node --import ./test-loader.mjs --experimental-strip-types --test src/features/agents/pendingPermissionAlert.test.mjs src/features/agents/pendingPermissionAlertDelivery.test.mjs src/features/agents/observerInitialReplay.test.mjs src/shared/api/observerRelay.test.mjs src/features/notifications/lib/desktop.test.mjs src/app/AppShell.helpers.test.mjs 'src/app/routes/channels.$channelId.test.mjs' src/features/agents/useAgentObserverIngestion.test.mjs && pnpm typecheck && pnpm exec biome check src/features/agents/pendingPermissionAlert.ts src/features/agents/pendingPermissionAlert.test.mjs src/features/agents/pendingPermissionAlertDelivery.ts src/features/agents/pendingPermissionAlertDelivery.test.mjs src/features/agents/observerRelayStore.ts src/features/agents/observerInitialReplay.test.mjs src/features/agents/useAgentObserverIngestion.ts src/features/agents/usePendingPermissionAlerts.ts src/shared/api/observerRelay.ts src/shared/api/observerRelay.test.mjs src/features/notifications/lib/desktop.ts src/features/notifications/lib/desktop.test.mjs src/app/AppShell.helpers.ts src/app/AppShell.helpers.test.mjs 'src/app/routes/channels.$channelId.tsx' 'src/app/routes/channels.$channelId.test.mjs' src/app/useAppShellDesktopNotifications.ts src/app/AppShell.tsx
+```
 
-Subscribe to the observer store from AppShell and toast or OS-notify
-when a new actionable request arrives outside the open session pane.
-EOF
-)"
+Expected: PASS with no warnings.
+
+- [ ] **Step 11: Check the AppShell ratchet**
+
+```bash
+. ./bin/activate-hermit && wc -l desktop/src/app/AppShell.tsx
+```
+
+Expected: no more than 1000 lines.
+
+- [ ] **Step 12: Run staged change detection and commit**
+
+```bash
+. ./bin/activate-hermit && git add desktop/src/features/agents/pendingPermissionAlertDelivery.ts desktop/src/features/agents/pendingPermissionAlertDelivery.test.mjs desktop/src/features/agents/usePendingPermissionAlerts.ts desktop/src/app/AppShell.tsx && git diff --cached --stat && git diff --cached --name-only && git diff --cached --check
+```
+
+Run `detect_changes({ scope: "staged" })` and confirm the new AppShell alert consumer is the only new execution flow.
+
+```bash
+. ./bin/activate-hermit && git commit -s -m "feat(desktop): alert owners to agent permission requests"
 ```
 
 ---
 
-### Task 5: Full desktop validation
+### Task 8: Validate the complete desktop slice
 
-**Files:** none, unless a check fails.
+**Files:** none unless a validation failure requires a test-first correction.
 
-- [ ] **Step 1: Run the desktop unit suite**
+- [ ] **Step 1: Run all desktop unit tests**
 
 ```bash
 . ./bin/activate-hermit && just desktop-test
@@ -1445,63 +2093,93 @@ EOF
 
 Expected: PASS.
 
-- [ ] **Step 2: Run desktop typecheck and static checks**
+- [ ] **Step 2: Run desktop type and static checks**
 
 ```bash
 . ./bin/activate-hermit && just desktop-typecheck && just desktop-check
 ```
 
 Expected: PASS.
-`just desktop-check` includes the 1000-line ratchet and `pnpm check:px-text`.
+`just desktop-check` includes Biome, the file-size ratchet, the px-text guard, and the pubkey-truncation guard.
 
-- [ ] **Step 3: Confirm the existing observer permission e2e spec is untouched**
+- [ ] **Step 3: Run the existing permission-card E2E regression**
+
+Use the required E2E build mode and keep the existing spec unchanged:
 
 ```bash
-. ./bin/activate-hermit && git diff --name-only -- desktop/tests/e2e/observer-feed-screenshots.spec.ts desktop/src/features/agents/ui/activityRenderClasses/LifecycleActivity.tsx
+. ./bin/activate-hermit && cd desktop && pnpm build:e2e && pnpm exec playwright test --project=smoke --grep "permission request stays actionable for a human decision"
+```
+
+Expected: PASS.
+Do not replace `pnpm build:e2e` with `pnpm build`.
+
+- [ ] **Step 4: Confirm scope and unchanged decision UI**
+
+```bash
+. ./bin/activate-hermit && git diff --name-only main -- desktop/src/features/agents/ui/activityRenderClasses/LifecycleActivity.tsx desktop/tests/e2e/observer-feed-screenshots.spec.ts crates mobile web
 ```
 
 Expected: empty.
 
-- [ ] **Step 4: Confirm file-size and scope**
-
 ```bash
-. ./bin/activate-hermit && wc -l desktop/src/app/AppShell.tsx desktop/src/app/useAppShellDesktopNotifications.ts desktop/src/features/notifications/lib/desktop.ts desktop/src/features/agents/usePendingPermissionAlerts.ts && git diff --stat origin/main -- desktop/src/features/agents/pendingPermissionAlert.ts desktop/src/features/agents/pendingPermissionAlert.test.mjs desktop/src/features/agents/usePendingPermissionAlerts.ts desktop/src/features/agents/useAgentObserverIngestion.ts desktop/src/features/notifications/lib/desktop.ts desktop/src/features/notifications/lib/desktop.test.mjs desktop/src/app/AppShell.helpers.ts desktop/src/app/AppShell.helpers.test.mjs desktop/src/app/useAppShellDesktopNotifications.ts desktop/src/app/AppShell.tsx
+. ./bin/activate-hermit && git diff --stat main -- desktop/src/features/agents/pendingPermissionAlert.ts desktop/src/features/agents/pendingPermissionAlert.test.mjs desktop/src/features/agents/pendingPermissionAlertDelivery.ts desktop/src/features/agents/pendingPermissionAlertDelivery.test.mjs desktop/src/features/agents/observerRelayStore.ts desktop/src/features/agents/observerInitialReplay.test.mjs desktop/src/features/agents/useAgentObserverIngestion.ts desktop/src/features/agents/usePendingPermissionAlerts.ts desktop/src/shared/api/observerRelay.ts desktop/src/shared/api/observerRelay.test.mjs desktop/src/features/notifications/lib/desktop.ts desktop/src/features/notifications/lib/desktop.test.mjs desktop/src/app/AppShell.helpers.ts desktop/src/app/AppShell.helpers.test.mjs 'desktop/src/app/routes/channels.$channelId.tsx' 'desktop/src/app/routes/channels.$channelId.test.mjs' desktop/src/app/useAppShellDesktopNotifications.ts desktop/src/app/AppShell.tsx
 ```
 
-Expected: `AppShell.tsx` `<= 1000`.
-Expected: no mobile, relay, CLI, or Home-feed files.
+Expected: only the listed desktop files.
 
-If `origin/main` is unavailable, use `git diff --stat HEAD~3` or the branch base instead.
+- [ ] **Step 5: Run final GitNexus comparison**
+
+Run `detect_changes({ scope: "compare", base_ref: "main" })`.
+Confirm the report covers observer ingestion, permission-alert delivery, desktop notification target parsing, and click routing only.
+Stop and investigate any unrelated process.
 
 ## Acceptance Criteria
 
-- An owner who is not already on that agent-and-channel session pane gets a sonner toast when Buzz is focused and an OS notification when it is not.
-- Clicking either surface reveals the window and opens the existing process transcript via `openAgentActivity(agentPubkey, { channelId })`.
-- Grant/deny still happen only on the existing transcript card.
-- Matching open pane suppresses the alert.
-- Same channel with the pane closed still alerts.
-- Concurrent requests with different nonces each alert once.
-- Replayed / already-seeded nonces do not alert.
-- `actionable: false` and missing envelopes do not alert.
-- App focused + `desktopEnabled: false` still toasts.
-- App background + `desktopEnabled: false` does not toast and does not OS-notify.
-- `needs_action` sound plays for toast and successful OS delivery only when that slot is enabled.
-- Channel mute and `notifyWhileViewing` do not suppress the alert.
-- Resolution / timeout / cancel dismisses the toast by nonce and leaves any OS notification alone.
-- `parseNotificationTarget({ agentPubkey })` is valid.
-- `parseNotificationTarget({ pubkey })` without channel or event is still null.
-- Join-alert `{ eventId }` targets still parse and still route home.
+- A new actionable permission request for an owned ingestion agent alerts once per request nonce.
+- A focused main AppShell uses a sonner toast even when `desktopEnabled` is false.
+- An unfocused main AppShell uses an OS notification only when `desktopEnabled` is true.
+- A background app with `desktopEnabled` false produces neither surface.
+- The dedicated huddle companion does not duplicate alerts or consume native click actions.
+- The main AppShell continues to own permission alerts while a huddle companion exists.
+- The alert title uses the resolved agent label and optional normalized `#channel` suffix.
+- The alert body contains no ACP options, tool-call ids, or request details.
+- Clicking either alert surface reveals the desktop window before opening `openAgentActivity(agentPubkey, { channelId })`.
+- A no-channel click uses the existing open-activity fallback.
+- An inaccessible explicit channel uses the existing warning and does not invent a destination.
+- Grant and deny controls remain only on the existing transcript card.
+- The alert is suppressed only when the open pane matches the normalized agent and the approved channel rule.
+- `agentSessionChannel` survives channel-route validation and reload so the alternate-channel suppression branch is observable.
+- Being in the same channel with the agent pane closed still alerts.
+- Different concurrent nonces each alert once.
+- Duplicate nonces do not re-alert.
+- Initial 300-second observer subscription replay is seeded after EOSE and does not alert.
+- Existing reconnect duplicates do not alert.
+- A genuinely new frame recovered after a later reconnect remains eligible to alert.
+- Updates for agents outside the canonical owner-global ingestion list do not alert.
+- `actionable: false`, missing authorization, wrong method, and wrong kind do not alert.
+- A same-batch terminal result does not flash an alert.
+- Terminal `acp_write`, timeout, cancellation, or a non-actionable follow-up dismisses the toast by nonce.
+- Terminal events do not withdraw OS notifications.
+- `needs_action` sound plays for a toast or successful OS delivery only when its slot is enabled.
+- Channel mute, `notifyWhileViewing`, and huddle silent-channel ids do not suppress the main-window owner approval.
+- Notification settings changed during the current app session take effect immediately because the hook receives AppShell's live settings object.
+- `parseNotificationTarget` accepts `agentPubkey` without a channel or event.
+- Message-author `pubkey` alone remains invalid without a channel or event.
+- Event-only join-alert targets still parse and route Home.
+- Existing message notification clicks still route through `openSearchHit`.
+- No Rust, relay, Home, mobile, web, or decision-card file changes.
 - No new Playwright spec.
-- No new event kind, Home row, mobile change, or `resetCommunityState` entry.
+- `AppShell.tsx` remains within the 1000-line ratchet.
 
 ## Validation Commands
 
 ```bash
-. ./bin/activate-hermit && cd desktop && pnpm exec node --import ./test-loader.mjs --experimental-strip-types --test src/features/agents/pendingPermissionAlert.test.mjs src/app/AppShell.helpers.test.mjs src/features/notifications/lib/desktop.test.mjs
+. ./bin/activate-hermit && cd desktop && pnpm exec node --import ./test-loader.mjs --experimental-strip-types --test src/features/agents/pendingPermissionAlert.test.mjs src/features/agents/pendingPermissionAlertDelivery.test.mjs src/features/agents/observerInitialReplay.test.mjs src/shared/api/observerRelay.test.mjs src/features/notifications/lib/desktop.test.mjs src/app/AppShell.helpers.test.mjs 'src/app/routes/channels.$channelId.test.mjs' src/features/agents/useAgentObserverIngestion.test.mjs
 . ./bin/activate-hermit && just desktop-test
 . ./bin/activate-hermit && just desktop-typecheck
 . ./bin/activate-hermit && just desktop-check
+. ./bin/activate-hermit && cd desktop && pnpm build:e2e && pnpm exec playwright test --project=smoke --grep "permission request stays actionable for a human decision"
 ```
 
-Do not run `just ci` unless those desktop gates are already green and the implementer is opening a PR.
-Do not start Postgres, Redis, or the relay for this slice.
+Do not start Postgres, Redis, or the relay for this desktop-only slice.
+Run `just ci` only after these focused gates are green and only when preparing the PR-wide final gate.
