@@ -3,260 +3,183 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task.
 > Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** For `github.com` clone URLs, reuse the existing Buzz pull / push / sync-status / create-delete-branch git commands with a wider URL gate and host-aware `gh auth git-credential` auth, so the project header matches Buzz (Pull when behind, Push when ahead, otherwise Fetch) and Create / Delete work without a false “create the first commit” reason.
+**Goal:** Let strict `github.com` HTTPS and SSH repository URLs use the existing Desktop clone, sync-status, pull, push, create-branch, and delete-branch workflows with host-correct authentication and the same contextual Pull, Push, or Fetch header control used by Buzz-hosted repositories.
 
-**Architecture:** Do not add new pull, push, create, or delete Tauri commands.
-Add `validate_git_operation_url` (Buzz workspace URL **or** `GitHubRepoRef::parse`) and one `build_git_operation_auth_config` used by clone, sync, pull, push, and remote branch commands.
-GitHub HTTPS uses `!<gh-path> auth git-credential` after `GhRunner::discover` + `ensure_auth`.
-GitHub SSH uses the agent and never calls `ensure_auth`.
-The project page stops calling G4; when a checkout exists, `get_project_repo_sync_status` is the only ahead/behind source and Fetch refetches that query (which `git fetch`es).
+**Architecture:** Keep the existing Tauri git commands and widen only their URL/authentication policy through `validate_git_operation_url` and `build_git_operation_auth_config`.
+GitHub HTTPS uses an explicitly quoted `!<gh-path> auth git-credential` helper after `GhRunner::discover` and `ensure_auth`, GitHub SSH uses the user's SSH agent without `gh` git authentication, and Buzz URLs keep `git-credential-nostr` plus the signing key.
+The project page enables git sync only after GitHub repository state (G1) succeeds, uses sync status as the sole checkout ahead/behind source, and keeps branch actions visible with accurate recovery reasons.
 
-**Tech Stack:** Tauri 2 desktop crate, system `git`, installed `gh` CLI, React Query, existing `RepoSyncActionButton` / `GitHubRepoStateRecovery` / `ProjectPullRequestMergeError`.
+**Tech Stack:** Tauri 2, Rust, system `git`, GitHub CLI `gh`, React 19, TypeScript, TanStack React Query, Node test runner, and Playwright's E2E mock bridge.
 
 **Spec:** [2026-08-18-github-pull-push-and-branches-design.md](../specs/2026-08-18-github-pull-push-and-branches-design.md)
 
-**Vision:** [VISION.md](../../../VISION.md) and [VISION_PROJECTS.md](../../../VISION_PROJECTS.md) treat GitHub as a first-class Projects host when the clone URL is `github.com`.
-
+**Product direction:** [VISION.md](../../../VISION.md) and [VISION_PROJECTS.md](../../../VISION_PROJECTS.md) make `github.com` a first-class Projects git host while Buzz remains the collaboration layer.
 
 ## Global Constraints
 
-- G5 + G6 + G7 only: no new `gh api` ref mutations, no GitHub Issues (M2), no GitHub PR list/create (M3), no branch-to-channel creation, no kind:30617 `default-branch` persist, no GitHub tags, no GitHub Enterprise / GitLab / stored OAuth tokens.
+- Implement G5, G6, and G7 only.
+- Do not add a pull, push, create-branch, or delete-branch Tauri command.
+- Do not add `gh api` ref mutations.
+- Do not implement GitHub Issues, GitHub pull-request list/create, branch-to-channel creation, `default-branch` persistence, GitHub tags, GitHub Enterprise, GitLab, or stored OAuth tokens.
 - Do not open `get_project_repo_snapshot` to GitHub.
-- Do not call `get_github_ahead_behind` (G4) from the project page.
-- When a checkout exists, sync status is the only ahead/behind source.
-- Do not add new pull / push / create / delete Tauri commands.
-- Auth: never store a GitHub token.
-- GitHub processes must not receive `NOSTR_PRIVATE_KEY`.
-- HTTPS GitHub `discover` / `ensure_auth` failures return `serde_json::to_string` of `ProjectPullRequestMergeError` on today’s `Result<T, String>` commands.
-- Remap every `github_merge_failed` leaving this path.
-- Allowed structured codes: only `github_cli_missing`, `github_auth_required`, `github_repo_unavailable`, `github_state_failed`.
-- Git stderr (protected branch, non-fast-forward, SSH denied) stays a plain string.
-- Never invent a successful sync (`0 / 0`, `can_pull`, `can_push`) on failure.
-- If G1 failed, do not start sync / create / delete.
-- Gate GitHub recovery copy with `isGitHubCloneUrl`.
-- Buzz `/git/<64-hex>/<id>` sync, pull, push, and branch commands stay on `git-credential-nostr`.
-- Fake-`gh` must not treat credential-helper invocations (`auth git-credential`) as API paths.
-- Reuse the existing `githubHosted` flag on `RepoSourceHeaderControls` as the spec’s `isGithubRemote` flag.
-- Do not delete the G4 command or `useGithubAheadBehindQuery`; only stop calling them from the project page.
-- Activate Hermit in **every** shell: `. ./bin/activate-hermit && …`.
-- CWD does not persist across tool calls.
-- Commits use `git commit -s`.
-- Before each commit run `if [ -f .gitnexus/run.cjs ]; then node .gitnexus/run.cjs detect; fi`.
-- Before editing a symbol, run GitNexus `impact({target, direction: "upstream"})` when the MCP tools are available.
-- No `unsafe`.
-- No new `unwrap()` / `expect()` on production paths.
-- New public Rust/TS APIs get doc comments.
-- Desktop text uses rem tokens, never `text-[Npx]`.
+- Do not modify the bodies of `get_github_repository_snapshot` or `get_github_ahead_behind`.
+- Leave `get_github_ahead_behind` and `useGithubAheadBehindQuery` in the tree, but remove the project-page hook call so no project-page workflow invokes G4.
+- When a checkout exists, `get_project_repo_sync_status` is the only ahead/behind source and each refetch performs the existing `git fetch`.
+- When no checkout exists, Fetch refetches G1 and G3 only and must not refetch sync status.
+- Do not invent `0 / 0`, `canPull`, or `canPush` after a failed sync or when no checkout exists.
+- Do not start sync, create, or delete after G1 has failed.
+- Keep Create and Delete reachable in the branch menu even while G1 is failed, but disable both with the GitHub recovery reason.
+- Keep Pull and Push hidden unless `can_pull` or `can_push` is true.
+- Reuse `RepoSourceHeaderControls.githubHosted`; do not add a duplicate `isGithubRemote` flag.
+- Keep “Open on GitHub” in `RepoSourceDropdown`; only the primary header action changes from Open to Pull, Push, or Fetch.
+- Skip `publishProjectPullRequestUpdate` after a GitHub push.
+- Never persist a GitHub token.
+- Explicitly remove inherited `NOSTR_PRIVATE_KEY` from every spawned `git` and `gh` process, then add it back only for a Buzz credential-helper invocation.
+- Keep Buzz `/git/<64-hex>/<id>` clone, sync, pull, push, create, and delete on `git-credential-nostr` and the active-relay URL gate.
+- Return HTTPS GitHub `GhRunner::discover` and `ensure_auth` failures from string-returning commands as serialized `ProjectPullRequestMergeError` JSON.
+- Remap `github_merge_failed` to `github_state_failed` before serializing it from the git-auth path.
+- The only structured codes emitted by the git-auth path are `github_cli_missing`, `github_auth_required`, `github_repo_unavailable`, and `github_state_failed`.
+- Keep protected-branch, non-fast-forward, SSH permission, and other `git` stderr failures as plain strings.
+- Ensure the fake `gh` distinguishes `auth git-credential` from `api` calls and fails on every unexpected argument list.
+- Do not add `unsafe`, production `unwrap()`, or production `expect()`.
+- Add doc comments to new exported TypeScript APIs and new Rust APIs visible outside their module.
+- Use existing rem-based text tokens only.
+- Activate Hermit in every shell with `. ./bin/activate-hermit && ...`.
+- Run commands from the repository root because shell working directories do not persist between tool calls.
+- Before each task's first symbol edit, run the Required Impact Checks when GitNexus MCP tools are available and warn before editing on HIGH or CRITICAL risk.
+- Before each commit, run GitNexus change detection when available, inspect `git diff --check`, and commit with `git commit -s`.
+
+---
+
+## Resolved Decisions
+
+- G4 remains implemented for its own slice, but the project page stops calling it.
+- Ahead/behind text renders for GitHub only when sync status has a non-empty `localPath` and numeric counts.
+- The existing TypeScript command wrappers parse serialized GitHub errors so queries, toasts, clone recovery, and branch dialogs receive `ProjectPullRequestMergeError` objects.
+- The existing `githubHosted` flag is the single host flag passed to repository header controls.
+- A failed G1 still renders an interactive branch-picker trigger labelled `—`; its menu contains disabled Create and Delete items plus the recovery reason.
+- The `gh` helper path is single-quoted for Git's shell helper syntax so installed paths containing spaces or apostrophes are safe.
+- No live GitHub repository is used by automated tests; fake `gh`, local file remotes, pure policy tests, and the E2E mock bridge provide deterministic coverage.
+
+## File Map
+
+| File | Responsibility in this change |
+|------|--------------------------------|
+| `desktop/src-tauri/src/commands/project_git_exec.rs` | GitHub-or-Buzz URL gate, host-aware auth builder, helper quoting, inherited-secret removal, and Rust unit tests |
+| `desktop/src-tauri/src/commands/project_github_pull_request.rs` | Expose the resolved `gh` path and remove inherited `NOSTR_PRIVATE_KEY` from every `gh` process |
+| `desktop/src-tauri/src/commands/project_git.rs` | Route sync, pull, and push through the new URL gate and auth builder while leaving remote snapshot unchanged |
+| `desktop/src-tauri/src/commands/project_git_branches.rs` | Route create and delete through the new URL gate and auth builder while retaining lease/default-branch guards |
+| `desktop/src/shared/api/projectGit.ts` | Parse structured GitHub errors at the six affected TypeScript command boundaries |
+| `desktop/src/features/projects/lib/projectGitError.ts` | Present structured GitHub clone failures before generic git-stderr classification |
+| `desktop/src/features/projects/lib/projectGitError.test.mjs` | Clone recovery regression tests |
+| `desktop/src/features/projects/lib/projectBranchErrors.ts` | Present structured command errors and derive the disabled GitHub branch-action reason |
+| `desktop/src/features/projects/lib/projectBranchErrors.test.mjs` | Branch dialog and disabled-reason tests |
+| Create `desktop/src/features/projects/lib/projectGithubSync.ts` | Pure host-routing policies for sync enablement, counts, primary action, and push side effects |
+| Create `desktop/src/features/projects/lib/projectGithubSync.test.mjs` | Pure policy tests for GitHub and non-GitHub repositories |
+| `desktop/src/features/projects/repoSyncHooks.ts` | Enable sync after G1 and skip the Nostr PR update for GitHub push |
+| `desktop/src/features/projects/ui/ProjectDetailScreen.tsx` | Pass G1 readiness to the main sync query |
+| `desktop/src/features/projects/ui/CreatePullRequestDialog.tsx` | Pass G1 readiness to both dialog sync queries |
+| `desktop/src/features/projects/ui/ProjectRepositorySource.tsx` | Render contextual Pull/Push/Fetch and keep the failed-G1 branch menu reachable |
+| `desktop/src/features/projects/ui/useProjectRepositorySourceControls.ts` | Remove G4, coordinate Fetch, enable GitHub branch/pull/push handlers, counts, and recovery |
+| `desktop/tests/e2e/github-snapshot-and-fetch.spec.ts` | Update no-checkout and checkout Fetch expectations and branch-menu visibility |
+| Create `desktop/tests/e2e/github-pull-push-and-branches.spec.ts` | Cover Pull, Push, create/delete, and G1 recovery through the mock bridge |
+| `desktop/playwright.config.ts` | Register the new smoke spec |
+
+Do not modify `desktop/src-tauri/src/commands/project_git_workflow.rs`, because `clone_project_repository` already calls `build_git_clone_auth_config` after `validate_local_clone_url_for_workspace`.
+Do not modify `desktop/src-tauri/src/commands/project_terminal.rs`; its existing clone path also receives the common builder through `build_git_clone_auth_config`, and an existing checkout ignores an auth-builder error before opening the terminal.
+Do not modify `desktop/src/testing/e2eBridge.ts`; the required clone URL, GitHub state error, sync status, command log, pull, push, create, and delete mocks already exist.
 
 ## Required Impact Checks
 
-Run these before the task’s first edit when the GitNexus MCP tools are available.
-Report direct callers, affected processes, and risk level before editing.
+Run these before the first edit in each task when GitNexus MCP tools are available.
+Report direct callers, affected processes, and the risk level before editing.
+If GitNexus is unavailable or this worktree has no `.gitnexus/run.cjs`, record that fact and continue with direct source inspection.
 
-- Task 1: `validate_workspace_clone_url`, `validate_local_clone_url`, and `GitHubRepoRef::parse`.
-- Task 2: `GitAuthConfig`, `configure_git_auth`, `build_git_clone_auth_config`, `build_git_auth_config_for_keys`, and `GhRunner::ensure_auth`.
-- Task 3: `get_project_repo_sync_status`, `pull_project_local_repository`, `push_project_local_repository`, `create_project_remote_branch`, and `delete_project_remote_branch`.
-- Task 4: `useProjectRepoSyncStatusQuery`, `usePushProjectLocalRepositoryMutation`, `projectCloneErrorPresentation`, and `projectBranchErrorMessage`.
-- Task 5: `RepoSyncActionButton`, `useProjectRepositorySourceControls`, `useGithubAheadBehindQuery`, and `githubAheadBehindCounts`.
-- Task 6: `maybeInstallE2eTauriMocks` in `desktop/src/testing/e2eBridge.ts` and the Playwright smoke `testMatch` in `desktop/playwright.config.ts`.
-
-## Open Questions
-
-1. **G4 on the project page.**
-   The G3+G4 slice used `get_github_ahead_behind` for counts and Fetch-only chrome.
-   This spec forbids calling G4 from the project page once a checkout exists, and there is no ahead/behind without a checkout.
-   **Provisional default:** leave the G4 command and `useGithubAheadBehindQuery` in the tree.
-   Remove the hook call from `useProjectRepositorySourceControls`.
-   Update `desktop/tests/e2e/github-snapshot-and-fetch.spec.ts` so Fetch with a checkout calls `get_project_repo_sync_status` and does not call `get_github_ahead_behind`.
-
-2. **Ahead/behind without a checkout.**
-   Sync status already returns `ahead_count: 0`, `behind_count: 0`, and `can_*` false when there is no local path.
-   Showing `0 / 0` there would invent a comparison.
-   **Provisional default:** render `data-testid="repo-ahead-behind"` only when `githubHosted` and `localPath` is set and both counts are numbers.
-
-3. **Structured auth errors on clone / toasts / create-branch dialog.**
-   After the shared builder is used, HTTPS clone, sync, pull, push, and branch commands can fail with a JSON `ProjectPullRequestMergeError` string.
-   Raw JSON in a toast is not recovery copy.
-   **Provisional default:** parse that payload in the existing TypeScript wrappers and in `projectCloneErrorPresentation` / `projectBranchErrorMessage`.
-
-4. **`isGithubRemote` vs `githubHosted`.**
-   The spec names a new `isGithubRemote` field.
-   `RepoSourceHeaderControls.githubHosted` already exists and already gates “Open on GitHub”.
-   **Provisional default:** reuse `githubHosted`.
-   Do not add a second boolean.
+- Task 1: `validate_workspace_clone_url`, `GitHubRepoRef::parse`, `configure_git_auth`, `build_git_clone_auth_config`, `GhRunner::ensure_auth`, `get_project_repo_sync_status`, `pull_project_local_repository`, `push_project_local_repository`, `create_project_remote_branch`, and `delete_project_remote_branch`.
+- Task 2: `parseProjectPullRequestMergeError`, `projectCloneErrorPresentation`, and `projectBranchErrorMessage`.
+- Task 3: `useProjectRepoSyncStatusQuery`, `usePushProjectLocalRepositoryMutation`, `ProjectDetailScreen`, and `CreatePullRequestDialog`.
+- Task 4: `RepoSyncActionButton`, `RepositoryBranchDropdown`, `useProjectRepositorySourceControls`, `useGithubAheadBehindQuery`, and the Playwright smoke `testMatch`.
 
 ---
 
-## File map
-
-| File | Role |
-|------|------|
-| `desktop/src-tauri/src/commands/project_git_exec.rs` | `validate_git_operation_url`, host-aware `GitAuthConfig` helper string, `build_git_operation_auth_config`, `inspect_git_auth` |
-| `desktop/src-tauri/src/commands/project_github_pull_request.rs` | `GhRunner::binary_path()` so the helper can be `!<gh> auth git-credential` |
-| `desktop/src-tauri/src/commands/project_git.rs` | Sync / pull / push use the new URL gate + auth builder |
-| `desktop/src-tauri/src/commands/project_git_branches.rs` | Create / delete use the new URL gate + auth builder |
-| `desktop/src/shared/api/projectGit.ts` | Parse structured GitHub errors on sync / pull / push / clone / create / delete |
-| Create: `desktop/src/features/projects/lib/projectGithubSync.ts` | Enable helper, count visibility, push side-effect gate, branch-disabled reason, primary-action helper |
-| Create: `desktop/src/features/projects/lib/projectGithubSync.test.mjs` | Routing / header / push / G7 reason tests |
-| `desktop/src/features/projects/repoSyncHooks.ts` | Enable GitHub sync after G1; skip `publishProjectPullRequestUpdate` on GitHub |
-| `desktop/src/features/projects/lib/projectGitError.ts` | Clone recovery for structured GitHub codes |
-| `desktop/src/features/projects/lib/projectGitError.test.mjs` | Clone presentation tests |
-| `desktop/src/features/projects/lib/projectBranchErrors.ts` | Parse structured GitHub errors in the create/delete dialog |
-| `desktop/src/features/projects/lib/projectBranchErrors.test.mjs` | Dialog copy tests |
-| `desktop/src/features/projects/ui/ProjectDetailScreen.tsx` | Pass `githubStateReady` into the sync query |
-| `desktop/src/features/projects/ui/CreatePullRequestDialog.tsx` | Same `githubStateReady` argument |
-| `desktop/src/features/projects/ui/useProjectRepositorySourceControls.ts` | Pull/Push/Create/Delete on GitHub; Fetch runs sync when a checkout exists; no G4 |
-| `desktop/src/features/projects/ui/ProjectRepositorySource.tsx` | GitHub uses the Buzz Pull / Push / Fetch control plus optional `ahead / behind` |
-| `desktop/tests/e2e/github-snapshot-and-fetch.spec.ts` | Create/Delete visible; Fetch with checkout calls sync, not G4 |
-| Create: `desktop/tests/e2e/github-pull-push-and-branches.spec.ts` | Pull, Push, Fetch-only, Create enabled, G1 auth disables Create |
-| `desktop/playwright.config.ts` | Register the new spec in the smoke `testMatch` |
-
-Do not modify `get_project_repo_snapshot` beyond leaving it on `validate_workspace_clone_url`.
-Do not modify `get_github_ahead_behind` or `get_github_repository_snapshot` command bodies.
-
----
-
-### Task 1: Accept GitHub clone URLs for git operations
+### Task 1: Add the strict URL gate and host-aware git authentication
 
 **Files:**
-- Modify: `desktop/src-tauri/src/commands/project_git_exec.rs`
+
+- Modify: `desktop/src-tauri/src/commands/project_git_exec.rs:1-235,283-373`
+- Modify: `desktop/src-tauri/src/commands/project_github_pull_request.rs:276-448`
+- Modify: `desktop/src-tauri/src/commands/project_git.rs:865-976`
+- Modify: `desktop/src-tauri/src/commands/project_git_branches.rs:1-217`
+- Test: `desktop/src-tauri/src/commands/project_git_exec.rs:369-503`
+- Regression test: `desktop/src-tauri/src/commands/project_git_branches.rs:218-346`
 
 **Interfaces:**
-- Consumes: `GitHubRepoRef::parse`, `validate_workspace_clone_url`, `validate_clone_url_against_relay`
-- Produces:
-  - `pub(crate) fn validate_git_operation_url(clone_url: &str, state: &AppState) -> Result<(), String>`
-  - `fn validate_git_operation_url_against_relay(clone_url: &str, relay_base: &str) -> Result<(), String>`
 
-- [ ] **Step 1: Write failing tests**
+- Consumes: `GitHubRepoRef::parse`, `validate_clone_url_against_relay`, `GhRunner::{discover, from_resolved, ensure_auth}`, `remap_state_error`, and `ProjectPullRequestMergeError`.
+- Produces: `pub(crate) fn validate_git_operation_url(clone_url: &str, state: &AppState) -> Result<(), String>`.
+- Produces: private `fn validate_git_operation_url_against_relay(clone_url: &str, relay_base: &str) -> Result<(), String>` for deterministic tests.
+- Produces: `pub(crate) fn build_git_operation_auth_config(clone_url: &str, state: &AppState) -> Result<GitAuthConfig, String>`.
+- Produces: test seam `pub(crate) fn build_github_git_auth_config_with<F>(clone_url: &str, discover: F) -> Result<GitAuthConfig, String> where F: FnOnce() -> Result<GhRunner, ProjectPullRequestMergeError>`.
+- Preserves: the five Tauri command signatures and all blocking git operation signatures.
 
-Add these tests next to `workspace_clone_url_requires_exact_relay_origin_and_prefix` in the existing `tests` module.
-Import `validate_git_operation_url_against_relay`.
+- [ ] **Step 1: Add failing URL-gate tests**
+
+Add `validate_git_operation_url_against_relay` to the existing test-module import list in `project_git_exec.rs`.
+Add these tests next to `workspace_clone_url_requires_exact_relay_origin_and_prefix`.
 
 ```rust
 #[test]
-fn git_operation_url_accepts_github_https_and_ssh() {
+fn git_operation_url_accepts_strict_github_https_and_ssh() {
     let relay = "https://relay.example/prefix";
-    assert!(validate_git_operation_url_against_relay(
+    for clone_url in [
         "https://github.com/acme/app",
-        relay
-    )
-    .is_ok());
-    assert!(validate_git_operation_url_against_relay(
         "https://github.com/acme/app.git",
-        relay
-    )
-    .is_ok());
-    assert!(validate_git_operation_url_against_relay(
         "git@github.com:acme/app.git",
-        relay
-    )
-    .is_ok());
-    assert!(validate_git_operation_url_against_relay(
         "ssh://git@github.com/acme/app.git",
-        relay
-    )
-    .is_ok());
+    ] {
+        assert!(
+            validate_git_operation_url_against_relay(clone_url, relay).is_ok(),
+            "{clone_url}",
+        );
+    }
 }
 
 #[test]
-fn git_operation_url_rejects_gitlab_and_still_requires_relay_for_buzz() {
+fn git_operation_url_rejects_other_hosts_and_keeps_buzz_relay_scoped() {
     let owner = "a".repeat(64);
     let relay = "https://relay.example/prefix";
     assert!(
         validate_git_operation_url_against_relay("https://gitlab.com/acme/app", relay).is_err()
     );
-    assert!(validate_git_operation_url_against_relay(
-        &format!("https://relay.example/prefix/git/{owner}/repo"),
-        relay
-    )
-    .is_ok());
-    assert!(validate_git_operation_url_against_relay(
-        &format!("https://evil.example/prefix/git/{owner}/repo"),
-        relay
-    )
-    .is_err());
+    assert!(
+        validate_git_operation_url_against_relay(
+            "https://github.com/acme/app/issues",
+            relay,
+        )
+        .is_err()
+    );
+    assert!(
+        validate_git_operation_url_against_relay(
+            &format!("https://relay.example/prefix/git/{owner}/repo"),
+            relay,
+        )
+        .is_ok()
+    );
+    assert!(
+        validate_git_operation_url_against_relay(
+            &format!("https://evil.example/prefix/git/{owner}/repo"),
+            relay,
+        )
+        .is_err()
+    );
 }
 ```
 
-- [ ] **Step 2: Run the tests — expect compile fail**
+- [ ] **Step 2: Add failing auth-builder and secret-isolation tests**
 
-```bash
-. ./bin/activate-hermit && cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib git_operation_url_accepts_github_https_and_ssh
-```
-
-Expected: FAIL with `cannot find function validate_git_operation_url_against_relay`.
-
-- [ ] **Step 3: Implement the gate**
-
-Keep `validate_workspace_clone_url` unchanged.
-Add the new functions next to it.
-
-```rust
-/// Accept a Buzz workspace clone URL or a strict github.com HTTPS/SSH URL.
-pub(crate) fn validate_git_operation_url(
-    clone_url: &str,
-    state: &AppState,
-) -> Result<(), String> {
-    let relay_base = crate::relay::relay_api_base_url_with_override(state);
-    validate_git_operation_url_against_relay(clone_url, &relay_base)
-}
-
-fn validate_git_operation_url_against_relay(
-    clone_url: &str,
-    relay_base: &str,
-) -> Result<(), String> {
-    if GitHubRepoRef::parse(clone_url).is_ok() {
-        return Ok(());
-    }
-    validate_clone_url_against_relay(clone_url, relay_base)
-}
-```
-
-Do not call this from `get_project_repo_snapshot`.
-Clone stays on `validate_local_clone_url` / `validate_local_clone_url_for_workspace`.
-
-- [ ] **Step 4: Run tests**
-
-```bash
-. ./bin/activate-hermit && cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib git_operation_url
-```
-
-Expected: PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-. ./bin/activate-hermit
-if [ -f .gitnexus/run.cjs ]; then node .gitnexus/run.cjs detect; fi
-git add desktop/src-tauri/src/commands/project_git_exec.rs
-git commit -s -m "feat(projects): accept GitHub URLs for git operations"
-```
-
----
-
-### Task 2: Host-aware Git credential helper
-
-**Files:**
-- Modify: `desktop/src-tauri/src/commands/project_github_pull_request.rs`
-- Modify: `desktop/src-tauri/src/commands/project_git_exec.rs`
-
-**Interfaces:**
-- Consumes: `GhRunner::{discover, from_resolved, ensure_auth}`, `remap_state_error`, `credential_helper_config_value`, `GitHubRepoRef::parse`
-- Produces:
-  - `impl GhRunner { pub(crate) fn binary_path(&self) -> &std::path::Path }`
-  - `GitAuthConfig.credential_helper` changes from `Option<PathBuf>` to `Option<String>` (full `credential.helper` value)
-  - `pub(crate) struct GitAuthInspection { pub credential_helper: Option<String>, pub injects_nostr_private_key: bool }`
-  - `pub(crate) fn inspect_git_auth(auth: &GitAuthConfig, needs_credentials: bool) -> GitAuthInspection`
-  - `pub(crate) fn github_command_error_string(error: ProjectPullRequestMergeError) -> String`
-  - `pub(crate) fn build_github_git_auth_config_with<F>(clone_url: &str, discover: F) -> Result<GitAuthConfig, String> where F: FnOnce() -> Result<GhRunner, ProjectPullRequestMergeError>`
-  - `pub(crate) fn build_git_operation_auth_config(clone_url: &str, state: &AppState) -> Result<GitAuthConfig, String>`
-  - `build_git_clone_auth_config` becomes a one-line call to `build_git_operation_auth_config`
-
-- [ ] **Step 1: Write failing builder tests**
-
-Add a unix `fake_gh` helper copied from `project_github_repository_state.rs` into the `project_git_exec` tests module.
-Match `*auth*status*` and `*auth*git-credential*` before any API path.
-A `*) exit 1` arm must fail the test if git or the builder accidentally treats the helper as `gh api`.
+Extend the test-module imports with `build_github_git_auth_config_with`, `configure_git_auth`, `github_command_error_string`, `github_credential_helper_config_value`, `GitAuthConfig`, `GhRunner`, and `ProjectPullRequestMergeError`.
+Add the following helpers and tests.
+The fake binary deliberately lives under a directory containing a space so the test exercises shell quoting.
 
 ```rust
 fn error_json_code(error: &str) -> String {
@@ -266,87 +189,127 @@ fn error_json_code(error: &str) -> String {
         .unwrap_or_default()
 }
 
+#[test]
+fn github_git_auth_quotes_spaces_and_apostrophes_in_helper_path() {
+    let path = std::path::Path::new("/tmp/Buzz's GitHub CLI/gh");
+    assert_eq!(
+        github_credential_helper_config_value(path),
+        "!'/tmp/Buzz'\\''s GitHub CLI/gh' auth git-credential",
+    );
+}
+
 #[cfg(unix)]
 fn fake_gh(script: &str) -> (tempfile::TempDir, std::path::PathBuf) {
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().expect("create fake gh directory");
-    let path = dir.path().join("gh");
-    std::fs::write(&path, format!("#!/bin/sh\nset -eu\n{script}\n")).expect("write fake gh");
-    let mut permissions = std::fs::metadata(&path).expect("stat fake gh").permissions();
+    let bin_dir = dir.path().join("GitHub CLI");
+    std::fs::create_dir(&bin_dir).expect("create spaced bin directory");
+    let path = bin_dir.join("gh");
+    std::fs::write(&path, format!("#!/bin/sh\nset -eu\n{script}\n"))
+        .expect("write fake gh");
+    let mut permissions = std::fs::metadata(&path)
+        .expect("stat fake gh")
+        .permissions();
     permissions.set_mode(0o700);
     std::fs::set_permissions(&path, permissions).expect("chmod fake gh");
     (dir, path)
 }
 
 #[cfg(unix)]
+fn invoke_credential_helper(auth: &GitAuthConfig) {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let mut command = Command::new(&auth.git_path);
+    command
+        .args(["credential", "fill"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .env("NOSTR_PRIVATE_KEY", "must-not-leak");
+    configure_git_auth(&mut command, auth, true);
+    let mut child = command.spawn().expect("run git credential fill");
+    let mut stdin = child.stdin.take().expect("credential stdin");
+    stdin
+        .write_all(b"protocol=https\nhost=github.com\n\n")
+        .expect("write credential request");
+    drop(stdin);
+    let _ = child.wait().expect("wait for git credential fill");
+}
+
+#[cfg(unix)]
 #[test]
-fn https_github_auth_uses_gh_credential_helper_without_nsec() {
+fn github_git_auth_https_invokes_quoted_gh_helper_without_nsec() {
     let script = r#"
-printf '%s\n' "$*" >> "${0%/gh}/calls"
+printf '%s\n' "$*" >> "${0%/GitHub CLI/gh}/calls"
 case "$*" in
   *auth*status*) exit 0 ;;
-  *auth*git-credential*) exit 0 ;;
-  *) exit 1 ;;
+  *auth*git-credential*)
+    if [ "${NOSTR_PRIVATE_KEY+x}" = x ]; then exit 41; fi
+    exit 0
+    ;;
+  *api*) exit 42 ;;
+  *) exit 43 ;;
 esac
 "#;
     let (dir, path) = fake_gh(script);
     let auth = build_github_git_auth_config_with("https://github.com/acme/app", || {
         GhRunner::from_resolved(Some(path.clone()))
     })
-    .expect("https auth");
-    let inspection = inspect_git_auth(&auth, true);
-    let helper = inspection.credential_helper.expect("helper");
-    assert!(helper.starts_with('!'), "{helper}");
-    assert!(
-        helper.ends_with(" auth git-credential"),
-        "{helper}"
-    );
-    assert!(!inspection.injects_nostr_private_key);
-    let calls = std::fs::read_to_string(dir.path().join("calls")).expect("calls");
-    assert!(calls.lines().any(|line| line.contains("auth") && line.contains("status")));
-    assert!(!calls.contains("/repos/"));
+    .expect("https GitHub auth");
+    let helper = auth.credential_helper.as_deref().expect("credential helper");
+    assert!(helper.starts_with("!'"), "{helper}");
+    assert!(helper.ends_with("' auth git-credential"), "{helper}");
+    assert!(auth.nsec.is_empty());
+    invoke_credential_helper(&auth);
+    let calls = std::fs::read_to_string(dir.path().join("calls")).expect("read calls");
+    assert!(calls
+        .lines()
+        .any(|line| line == "auth status --hostname github.com"));
+    assert!(calls
+        .lines()
+        .any(|line| line == "auth git-credential get"));
+    assert!(!calls.lines().any(|line| line.starts_with("api ")));
 }
 
 #[test]
-fn ssh_github_auth_skips_helper_and_ensure_auth() {
+fn github_git_auth_ssh_skips_gh_helper_and_discovery() {
     let auth = build_github_git_auth_config_with("git@github.com:acme/app.git", || {
-        panic!("SSH GitHub must not discover gh");
+        panic!("SSH GitHub must not discover gh")
     })
-    .expect("ssh auth");
-    let inspection = inspect_git_auth(&auth, true);
-    assert_eq!(inspection.credential_helper, None);
-    assert!(!inspection.injects_nostr_private_key);
+    .expect("SSH GitHub auth");
+    assert!(auth.credential_helper.is_none());
+    assert!(auth.nsec.is_empty());
 }
 
 #[test]
-fn https_github_missing_gh_is_cli_missing_json() {
-    let err = build_github_git_auth_config_with("https://github.com/acme/app", || {
+fn github_git_auth_missing_cli_is_structured_json() {
+    let error = build_github_git_auth_config_with("https://github.com/acme/app", || {
         GhRunner::from_resolved(None)
     })
-    .expect_err("missing gh");
-    assert_eq!(error_json_code(&err), "github_cli_missing");
+    .expect_err("missing gh must fail");
+    assert_eq!(error_json_code(&error), "github_cli_missing");
 }
 
 #[cfg(unix)]
 #[test]
-fn https_github_failed_ensure_auth_is_auth_required_json() {
+fn github_git_auth_failed_status_is_structured_json() {
     let (_dir, path) = fake_gh(
         r#"
 case "$*" in
   *auth*status*) exit 1 ;;
-  *) exit 1 ;;
+  *) exit 43 ;;
 esac
 "#,
     );
-    let err = build_github_git_auth_config_with("https://github.com/acme/app", || {
+    let error = build_github_git_auth_config_with("https://github.com/acme/app", || {
         GhRunner::from_resolved(Some(path))
     })
-    .expect_err("auth");
-    assert_eq!(error_json_code(&err), "github_auth_required");
+    .expect_err("failed auth status must fail");
+    assert_eq!(error_json_code(&error), "github_auth_required");
 }
 
 #[test]
-fn github_command_error_string_remaps_merge_failed() {
+fn github_git_auth_remaps_merge_failed_before_serializing() {
     let json = github_command_error_string(ProjectPullRequestMergeError::new(
         "github_merge_failed",
         "boom",
@@ -355,41 +318,71 @@ fn github_command_error_string_remaps_merge_failed() {
 }
 
 #[test]
-fn buzz_auth_still_injects_nostr_helper_when_present() {
-    let auth = build_git_auth_config_for_keys(&nostr::Keys::generate()).expect("buzz auth");
-    assert!(!auth_nsec_for_test(&auth).is_empty());
-    if let Some(helper) = inspect_git_auth(&auth, true).credential_helper {
-        assert!(helper.contains("git-credential-nostr"), "{helper}");
-        assert!(inspect_git_auth(&auth, true).injects_nostr_private_key);
-    }
+fn buzz_git_auth_adds_nsec_only_for_credential_operations() {
+    use std::ffi::OsStr;
+    use std::process::Command;
+    let auth = GitAuthConfig {
+        git_path: std::path::PathBuf::from("git"),
+        credential_helper: Some("/tmp/git-credential-nostr".to_string()),
+        nsec: "nsec1test".to_string(),
+        allow_file_transport: false,
+    };
+    let mut local = Command::new("git");
+    configure_git_auth(&mut local, &auth, false);
+    let local_nsec = local
+        .get_envs()
+        .find(|(key, _)| *key == OsStr::new("NOSTR_PRIVATE_KEY"))
+        .and_then(|(_, value)| value);
+    assert_eq!(local_nsec, None);
+    let mut remote = Command::new("git");
+    configure_git_auth(&mut remote, &auth, true);
+    let remote_nsec = remote
+        .get_envs()
+        .find(|(key, _)| *key == OsStr::new("NOSTR_PRIVATE_KEY"))
+        .and_then(|(_, value)| value);
+    assert_eq!(remote_nsec, Some(OsStr::new("nsec1test")));
 }
 ```
 
-Add `#[cfg(test)] pub(crate) fn auth_nsec_for_test(auth: &GitAuthConfig) -> &str` next to the builder if the field stays private.
-
-- [ ] **Step 2: Run the tests — expect compile fail**
+- [ ] **Step 3: Run the new tests and verify the red state**
 
 ```bash
-. ./bin/activate-hermit && cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib https_github_auth_uses_gh_credential_helper_without_nsec
+. ./bin/activate-hermit && cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib git_operation_url_
+. ./bin/activate-hermit && cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib github_git_auth_
 ```
 
-Expected: FAIL because `build_github_git_auth_config_with` is missing.
+Expected: compilation fails because `validate_git_operation_url_against_relay`, `build_github_git_auth_config_with`, and `github_command_error_string` do not exist yet.
 
-- [ ] **Step 3: Implement the builder**
+- [ ] **Step 4: Expose the `gh` path and scrub inherited secrets**
 
-In `project_github_pull_request.rs`, add:
+In `project_github_pull_request.rs`, add this method inside `impl GhRunner`.
 
 ```rust
-impl GhRunner {
-    pub(crate) fn binary_path(&self) -> &std::path::Path {
-        &self.binary
-    }
+/// Resolved GitHub CLI binary used by git's credential-helper command.
+pub(crate) fn binary_path(&self) -> &std::path::Path {
+    &self.binary
 }
 ```
 
-In `project_git_exec.rs`, change `GitAuthConfig` to store the helper as a finished config value:
+In `GhRunner::run_with_limit`, add `.env_remove("NOSTR_PRIVATE_KEY")` to the `Command` builder before spawning so G1, G3, G4, merge, and credential-auth checks cannot inherit a Nostr secret.
 
 ```rust
+let mut command = Command::new(&self.binary);
+command
+    .args(args)
+    .env_remove("NOSTR_PRIVATE_KEY")
+    .stdin(Stdio::null())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped());
+```
+
+- [ ] **Step 5: Implement helper values, host-aware auth, and the URL gate**
+
+Update the `project_git_exec.rs` imports to include `ProjectPullRequestMergeError`, `GhRunner`, and `remap_state_error`.
+Change `credential_helper` from `Option<PathBuf>` to the complete `Option<String>` config value and derive `Debug` so failure assertions compile.
+
+```rust
+#[derive(Debug)]
 pub(crate) struct GitAuthConfig {
     git_path: std::path::PathBuf,
     credential_helper: Option<String>,
@@ -398,31 +391,57 @@ pub(crate) struct GitAuthConfig {
 }
 ```
 
-Update `configure_git_auth` so a non-empty helper is applied as-is, and `NOSTR_PRIVATE_KEY` is set only when `needs_credentials && !auth.nsec.is_empty() && auth.credential_helper.is_some()`.
-
-Update `build_git_auth_config_for_keys` to store `resolve_command("git-credential-nostr").map(|path| credential_helper_config_value(&path))`.
-
-Add:
+At the start of `configure_git_auth`, explicitly remove inherited `NOSTR_PRIVATE_KEY`.
+When credentials are needed, set the secret only when `nsec` is non-empty, then append the already-finished helper value unchanged.
 
 ```rust
-pub(crate) fn github_command_error_string(error: ProjectPullRequestMergeError) -> String {
+command.env("GIT_TERMINAL_PROMPT", "0");
+command.env("GIT_CONFIG_NOSYSTEM", "1");
+command.env_remove("NOSTR_PRIVATE_KEY");
+
+if needs_credentials {
+    let Some(credential_helper) = &auth.credential_helper else {
+        return apply_git_config(command, &entries);
+    };
+    if !auth.nsec.is_empty() {
+        command.env("NOSTR_PRIVATE_KEY", &auth.nsec);
+    }
+    entries.push(("credential.helper", credential_helper.clone()));
+    entries.push(("credential.useHttpPath", "true".to_string()));
+}
+apply_git_config(command, &entries);
+```
+
+Keep `credential_helper_config_value` for slash normalization and add a Git shell command formatter that single-quotes the resolved `gh` path.
+
+```rust
+fn github_credential_helper_config_value(path: &std::path::Path) -> String {
+    let path = credential_helper_config_value(path);
+    format!(
+        "!'{}' auth git-credential",
+        path.replace('\'', "'\\''"),
+    )
+}
+```
+
+Update `build_git_auth_config_for_keys` so its helper is already a string.
+
+```rust
+let credential_helper = resolve_command("git-credential-nostr")
+    .map(|path| credential_helper_config_value(&path));
+```
+
+Add the structured-error serializer and host-aware builders next to the current builders.
+
+```rust
+pub(crate) fn github_command_error_string(
+    error: ProjectPullRequestMergeError,
+) -> String {
     let remapped = remap_state_error(error, "");
     serde_json::to_string(&remapped).unwrap_or_else(|_| {
         "{\"code\":\"github_state_failed\",\"message\":\"GitHub authentication failed.\",\"recovery\":null}"
             .to_string()
     })
-}
-
-pub(crate) fn inspect_git_auth(auth: &GitAuthConfig, needs_credentials: bool) -> GitAuthInspection {
-    let helper = if needs_credentials {
-        auth.credential_helper.clone()
-    } else {
-        None
-    };
-    GitAuthInspection {
-        injects_nostr_private_key: helper.is_some() && needs_credentials && !auth.nsec.is_empty(),
-        credential_helper: helper,
-    }
 }
 
 pub(crate) fn build_github_git_auth_config_with<F>(
@@ -443,13 +462,11 @@ where
         });
     }
     let gh = discover().map_err(github_command_error_string)?;
-    gh.ensure_auth()
-        .map_err(github_command_error_string)?;
+    gh.ensure_auth().map_err(github_command_error_string)?;
     Ok(GitAuthConfig {
         git_path,
-        credential_helper: Some(format!(
-            "!{} auth git-credential",
-            credential_helper_config_value(gh.binary_path())
+        credential_helper: Some(github_credential_helper_config_value(
+            gh.binary_path(),
         )),
         nsec: String::new(),
         allow_file_transport: false,
@@ -474,190 +491,320 @@ pub(crate) fn build_git_clone_auth_config(
 }
 ```
 
-Import `ProjectPullRequestMergeError`, `GhRunner`, and `remap_state_error`.
-`project_github_repository_state` does not import `project_git_exec` today, so this import is not a cycle.
-
-Do not put `NOSTR_PRIVATE_KEY` on GitHub HTTPS or SSH configs.
-Do not call `discover` / `ensure_auth` for `git@github.com:` or `ssh://git@github.com/`.
-
-- [ ] **Step 4: Run auth + existing git exec tests**
-
-```bash
-. ./bin/activate-hermit && cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib github_git_auth && cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib github_command_error_string && cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib ssh_github_auth && cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib https_github_ && cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib buzz_auth && cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib credential_helper && cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib local_clone_url
-```
-
-Expected: PASS on unix.
-Windows: keep SSH / missing-gh / remap tests; keep fake-gh tests `#[cfg(unix)]`.
-
-- [ ] **Step 5: Commit**
-
-```bash
-. ./bin/activate-hermit
-if [ -f .gitnexus/run.cjs ]; then node .gitnexus/run.cjs detect; fi
-git add desktop/src-tauri/src/commands/project_git_exec.rs \
-  desktop/src-tauri/src/commands/project_github_pull_request.rs
-git commit -s -m "feat(projects): use gh git-credential for GitHub HTTPS"
-```
-
----
-
-### Task 3: Point sync, pull, push, and branch commands at the new gate
-
-**Files:**
-- Modify: `desktop/src-tauri/src/commands/project_git.rs`
-- Modify: `desktop/src-tauri/src/commands/project_git_branches.rs`
-
-**Interfaces:**
-- Consumes: `validate_git_operation_url`, `build_git_operation_auth_config`
-- Produces: the same five command signatures, now accepting `github.com` clone URLs
-
-Replace only these call sites:
-
-- `get_project_repo_sync_status`
-- `pull_project_local_repository`
-- `push_project_local_repository`
-- `create_project_remote_branch`
-- `delete_project_remote_branch`
-
-Each currently does:
+Add the new URL gate beside `validate_workspace_clone_url` and leave the existing workspace gate unchanged.
 
 ```rust
-validate_workspace_clone_url(&clone_url, &state)?;
-let auth = build_git_auth_config(&state)?;
+/// Accept a Buzz URL on the active relay or a strict github.com URL.
+pub(crate) fn validate_git_operation_url(
+    clone_url: &str,
+    state: &AppState,
+) -> Result<(), String> {
+    let relay_base = crate::relay::relay_api_base_url_with_override(state);
+    validate_git_operation_url_against_relay(clone_url, &relay_base)
+}
+
+fn validate_git_operation_url_against_relay(
+    clone_url: &str,
+    relay_base: &str,
+) -> Result<(), String> {
+    if GitHubRepoRef::parse(clone_url).is_ok() {
+        return Ok(());
+    }
+    validate_clone_url_against_relay(clone_url, relay_base)
+}
 ```
 
-Change each to:
+- [ ] **Step 6: Route exactly five Tauri commands through the new policy**
+
+In `project_git.rs`, update the imports and replace the validator and auth builder only in `get_project_repo_sync_status`, `push_project_local_repository`, and `pull_project_local_repository`.
 
 ```rust
 validate_git_operation_url(&clone_url, &state)?;
 let auth = build_git_operation_auth_config(&clone_url, &state)?;
 ```
 
-Leave `get_project_repo_snapshot` on `validate_workspace_clone_url` + `build_git_auth_config`.
-Leave merge / diff / identity commands on the Buzz helper.
+In `project_git_branches.rs`, make the same replacement only in `create_project_remote_branch` and `delete_project_remote_branch`.
+Leave `get_project_repo_snapshot`, git identity, diff, merge, and recovery commands on `validate_workspace_clone_url` and `build_git_auth_config`.
 
-- [ ] **Step 1: Write the stale-commit lease test**
-
-Add next to `remote_branch_create_and_delete_round_trip` in `project_git_branches.rs`.
-Reuse the same file-remote fixture setup, then pass a wrong expected commit.
-
-```rust
-#[test]
-fn create_remote_branch_rejects_stale_expected_commit() {
-    let auth = build_test_git_auth_config().expect("build test git config");
-    let root = tempfile::tempdir().expect("create test directory");
-    let remote = root.path().join("remote.git");
-    let worktree = root.path().join("worktree");
-    let remote_path = remote.to_str().expect("remote path");
-    let worktree_path = worktree.to_str().expect("worktree path");
-
-    run_git(&["init", "--bare", "--", remote_path], None, &auth).expect("init remote");
-    run_git(&["init", "--", worktree_path], None, &auth).expect("init worktree");
-    std::fs::write(worktree.join("README.md"), "branch test\n").expect("write fixture");
-    run_git(&["add", "README.md"], Some(&worktree), &auth).expect("stage");
-    run_git(
-        &[
-            "-c",
-            "user.name=Buzz Test",
-            "-c",
-            "user.email=test@example.com",
-            "commit",
-            "-m",
-            "Initial commit",
-        ],
-        Some(&worktree),
-        &auth,
-    )
-    .expect("commit");
-    run_git(&["branch", "-M", "main"], Some(&worktree), &auth).expect("rename");
-    run_git(
-        &["remote", "add", "origin", remote_path],
-        Some(&worktree),
-        &auth,
-    )
-    .expect("remote");
-    run_git(&["push", "origin", "main"], Some(&worktree), &auth).expect("push");
-    let stale = "a".repeat(40);
-    let err = create_remote_branch_blocking(remote_path, "main", &stale, "feature/demo", &auth)
-        .expect_err("stale");
-    assert!(err.contains("source branch changed") || err.contains("Refresh the repository"));
-}
-```
-
-The existing `delete_remote_branch_blocking(..., "main", ...)` assertion already refuses the default branch.
-
-- [ ] **Step 2: Run the new test against current wrappers — expect PASS on the blocking function, then switch the five commands**
+- [ ] **Step 7: Run Rust formatting and focused regression tests**
 
 ```bash
-. ./bin/activate-hermit && cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib create_remote_branch_rejects_stale_expected_commit
+. ./bin/activate-hermit && cargo fmt --manifest-path desktop/src-tauri/Cargo.toml -- --check
+. ./bin/activate-hermit && cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib project_git_exec::tests
+. ./bin/activate-hermit && cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib project_git_branches::tests
 ```
 
-Expected: PASS after the test compiles (the lease lives in the blocking function, which is unchanged).
+Expected: all tests pass on Unix.
+Expected on Windows: non-`cfg(unix)` URL, SSH, missing-CLI, remap, and auth-configuration tests pass; the shell-script invocation tests remain Unix-only.
 
-- [ ] **Step 3: Switch the five command wrappers**
-
-Update imports in both files.
-Do not change command argument names or result types.
-
-- [ ] **Step 4: Run branch + git lib tests**
+- [ ] **Step 8: Commit the Rust slice**
 
 ```bash
-. ./bin/activate-hermit && cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib remote_branch && cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib git_operation_url && cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib github_git_auth
-```
-
-Expected: PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-. ./bin/activate-hermit
-if [ -f .gitnexus/run.cjs ]; then node .gitnexus/run.cjs detect; fi
-git add desktop/src-tauri/src/commands/project_git.rs \
-  desktop/src-tauri/src/commands/project_git_branches.rs
-git commit -s -m "feat(projects): enable GitHub pull push and branch git commands"
+. ./bin/activate-hermit && if [ -f .gitnexus/run.cjs ]; then node .gitnexus/run.cjs detect; fi && git diff --check && git add desktop/src-tauri/src/commands/project_git_exec.rs desktop/src-tauri/src/commands/project_github_pull_request.rs desktop/src-tauri/src/commands/project_git.rs desktop/src-tauri/src/commands/project_git_branches.rs && git commit -s -m "feat(projects): authenticate GitHub git operations"
 ```
 
 ---
 
-### Task 4: TypeScript enablement, push side effect, and structured errors
+### Task 2: Parse and present structured GitHub command errors
 
 **Files:**
-- Create: `desktop/src/features/projects/lib/projectGithubSync.ts`
-- Create: `desktop/src/features/projects/lib/projectGithubSync.test.mjs`
-- Modify: `desktop/src/features/projects/repoSyncHooks.ts`
-- Modify: `desktop/src/features/projects/ui/ProjectDetailScreen.tsx`
-- Modify: `desktop/src/features/projects/ui/CreatePullRequestDialog.tsx`
-- Modify: `desktop/src/shared/api/projectGit.ts`
-- Modify: `desktop/src/features/projects/lib/projectGitError.ts`
-- Modify: `desktop/src/features/projects/lib/projectGitError.test.mjs`
-- Modify: `desktop/src/features/projects/lib/projectBranchErrors.ts`
-- Modify: `desktop/src/features/projects/lib/projectBranchErrors.test.mjs`
+
+- Modify: `desktop/src/shared/api/projectGit.ts:300-470,637-683`
+- Modify: `desktop/src/features/projects/lib/projectGitError.ts:1-70`
+- Modify: `desktop/src/features/projects/lib/projectGitError.test.mjs:1-49`
+- Modify: `desktop/src/features/projects/lib/projectBranchErrors.ts:1-36`
+- Modify: `desktop/src/features/projects/lib/projectBranchErrors.test.mjs:1-43`
 
 **Interfaces:**
-- Consumes: `isGitHubCloneUrl`, `parseProjectPullRequestMergeError`, `useProjectRepoHost`
-- Produces:
-  - `export function projectRepoSyncStatusEnabled(input: { cloneUrl?: string | null; buzzHost: boolean; githubStateReady: boolean }): boolean`
-  - `export function githubSyncCountDisplay(input: { githubHosted: boolean; localPath?: string | null; aheadCount?: number | null; behindCount?: number | null }): { ahead: number; behind: number } | null`
-  - `export function shouldPublishPullRequestUpdateAfterPush(cloneUrl?: string | null): boolean`
-  - `export function githubBranchActionReason(input: { githubHosted: boolean; githubStateError?: unknown }): string | null`
-  - `export function repoSyncPrimaryAction(input: { githubHosted: boolean; remoteKind?: "buzz" | "external"; hasExternalUrl?: boolean; canPull?: boolean; canPush?: boolean; hasFetch?: boolean }): "pull" | "push" | "fetch" | "open" | null`
-  - `useProjectRepoSyncStatusQuery(..., options?: { githubStateReady?: boolean })`
 
-- [ ] **Step 1: Write failing helper tests**
+- Consumes: `parseProjectPullRequestMergeError` and `ProjectPullRequestMergeError`.
+- Produces: structured `Error` objects from sync, pull, push, clone, create, and delete TypeScript wrappers while preserving generic failures unchanged.
+- Produces: `export function githubBranchActionReason(input: { githubHosted: boolean; error?: unknown }): string | null`.
+
+- [ ] **Step 1: Add failing clone and branch error tests**
+
+Import `ProjectPullRequestMergeError` from `../../../shared/api/projectGit.ts` in both test files.
+Add these tests to `projectGitError.test.mjs`.
+
+```js
+test("presents structured GitHub CLI and auth failures for clone", () => {
+  assert.deepEqual(
+    projectCloneErrorPresentation(
+      new ProjectPullRequestMergeError(
+        "github_cli_missing",
+        "Install the GitHub CLI to continue.",
+        null,
+      ),
+      "https://github.com/acme/app",
+    ),
+    {
+      title: "GitHub CLI is required",
+      description: "Install GitHub CLI, then retry.",
+    },
+  );
+  assert.deepEqual(
+    projectCloneErrorPresentation(
+      new ProjectPullRequestMergeError(
+        "github_auth_required",
+        "Authenticate GitHub CLI with: gh auth login --hostname github.com",
+        null,
+      ),
+      "https://github.com/acme/app",
+    ),
+    {
+      title: "GitHub authentication required",
+      description:
+        "Authenticate GitHub CLI with: gh auth login --hostname github.com",
+    },
+  );
+});
+
+test("does not use GitHub recovery copy for a Buzz clone URL", () => {
+  const owner = "ab".repeat(32);
+  assert.deepEqual(
+    projectCloneErrorPresentation(
+      new ProjectPullRequestMergeError(
+        "github_auth_required",
+        "Authenticate GitHub CLI with: gh auth login --hostname github.com",
+        null,
+      ),
+      `https://relay.example/git/${owner}/app`,
+    ),
+    {
+      title: "Repository access required",
+      description:
+        "Buzz could not authenticate with this repository. Check your access and try again.",
+    },
+  );
+});
+```
+
+Add these tests to `projectBranchErrors.test.mjs` and add `githubBranchActionReason` to its import list.
+
+```js
+test("maps structured GitHub errors in branch dialogs", () => {
+  assert.equal(
+    projectBranchErrorMessage(
+      new ProjectPullRequestMergeError(
+        "github_auth_required",
+        "Authenticate GitHub CLI with: gh auth login --hostname github.com",
+        null,
+      ),
+      "Failed to create branch.",
+    ),
+    "Authenticate GitHub CLI with: gh auth login --hostname github.com",
+  );
+});
+
+test("derives a GitHub branch-action recovery reason and gates it by host", () => {
+  const error = new ProjectPullRequestMergeError(
+    "github_cli_missing",
+    "Install the GitHub CLI to continue.",
+    null,
+  );
+  assert.equal(
+    githubBranchActionReason({ githubHosted: true, error }),
+    "Install GitHub CLI, then retry.",
+  );
+  assert.equal(
+    githubBranchActionReason({ githubHosted: false, error }),
+    null,
+  );
+});
+```
+
+- [ ] **Step 2: Run the focused tests and verify the red state**
+
+```bash
+. ./bin/activate-hermit && cd desktop && node --import ./test-loader.mjs --experimental-strip-types --test src/features/projects/lib/projectGitError.test.mjs src/features/projects/lib/projectBranchErrors.test.mjs
+```
+
+Expected: the new structured recovery assertions fail and `githubBranchActionReason` is not exported.
+
+- [ ] **Step 3: Centralize structured parsing at the affected API boundary**
+
+Add this private helper in `projectGit.ts` after `parseProjectPullRequestMergeError`.
+
+```ts
+async function invokeProjectGitCommand<T>(
+  command: string,
+  args: Record<string, unknown>,
+): Promise<T> {
+  try {
+    return await invokeTauri<T>(command, args);
+  } catch (error) {
+    throw parseProjectPullRequestMergeError(error) ?? error;
+  }
+}
+```
+
+Replace `invokeTauri` with `invokeProjectGitCommand` in exactly these wrappers while keeping their existing raw-to-camel-case mapping unchanged.
+
+```ts
+getProjectRepoSyncStatus       -> "get_project_repo_sync_status"
+pushProjectLocalRepository     -> "push_project_local_repository"
+pullProjectLocalRepository     -> "pull_project_local_repository"
+cloneProjectRepository        -> "clone_project_repository"
+createProjectRemoteBranch     -> "create_project_remote_branch"
+deleteProjectRemoteBranch     -> "delete_project_remote_branch"
+```
+
+Do not use the helper for unrelated commands in this slice.
+Because `parseProjectPullRequestMergeError` returns `null` for plain git stderr, generic git failures retain their existing type and text.
+
+- [ ] **Step 4: Add structured clone and branch presentations**
+
+Import `parseProjectPullRequestMergeError` into `projectGitError.ts`.
+At the start of `projectCloneErrorPresentation`, after computing `github`, add this host-gated branch before generic stderr matching.
+
+```ts
+const structured = github ? parseProjectPullRequestMergeError(error) : null;
+if (structured) {
+  switch (structured.code) {
+    case "github_cli_missing":
+      return {
+        title: "GitHub CLI is required",
+        description: "Install GitHub CLI, then retry.",
+      };
+    case "github_auth_required":
+      return {
+        title: "GitHub authentication required",
+        description: structured.message,
+      };
+    case "github_repo_unavailable":
+    case "github_state_failed":
+      return {
+        title: "Could not load GitHub branches",
+        description: structured.message,
+      };
+  }
+}
+```
+
+Import `parseProjectPullRequestMergeError` into `projectBranchErrors.ts`.
+Parse structured errors before the existing `instanceof Error` and no-channel-binding paths.
+Add the branch-action reason beside `projectBranchErrorMessage`.
+
+```ts
+export function githubBranchActionReason(input: {
+  githubHosted: boolean;
+  error?: unknown;
+}): string | null {
+  if (!input.githubHosted || input.error == null) return null;
+  const parsed = parseProjectPullRequestMergeError(input.error);
+  if (!parsed) return null;
+  return parsed.code === "github_cli_missing"
+    ? "Install GitHub CLI, then retry."
+    : parsed.message;
+}
+
+export function projectBranchErrorMessage(
+  error: unknown,
+  fallback: string,
+): string {
+  const structured = parseProjectPullRequestMergeError(error);
+  if (structured) return structured.message;
+  if (!(error instanceof Error)) return fallback;
+  if (isNoChannelBindingError(error.message)) {
+    return NO_CHANNEL_BINDING_COPY;
+  }
+  return error.message;
+}
+```
+
+- [ ] **Step 5: Run focused tests, formatting, and typecheck**
+
+```bash
+. ./bin/activate-hermit && cd desktop && node --import ./test-loader.mjs --experimental-strip-types --test src/features/projects/lib/projectGitError.test.mjs src/features/projects/lib/projectBranchErrors.test.mjs src/shared/api/projectGitMergeError.test.mjs
+. ./bin/activate-hermit && cd desktop && pnpm exec biome check src/shared/api/projectGit.ts src/features/projects/lib/projectGitError.ts src/features/projects/lib/projectGitError.test.mjs src/features/projects/lib/projectBranchErrors.ts src/features/projects/lib/projectBranchErrors.test.mjs
+. ./bin/activate-hermit && cd desktop && pnpm typecheck
+```
+
+Expected: all commands pass.
+
+- [ ] **Step 6: Commit the structured error slice**
+
+```bash
+. ./bin/activate-hermit && if [ -f .gitnexus/run.cjs ]; then node .gitnexus/run.cjs detect; fi && git diff --check && git add desktop/src/shared/api/projectGit.ts desktop/src/features/projects/lib/projectGitError.ts desktop/src/features/projects/lib/projectGitError.test.mjs desktop/src/features/projects/lib/projectBranchErrors.ts desktop/src/features/projects/lib/projectBranchErrors.test.mjs && git commit -s -m "feat(projects): present GitHub git authentication failures"
+```
+
+---
+
+### Task 3: Enable GitHub sync after G1 and suppress the Nostr push side effect
+
+**Files:**
+
+- Create: `desktop/src/features/projects/lib/projectGithubSync.ts`
+- Create: `desktop/src/features/projects/lib/projectGithubSync.test.mjs`
+- Modify: `desktop/src/features/projects/repoSyncHooks.ts:1-155`
+- Modify: `desktop/src/features/projects/ui/ProjectDetailScreen.tsx:300-315`
+- Modify: `desktop/src/features/projects/ui/CreatePullRequestDialog.tsx:60-105`
+
+**Interfaces:**
+
+- Consumes: `isGitHubCloneUrl`, `useProjectRepoHost`, and `repoStateQuery.isSuccess`.
+- Produces: `export function projectRepoSyncStatusEnabled(input: { cloneUrl?: string | null; buzzHost: boolean; githubStateReady: boolean }): boolean`.
+- Produces: `export function githubSyncCountDisplay(input: { githubHosted: boolean; localPath?: string | null; aheadCount?: number | null; behindCount?: number | null }): { ahead: number; behind: number } | null`.
+- Produces: `export function shouldPublishPullRequestUpdateAfterPush(cloneUrl?: string | null): boolean`.
+- Produces: `export function repoSyncPrimaryAction(input: { githubHosted: boolean; remoteKind?: "buzz" | "external"; hasExternalUrl?: boolean; canPull?: boolean; canPush?: boolean; hasFetch?: boolean }): "pull" | "push" | "fetch" | "open" | null`.
+- Extends: `useProjectRepoSyncStatusQuery(..., options?: { githubStateReady?: boolean })`.
+
+- [ ] **Step 1: Create failing pure policy tests**
+
+Create `projectGithubSync.test.mjs` with the following content.
 
 ```js
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ProjectPullRequestMergeError } from "../../../shared/api/projectGit.ts";
+
 import {
-  githubBranchActionReason,
   githubSyncCountDisplay,
   projectRepoSyncStatusEnabled,
   repoSyncPrimaryAction,
   shouldPublishPullRequestUpdateAfterPush,
 } from "./projectGithubSync.ts";
 
-test("GitHub clone URL enables sync only after G1 succeeds", () => {
+test("GitHub sync waits for G1 while Buzz sync stays enabled", () => {
   assert.equal(
     projectRepoSyncStatusEnabled({
       cloneUrl: "https://github.com/acme/app",
@@ -692,14 +839,56 @@ test("GitHub clone URL enables sync only after G1 succeeds", () => {
   );
 });
 
-test("GitHub header uses Pull Push Fetch and not Open", () => {
+test("GitHub counts require a checkout and numeric sync data", () => {
+  assert.equal(
+    githubSyncCountDisplay({
+      githubHosted: true,
+      localPath: null,
+      aheadCount: 0,
+      behindCount: 0,
+    }),
+    null,
+  );
+  assert.deepEqual(
+    githubSyncCountDisplay({
+      githubHosted: true,
+      localPath: "/tmp/acme-app",
+      aheadCount: 1,
+      behindCount: 0,
+    }),
+    { ahead: 1, behind: 0 },
+  );
+  assert.equal(
+    githubSyncCountDisplay({
+      githubHosted: true,
+      localPath: "/tmp/acme-app",
+      aheadCount: null,
+      behindCount: 0,
+    }),
+    null,
+  );
+});
+
+test("GitHub push skips a Nostr pull-request update", () => {
+  assert.equal(
+    shouldPublishPullRequestUpdateAfterPush("https://github.com/acme/app"),
+    false,
+  );
+  assert.equal(
+    shouldPublishPullRequestUpdateAfterPush(
+      `https://relay.example/git/${"ab".repeat(32)}/app`,
+    ),
+    true,
+  );
+});
+
+test("GitHub uses Pull Push Fetch while other external hosts use Open", () => {
   assert.equal(
     repoSyncPrimaryAction({
       githubHosted: true,
       remoteKind: "external",
       hasExternalUrl: true,
       canPull: true,
-      canPush: false,
       hasFetch: true,
     }),
     "pull",
@@ -709,7 +898,6 @@ test("GitHub header uses Pull Push Fetch and not Open", () => {
       githubHosted: true,
       remoteKind: "external",
       hasExternalUrl: true,
-      canPull: false,
       canPush: true,
       hasFetch: true,
     }),
@@ -720,8 +908,6 @@ test("GitHub header uses Pull Push Fetch and not Open", () => {
       githubHosted: true,
       remoteKind: "external",
       hasExternalUrl: true,
-      canPull: false,
-      canPush: false,
       hasFetch: true,
     }),
     "fetch",
@@ -737,186 +923,59 @@ test("GitHub header uses Pull Push Fetch and not Open", () => {
     "open",
   );
 });
-
-test("GitHub counts require a local checkout", () => {
-  assert.equal(
-    githubSyncCountDisplay({
-      githubHosted: true,
-      localPath: null,
-      aheadCount: 0,
-      behindCount: 0,
-    }),
-    null,
-  );
-  assert.deepEqual(
-    githubSyncCountDisplay({
-      githubHosted: true,
-      localPath: "/tmp/repo",
-      aheadCount: 0,
-      behindCount: 0,
-    }),
-    { ahead: 0, behind: 0 },
-  );
-});
-
-test("GitHub push does not publish a Nostr pull request update", () => {
-  assert.equal(
-    shouldPublishPullRequestUpdateAfterPush("https://github.com/acme/app"),
-    false,
-  );
-  assert.equal(
-    shouldPublishPullRequestUpdateAfterPush(
-      `https://relay.example/git/${"ab".repeat(32)}/app`,
-    ),
-    true,
-  );
-});
-
-test("G1 errors disable Create with recovery copy instead of first-commit copy", () => {
-  assert.equal(
-    githubBranchActionReason({
-      githubHosted: true,
-      githubStateError: new ProjectPullRequestMergeError(
-        "github_auth_required",
-        "Authenticate GitHub CLI with: gh auth login --hostname github.com",
-        null,
-      ),
-    }),
-    "Authenticate GitHub CLI with: gh auth login --hostname github.com",
-  );
-  assert.equal(
-    githubBranchActionReason({
-      githubHosted: true,
-      githubStateError: new ProjectPullRequestMergeError(
-        "github_cli_missing",
-        "Install the GitHub CLI to continue.",
-        null,
-      ),
-    }),
-    "Install GitHub CLI, then retry.",
-  );
-  assert.equal(
-    githubBranchActionReason({
-      githubHosted: false,
-      githubStateError: new ProjectPullRequestMergeError(
-        "github_auth_required",
-        "Authenticate GitHub CLI with: gh auth login --hostname github.com",
-        null,
-      ),
-    }),
-    null,
-  );
-});
 ```
 
-Add clone and branch-error tests:
-
-```js
-// projectGitError.test.mjs
-test("presents structured GitHub CLI recovery on clone", () => {
-  assert.deepEqual(
-    projectCloneErrorPresentation(
-      new ProjectPullRequestMergeError(
-        "github_cli_missing",
-        "Install the GitHub CLI to continue.",
-        null,
-      ),
-      "https://github.com/acme/app",
-    ),
-    {
-      title: "GitHub CLI is required",
-      description: "Install GitHub CLI, then retry.",
-    },
-  );
-});
-
-// projectBranchErrors.test.mjs
-test("maps structured GitHub auth errors for the branch dialog", () => {
-  assert.equal(
-    projectBranchErrorMessage(
-      new ProjectPullRequestMergeError(
-        "github_auth_required",
-        "Authenticate GitHub CLI with: gh auth login --hostname github.com",
-        null,
-      ),
-      "Failed to create branch.",
-    ),
-    "Authenticate GitHub CLI with: gh auth login --hostname github.com",
-  );
-});
-```
-
-Import `ProjectPullRequestMergeError` in those test files.
-
-- [ ] **Step 2: Run tests — expect fail**
+- [ ] **Step 2: Run the new test and verify the red state**
 
 ```bash
-. ./bin/activate-hermit
-cd desktop && pnpm test -- src/features/projects/lib/projectGithubSync.test.mjs
+. ./bin/activate-hermit && cd desktop && node --import ./test-loader.mjs --experimental-strip-types --test src/features/projects/lib/projectGithubSync.test.mjs
 ```
 
-Expected: FAIL because `projectGithubSync.ts` is missing.
+Expected: the test fails because `projectGithubSync.ts` does not exist.
 
-- [ ] **Step 3: Implement helpers and wire callers**
+- [ ] **Step 3: Implement the pure sync policies**
 
-`projectGithubSync.ts`:
+Create `projectGithubSync.ts` with this content.
 
 ```ts
 import { isGitHubCloneUrl } from "@/features/projects/lib/projectGitError";
-import { parseProjectPullRequestMergeError } from "@/shared/api/projectGit";
 
-/** Enable Buzz sync always; enable GitHub sync only after G1 succeeds. */
+/** Decide whether local-vs-remote sync status may run for this repository. */
 export function projectRepoSyncStatusEnabled(input: {
   cloneUrl?: string | null;
   buzzHost: boolean;
   githubStateReady: boolean;
-}) {
+}): boolean {
   if (!input.cloneUrl) return false;
   if (input.buzzHost) return true;
   return isGitHubCloneUrl(input.cloneUrl) && input.githubStateReady;
 }
 
-/** Visible ahead/behind only when a GitHub checkout exists. */
+/** Return displayable GitHub counts only when sync examined a checkout. */
 export function githubSyncCountDisplay(input: {
   githubHosted: boolean;
   localPath?: string | null;
   aheadCount?: number | null;
   behindCount?: number | null;
-}) {
+}): { ahead: number; behind: number } | null {
   if (!input.githubHosted || !input.localPath) return null;
-  if (typeof input.aheadCount !== "number" || typeof input.behindCount !== "number") {
+  if (
+    typeof input.aheadCount !== "number" ||
+    typeof input.behindCount !== "number"
+  ) {
     return null;
   }
   return { ahead: input.aheadCount, behind: input.behindCount };
 }
 
-/** GitHub push must not publish a Nostr pull-request update. */
+/** Keep Nostr PR-update publication on Buzz pushes only. */
 export function shouldPublishPullRequestUpdateAfterPush(
   cloneUrl?: string | null,
-) {
+): boolean {
   return !isGitHubCloneUrl(cloneUrl);
 }
 
-/** G1 recovery reason for visible-but-disabled Create/Delete. */
-export function githubBranchActionReason(input: {
-  githubHosted: boolean;
-  githubStateError?: unknown;
-}) {
-  if (!input.githubHosted || input.githubStateError == null) return null;
-  const parsed = parseProjectPullRequestMergeError(input.githubStateError);
-  if (parsed?.code === "github_cli_missing") {
-    return "Install GitHub CLI, then retry.";
-  }
-  if (parsed?.code === "github_auth_required") {
-    return parsed.message;
-  }
-  if (parsed) return parsed.message;
-  return input.githubStateError instanceof Error
-    ? input.githubStateError.message
-    : "Could not load GitHub branches.";
-}
-
-/** Header primary control. GitHub uses Buzz actions; other externals stay Open. */
+/** Select the single primary repository sync action for the header. */
 export function repoSyncPrimaryAction(input: {
   githubHosted: boolean;
   remoteKind?: "buzz" | "external";
@@ -924,7 +983,7 @@ export function repoSyncPrimaryAction(input: {
   canPull?: boolean;
   canPush?: boolean;
   hasFetch?: boolean;
-}) {
+}): "pull" | "push" | "fetch" | "open" | null {
   if (!input.githubHosted && input.remoteKind === "external") {
     return input.hasExternalUrl ? "open" : null;
   }
@@ -934,7 +993,11 @@ export function repoSyncPrimaryAction(input: {
 }
 ```
 
-In `repoSyncHooks.ts`:
+- [ ] **Step 4: Enable the query after G1 and guard the push side effect**
+
+Import `projectRepoSyncStatusEnabled` and `shouldPublishPullRequestUpdateAfterPush` into `repoSyncHooks.ts`.
+Keep the `isGitHubCloneUrl` import because the retained `useGithubAheadBehindQuery` implementation still uses it.
+Replace the complete `useProjectRepoSyncStatusQuery` function with this implementation.
 
 ```ts
 export function useProjectRepoSyncStatusQuery(
@@ -944,19 +1007,44 @@ export function useProjectRepoSyncStatusQuery(
   baseBranch?: string | null,
   options?: { githubStateReady?: boolean },
 ) {
+  const selectedBranch = branchName ?? project?.defaultBranch ?? null;
+  const refetchInterval = useFocusedRefetchInterval(60_000);
+  const selectedBaseBranch = baseBranch ?? project?.defaultBranch ?? null;
   const host = useProjectRepoHost(project);
+
   return useQuery({
     enabled: projectRepoSyncStatusEnabled({
       cloneUrl: project?.cloneUrls[0],
       buzzHost: host.kind === "buzz",
       githubStateReady: options?.githubStateReady ?? false,
     }),
-    // existing queryKey / queryFn / staleTime / refetchInterval unchanged
+    queryKey: [
+      "project",
+      project?.id ?? "none",
+      "repo-sync-status",
+      reposDir ?? "default",
+      selectedBranch ?? "default",
+      selectedBaseBranch ?? "default",
+    ],
+    queryFn: () => {
+      if (!project?.cloneUrls[0]) throw new Error("No project selected.");
+      return getProjectRepoSyncStatus({
+        reposDir,
+        projectDtag: project.dtag,
+        cloneUrl: project.cloneUrls[0],
+        branchName: selectedBranch,
+        baseBranch: selectedBaseBranch,
+      });
+    },
+    staleTime: 10_000,
+    refetchInterval,
+    refetchOnWindowFocus: false,
+    retry: 1,
   });
 }
 ```
 
-In `usePushProjectLocalRepositoryMutation`, wrap the `publishProjectPullRequestUpdate` block:
+In `usePushProjectLocalRepositoryMutation`, add the host guard to the existing pull-request update condition.
 
 ```ts
 if (
@@ -964,245 +1052,186 @@ if (
   pullRequest &&
   (pullRequest.status === "Open" || pullRequest.status === "Draft")
 ) {
-  // existing publish try/catch
+  try {
+    const updated = await publishProjectPullRequestUpdate({
+      commit: result.commit,
+      mergeBase: result.mergeBase,
+      project,
+      pullRequest,
+    });
+    pullRequestUpdate = {
+      status: updated ? "updated" : "unchanged",
+    };
+  } catch (error) {
+    pullRequestUpdate = {
+      status: "failed",
+      error:
+        error instanceof Error
+          ? error.message
+          : "The pull request update could not be published.",
+    };
+  }
 }
 ```
 
-In `ProjectDetailScreen.tsx` and both `CreatePullRequestDialog.tsx` calls, pass `{ githubStateReady: repoStateQuery.isSuccess }`.
+Replace the current condition and its try/catch with this single block; do not add a second publication path.
 
-In `projectGit.ts`, wrap `getProjectRepoSyncStatus`, `pushProjectLocalRepository`, `pullProjectLocalRepository`, `cloneProjectRepository`, `createProjectRemoteBranch`, and `deleteProjectRemoteBranch` with:
+- [ ] **Step 5: Pass G1 readiness at every sync-query call site**
+
+In `ProjectDetailScreen.tsx`, pass the options object as the fifth argument.
 
 ```ts
-try {
-  // existing invoke
-} catch (error) {
-  throw parseProjectPullRequestMergeError(error) ?? error;
-}
+const repoSyncStatusQuery = useProjectRepoSyncStatusQuery(
+  repository,
+  activeCommunity?.reposDir,
+  activeBranch,
+  undefined,
+  { githubStateReady: repoStateQuery.isSuccess },
+);
 ```
 
-In `projectCloneErrorPresentation`, if `github` and `parseProjectPullRequestMergeError(error)` is set, return the G1/merge titles (`GitHub CLI is required` / `GitHub authentication required` / `Could not load GitHub branches`) instead of scanning git stderr.
+In `CreatePullRequestDialog.tsx`, pass the same readiness option to both calls.
 
-In `projectBranchErrorMessage`, return `parseProjectPullRequestMergeError(error)?.message` when present, before the `instanceof Error` path.
+```ts
+const initialSyncQuery = useProjectRepoSyncStatusQuery(
+  repository,
+  reposDir,
+  defaultBranch || null,
+  undefined,
+  { githubStateReady: repoStateQuery.isSuccess },
+);
 
-- [ ] **Step 4: Run unit tests and typecheck**
-
-```bash
-. ./bin/activate-hermit
-cd desktop && pnpm test -- src/features/projects/lib/projectGithubSync.test.mjs src/features/projects/lib/projectGitError.test.mjs src/features/projects/lib/projectBranchErrors.test.mjs && pnpm typecheck
+const sourceSyncQuery = useProjectRepoSyncStatusQuery(
+  repository,
+  reposDir,
+  sourceBranch || null,
+  targetBranch || null,
+  { githubStateReady: repoStateQuery.isSuccess },
+);
 ```
 
-Expected: PASS.
-
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Run policy tests, formatting, and typecheck**
 
 ```bash
-. ./bin/activate-hermit
-if [ -f .gitnexus/run.cjs ]; then node .gitnexus/run.cjs detect; fi
-git add desktop/src/features/projects/lib/projectGithubSync.ts \
-  desktop/src/features/projects/lib/projectGithubSync.test.mjs \
-  desktop/src/features/projects/repoSyncHooks.ts \
-  desktop/src/features/projects/ui/ProjectDetailScreen.tsx \
-  desktop/src/features/projects/ui/CreatePullRequestDialog.tsx \
-  desktop/src/shared/api/projectGit.ts \
-  desktop/src/features/projects/lib/projectGitError.ts \
-  desktop/src/features/projects/lib/projectGitError.test.mjs \
-  desktop/src/features/projects/lib/projectBranchErrors.ts \
-  desktop/src/features/projects/lib/projectBranchErrors.test.mjs
-git commit -s -m "feat(projects): enable GitHub sync status after repository state"
+. ./bin/activate-hermit && cd desktop && node --import ./test-loader.mjs --experimental-strip-types --test src/features/projects/lib/projectGithubSync.test.mjs
+. ./bin/activate-hermit && cd desktop && pnpm exec biome check src/features/projects/lib/projectGithubSync.ts src/features/projects/lib/projectGithubSync.test.mjs src/features/projects/repoSyncHooks.ts src/features/projects/ui/ProjectDetailScreen.tsx src/features/projects/ui/CreatePullRequestDialog.tsx
+. ./bin/activate-hermit && cd desktop && pnpm typecheck
+```
+
+Expected: all commands pass.
+
+- [ ] **Step 7: Commit the query and push-policy slice**
+
+```bash
+. ./bin/activate-hermit && if [ -f .gitnexus/run.cjs ]; then node .gitnexus/run.cjs detect; fi && git diff --check && git add desktop/src/features/projects/lib/projectGithubSync.ts desktop/src/features/projects/lib/projectGithubSync.test.mjs desktop/src/features/projects/repoSyncHooks.ts desktop/src/features/projects/ui/ProjectDetailScreen.tsx desktop/src/features/projects/ui/CreatePullRequestDialog.tsx && git commit -s -m "feat(projects): enable GitHub repository sync status"
 ```
 
 ---
 
-### Task 5: Header Pull / Push / Fetch and visible Create / Delete
+### Task 4: Render GitHub Pull, Push, Fetch, Create, Delete, and recovery states
 
 **Files:**
-- Modify: `desktop/src/features/projects/ui/ProjectRepositorySource.tsx`
-- Modify: `desktop/src/features/projects/ui/useProjectRepositorySourceControls.ts`
-- Modify: `desktop/tests/e2e/github-snapshot-and-fetch.spec.ts`
+
+- Modify: `desktop/src/features/projects/ui/ProjectRepositorySource.tsx:1-405`
+- Modify: `desktop/src/features/projects/ui/useProjectRepositorySourceControls.ts:1-226`
+- Modify: `desktop/tests/e2e/github-snapshot-and-fetch.spec.ts:1-134`
+- Create: `desktop/tests/e2e/github-pull-push-and-branches.spec.ts`
+- Modify: `desktop/playwright.config.ts:110-120`
+- Test: `desktop/src/features/projects/lib/projectGithubSync.test.mjs`
+- Test: `desktop/src/features/projects/lib/projectBranchErrors.test.mjs`
 
 **Interfaces:**
-- Consumes: `repoSyncPrimaryAction`, `githubSyncCountDisplay`, `githubBranchActionReason`
-- Produces: GitHub header matches Buzz; Create/Delete stay in the branch menu; Fetch with a checkout refetches sync status
 
-- [ ] **Step 1: Rewrite `RepoSyncActionButton` to use the helper**
+- Consumes: `repoSyncPrimaryAction`, `githubSyncCountDisplay`, `githubBranchActionReason`, and `parseProjectPullRequestMergeError`.
+- Produces: one GitHub primary action, checkout-only counts, no project-page G4 request, and visible disabled branch actions on G1 recovery.
+- Reuses: `RepoSourceHeaderControls.githubHosted`, `__BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__`, `__BUZZ_E2E_PROJECT_REPO_SYNC_STATUS__`, `__BUZZ_E2E_GITHUB_REPO_STATE_ERROR__`, and `__BUZZ_E2E_COMMANDS__`.
 
-Replace the `if (controls.githubHosted) { always Fetch }` branch.
-Keep non-GitHub `remoteKind === "external"` as Open.
+- [ ] **Step 1: Update the existing Fetch smoke before production code**
 
-```tsx
-export function RepoSyncActionButton({
-  controls,
-}: {
-  controls: RepoSourceHeaderControls;
-}) {
-  const action = repoSyncPrimaryAction({
-    githubHosted: Boolean(controls.githubHosted),
-    remoteKind: controls.remoteKind,
-    hasExternalUrl: Boolean(controls.externalUrl),
-    canPull: Boolean(controls.canPull && controls.onPull),
-    canPush: Boolean(controls.canPush && controls.onPush),
-    hasFetch: Boolean(controls.onFetch),
-  });
-
-  if (action === "open") {
-    // existing Open <a> for non-GitHub externals
-  }
-
-  const counts =
-    controls.githubHosted &&
-    controls.aheadCount != null &&
-    controls.behindCount != null ? (
-      <span
-        className="font-mono text-2xs text-muted-foreground"
-        data-testid="repo-ahead-behind"
-      >
-        {controls.aheadCount} / {controls.behindCount}
-      </span>
-    ) : null;
-
-  // existing Pull / Push / Fetch buttons, wrapped in:
-  // <div className="flex items-center gap-2">{counts}{button}</div>
-  // when counts is non-null; otherwise return the button alone.
-}
-```
-
-Pull still appends ` ${count}` when `behindCount > 0`.
-Hide Pull unless `canPull && onPull`.
-Hide Push unless `canPush && onPush`.
-
-- [ ] **Step 2: Wire source controls**
-
-In `useProjectRepositorySourceControls.ts`:
-
-- Delete the `useGithubAheadBehindQuery` call and the `githubAheadBehindCounts` import.
-- Keep Create/Delete handlers for GitHub (remove the `githubHosted ? undefined : …` branches).
-- If `githubBranchActionReason({ githubHosted, githubStateError: repoStateQuery.error })` is non-null, use that string as both titles and force both actions disabled.
-- Do not call `projectBranchCreationReason` when that GitHub reason is set.
-- `canPush` / `canPull` / `onPush` / `onPull` use the same rules as Buzz (`!selectedTag` and sync `can_*`).
-- Counts:
+In the first test of `github-snapshot-and-fetch.spec.ts`, replace the hidden Create/Delete assertions with visible branch-menu assertions.
+Clear the command log before clicking Fetch so the assertion measures the manual action rather than initial query startup.
 
 ```ts
-const githubCounts = githubSyncCountDisplay({
-  githubHosted,
-  localPath: repoSyncStatusQuery.data?.localPath,
-  aheadCount: repoSyncStatusQuery.data?.aheadCount,
-  behindCount: repoSyncStatusQuery.data?.behindCount,
+await expect
+  .poll(() => page.evaluate(() => window.__BUZZ_E2E_COMMANDS__ ?? []))
+  .toContain("get_project_repo_sync_status");
+await page.evaluate(() => {
+  window.__BUZZ_E2E_COMMANDS__ = [];
 });
-aheadCount: githubHosted
-  ? (githubCounts?.ahead ?? null)
-  : (repoSyncStatusQuery.data?.aheadCount ?? null),
-behindCount: githubHosted
-  ? (githubCounts?.behind ?? null)
-  : (repoSyncStatusQuery.data?.behindCount ?? null),
-```
-
-- Fetch:
-
-```ts
-const hasCheckout = Boolean(
-  repoSyncStatusQuery.data?.localPath || localRepoSnapshotQuery.data,
+await header.getByRole("button", { name: /^Fetch$/ }).click();
+await expect
+  .poll(() => page.evaluate(() => window.__BUZZ_E2E_COMMANDS__ ?? []))
+  .toEqual(
+    expect.arrayContaining([
+      "get_github_repository_state",
+      "get_github_repository_snapshot",
+    ]),
+  );
+const noCheckoutCommands = await page.evaluate(
+  () => window.__BUZZ_E2E_COMMANDS__ ?? [],
 );
-const handleFetchRepo = React.useCallback(async () => {
-  const tasks = githubHosted
-    ? [
-        repoStateQuery.refetch(),
-        ...(repoStateQuery.isError
-          ? []
-          : [
-              repoSnapshotQuery.refetch(),
-              ...(hasCheckout ? [repoSyncStatusQuery.refetch()] : []),
-            ]),
-      ]
-    : [
-        repoSnapshotQuery.refetch(),
-        repoStateQuery.refetch(),
-        repoSyncStatusQuery.refetch(),
-      ];
-  // existing toast handling
-}, [/* include hasCheckout and repoSyncStatusQuery.refetch; omit G4 */]);
-```
-
-- `fetchPending` includes `repoSyncStatusQuery.isFetching` when `githubHosted && hasCheckout`.
-- `fetchTitle` is `"Check for remote changes"` when `hasCheckout`, otherwise `"Refresh GitHub README and files"`.
-- Do not refetch `get_github_ahead_behind`.
-
-“Open on GitHub” on `RepoSourceDropdown` is already gated by `githubHosted && externalUrl`.
-Leave that item in place.
-
-- [ ] **Step 3: Update the G3+G4 smoke spec so it matches G5**
-
-In `desktop/tests/e2e/github-snapshot-and-fetch.spec.ts`:
-
-1. First test (no checkout): keep Fetch as primary, keep no Pull/Push, keep Open on the dropdown.
-   Change Create/Delete from `toHaveCount(0)` to visible and enabled:
-
-```ts
+expect(noCheckoutCommands).not.toContain("get_project_repo_sync_status");
+expect(noCheckoutCommands).not.toContain("get_github_ahead_behind");
 await header.getByRole("button").filter({ hasText: "develop" }).click();
 await expect(page.getByTestId("project-create-branch")).toBeEnabled();
 await expect(page.getByTestId("project-delete-branch")).toBeVisible();
+await expect(page.getByTestId("project-delete-branch")).toBeDisabled();
 ```
 
-2. Third test (local HEAD, `0 / 0`): after clicking Fetch, assert:
+In the checkout test, change the command assertions after Fetch to require sync status and forbid G4.
 
 ```ts
-.toEqual(
-  expect.arrayContaining([
-    "get_github_repository_state",
-    "get_github_repository_snapshot",
-    "get_project_repo_sync_status",
-  ]),
+await expect
+  .poll(() => page.evaluate(() => window.__BUZZ_E2E_COMMANDS__ ?? []))
+  .toEqual(
+    expect.arrayContaining([
+      "get_github_repository_state",
+      "get_github_repository_snapshot",
+      "get_project_repo_sync_status",
+    ]),
+  );
+const checkoutCommands = await page.evaluate(
+  () => window.__BUZZ_E2E_COMMANDS__ ?? [],
 );
-expect(commands).not.toContain("get_github_ahead_behind");
+expect(checkoutCommands).not.toContain("get_github_ahead_behind");
 ```
 
-Keep the `0 / 0` assertion.
+- [ ] **Step 2: Create the failing Pull, Push, branch, and recovery smoke spec**
 
-- [ ] **Step 4: Typecheck and run the focused unit tests**
-
-```bash
-. ./bin/activate-hermit
-cd desktop && pnpm test -- src/features/projects/lib/projectGithubSync.test.mjs && pnpm typecheck
-```
-
-Expected: PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-. ./bin/activate-hermit
-if [ -f .gitnexus/run.cjs ]; then node .gitnexus/run.cjs detect; fi
-git add desktop/src/features/projects/ui/ProjectRepositorySource.tsx \
-  desktop/src/features/projects/ui/useProjectRepositorySourceControls.ts \
-  desktop/tests/e2e/github-snapshot-and-fetch.spec.ts
-git commit -s -m "feat(projects): show GitHub pull push and branch actions"
-```
-
----
-
-### Task 6: Mock-bridge smoke for Pull, Push, Fetch-only, and G7
-
-**Files:**
-- Create: `desktop/tests/e2e/github-pull-push-and-branches.spec.ts`
-- Modify: `desktop/playwright.config.ts` (`smoke` `testMatch` adds `**/github-pull-push-and-branches.spec.ts`)
-
-**Interfaces:**
-- Reuse `__BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__`, `__BUZZ_E2E_PROJECT_REPO_SYNC_STATUS__`, and `__BUZZ_E2E_GITHUB_REPO_STATE_ERROR__`
-- Do not add live GitHub
-
-Copy the `enableProjectsFeature` / `openBuzzProject` helpers from `github-snapshot-and-fetch.spec.ts` into the new file (do not import from that spec).
-
-Shared checkout fixture fields (inline inside each `addInitScript`; do not close over Node constants):
+Create `github-pull-push-and-branches.spec.ts` with these imports and helpers, then append the tests below.
 
 ```ts
-local_path: "/tmp/buzz/REPOS/acme-app"
-local_branch: "develop"
-local_head / remote_head / merge_base: "d".repeat(40)
+import { expect, test } from "@playwright/test";
+
+import { installMockBridge } from "../helpers/bridge";
+
+async function enableProjectsFeature(page: import("@playwright/test").Page) {
+  await page.addInitScript(() => {
+    window.localStorage.setItem(
+      "buzz-feature-overrides-v1",
+      JSON.stringify({ projects: true }),
+    );
+  });
+}
+
+async function openBuzzProject(page: import("@playwright/test").Page) {
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByTestId("open-projects-view").click();
+  await page.getByTestId("projects-section-projects").click();
+  const projectEntry = page
+    .locator(
+      '[data-testid="project-card-buzz"], [data-testid="project-row-buzz"]',
+    )
+    .first();
+  await expect(projectEntry).toBeVisible({ timeout: 10_000 });
+  await projectEntry.click();
+}
 ```
 
-- [ ] **Step 1: Write the four smoke tests**
+Use these three tests.
 
 ```ts
-test("GitHub checkout that is behind shows Pull as the primary control", async ({
+test("GitHub checkout behind shows Pull and invokes the existing command", async ({
   page,
 }) => {
   await enableProjectsFeature(page);
@@ -1225,7 +1254,7 @@ test("GitHub checkout that is behind shows Pull as the primary control", async (
       has_uncommitted_changes: false,
       has_untracked_files: false,
       can_push: false,
-      push_block_reason: null,
+      push_block_reason: "Local branch is not ahead.",
       can_pull: true,
       pull_block_reason: null,
     };
@@ -1233,20 +1262,20 @@ test("GitHub checkout that is behind shows Pull as the primary control", async (
   await installMockBridge(page);
   await openBuzzProject(page);
   const header = page.getByTestId("project-repository-selection-row");
-  await expect(header.getByRole("button", { name: /Pull/ })).toBeVisible({
+  await expect(header.getByRole("button", { name: /^Pull 1$/ })).toBeVisible({
     timeout: 10_000,
   });
   await expect(header.getByRole("link", { name: /^Open$/ })).toHaveCount(0);
   await page.evaluate(() => {
     window.__BUZZ_E2E_COMMANDS__ = [];
   });
-  await header.getByRole("button", { name: /Pull/ }).click();
+  await header.getByRole("button", { name: /^Pull 1$/ }).click();
   await expect
     .poll(() => page.evaluate(() => window.__BUZZ_E2E_COMMANDS__ ?? []))
     .toContain("pull_project_local_repository");
 });
 
-test("GitHub checkout that is ahead shows Push and does not open a Nostr publish path", async ({
+test("GitHub checkout ahead shows Push and invokes the existing command", async ({
   page,
 }) => {
   await enableProjectsFeature(page);
@@ -1261,9 +1290,9 @@ test("GitHub checkout that is ahead shows Push and does not open a Nostr publish
       local_head: sha,
       local_short_head: sha.slice(0, 7),
       remote_branch: "develop",
-      remote_head: sha,
-      remote_short_head: sha.slice(0, 7),
-      merge_base: sha,
+      remote_head: "c".repeat(40),
+      remote_short_head: "ccccccc",
+      merge_base: "c".repeat(40),
       ahead_count: 1,
       behind_count: 0,
       has_uncommitted_changes: false,
@@ -1271,7 +1300,7 @@ test("GitHub checkout that is ahead shows Push and does not open a Nostr publish
       can_push: true,
       push_block_reason: null,
       can_pull: false,
-      pull_block_reason: null,
+      pull_block_reason: "Local branch is not behind.",
     };
   });
   await installMockBridge(page);
@@ -1287,43 +1316,9 @@ test("GitHub checkout that is ahead shows Push and does not open a Nostr publish
   await expect
     .poll(() => page.evaluate(() => window.__BUZZ_E2E_COMMANDS__ ?? []))
     .toContain("push_project_local_repository");
-  const commands = await page.evaluate(() => window.__BUZZ_E2E_COMMANDS__ ?? []);
-  expect(commands.some((command) => command.includes("pull_request"))).toBe(
-    false,
-  );
 });
 
-test("GitHub without a checkout keeps Fetch and still allows Create", async ({
-  page,
-}) => {
-  await enableProjectsFeature(page);
-  await page.addInitScript(() => {
-    window.__BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__ =
-      "https://github.com/acme/app";
-  });
-  await installMockBridge(page);
-  await openBuzzProject(page);
-  const header = page.getByTestId("project-repository-selection-row");
-  await expect(header.getByRole("button", { name: /^Fetch$/ })).toBeVisible({
-    timeout: 10_000,
-  });
-  await expect(header.getByRole("button", { name: /Pull/ })).toHaveCount(0);
-  await expect(header.getByRole("button", { name: /Push/ })).toHaveCount(0);
-  await header.getByRole("button").filter({ hasText: "develop" }).click();
-  await expect(page.getByTestId("project-create-branch")).toBeEnabled();
-  await page.getByTestId("project-create-branch").click();
-  await waitForAnimations(page);
-  await page.getByTestId("project-create-branch-name").fill("feature/demo");
-  await page.evaluate(() => {
-    window.__BUZZ_E2E_COMMANDS__ = [];
-  });
-  await page.getByTestId("project-create-branch-submit").click();
-  await expect
-    .poll(() => page.evaluate(() => window.__BUZZ_E2E_COMMANDS__ ?? []))
-    .toContain("create_project_remote_branch");
-});
-
-test("GitHub auth recovery disables Create with that reason and does not start sync", async ({
+test("G1 recovery keeps Create and Delete visible but disabled", async ({
   page,
 }) => {
   await enableProjectsFeature(page);
@@ -1341,118 +1336,482 @@ test("GitHub auth recovery disables Create with that reason and does not start s
   await expect(page.getByText("GitHub authentication required")).toBeVisible({
     timeout: 10_000,
   });
-  await waitForAnimations(page);
   const header = page.getByTestId("project-repository-selection-row");
   await expect(header.getByRole("button", { name: /Pull/ })).toHaveCount(0);
   await expect(header.getByRole("button", { name: /Push/ })).toHaveCount(0);
-  await expect(header.getByText("create the first commit", { exact: false })).toHaveCount(0);
+  await header.getByTestId("project-branch-picker").click();
+  await expect(page.getByTestId("project-create-branch")).toBeVisible();
+  await expect(page.getByTestId("project-create-branch")).toBeDisabled();
+  await expect(page.getByTestId("project-delete-branch")).toBeVisible();
+  await expect(page.getByTestId("project-delete-branch")).toBeDisabled();
+  await expect(
+    page.getByRole("menu").getByText(
+      "Authenticate GitHub CLI with: gh auth login --hostname github.com",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await expect(page.getByText("create the first commit", { exact: false })).toHaveCount(0);
   const commands = await page.evaluate(() => window.__BUZZ_E2E_COMMANDS__ ?? []);
   expect(commands).toContain("get_github_repository_state");
   expect(commands).not.toContain("get_project_repo_sync_status");
   expect(commands).not.toContain("create_project_remote_branch");
+  expect(commands).not.toContain("delete_project_remote_branch");
   expect(commands).not.toContain("get_github_ahead_behind");
 });
 ```
 
-Register the spec in `desktop/playwright.config.ts` immediately after `**/github-snapshot-and-fetch.spec.ts`.
+Add this fourth test to the same file.
 
-Build with `pnpm build:e2e` (via `pnpm test:e2e:smoke`).
-Never `pnpm run build`.
-Call `addInitScript` before `installMockBridge`.
-Call `waitForAnimations` before any screenshot; these tests assert roles, not screenshots.
-
-- [ ] **Step 2: Run the new spec and the two existing GitHub smokes**
-
-```bash
-. ./bin/activate-hermit
-cd desktop && pnpm test:e2e:smoke -- github-pull-push-and-branches
-cd desktop && pnpm test:e2e:smoke -- github-snapshot-and-fetch
-cd desktop && pnpm test:e2e:smoke -- github-repo-state
+```ts
+test("GitHub without a checkout creates and deletes through existing commands", async ({
+  page,
+}) => {
+  await enableProjectsFeature(page);
+  await page.addInitScript(() => {
+    window.__BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__ =
+      "https://github.com/acme/app";
+  });
+  await installMockBridge(page);
+  await openBuzzProject(page);
+  const header = page.getByTestId("project-repository-selection-row");
+  await expect(header.getByRole("button", { name: /^Fetch$/ })).toBeVisible({
+    timeout: 10_000,
+  });
+  await header.getByTestId("project-branch-picker").click();
+  await expect(page.getByTestId("project-create-branch")).toBeEnabled();
+  await page.getByTestId("project-create-branch").click();
+  await page.getByTestId("project-create-branch-name").fill("feature/demo");
+  await page.evaluate(() => {
+    window.__BUZZ_E2E_COMMANDS__ = [];
+  });
+  await page.getByTestId("project-create-branch-submit").click();
+  await expect
+    .poll(() => page.evaluate(() => window.__BUZZ_E2E_COMMANDS__ ?? []))
+    .toContain("create_project_remote_branch");
+  await expect(header.getByTestId("project-branch-picker")).toContainText(
+    "feature/demo",
+  );
+  await header.getByTestId("project-branch-picker").click();
+  await expect(page.getByTestId("project-delete-branch")).toBeEnabled();
+  await page.getByTestId("project-delete-branch").click();
+  await page.getByTestId("project-delete-branch-submit").click();
+  await expect
+    .poll(() => page.evaluate(() => window.__BUZZ_E2E_COMMANDS__ ?? []))
+    .toContain("delete_project_remote_branch");
+});
 ```
 
-Expected: PASS.
-If `test:e2e:smoke` does not accept a file filter, run `pnpm build:e2e && pnpm exec playwright test --project=smoke tests/e2e/github-pull-push-and-branches.spec.ts`.
+Register `**/github-pull-push-and-branches.spec.ts` immediately after `**/github-snapshot-and-fetch.spec.ts` in the smoke `testMatch` list.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 3: Run the new and changed smoke specs and verify the red state**
 
 ```bash
-. ./bin/activate-hermit
-if [ -f .gitnexus/run.cjs ]; then node .gitnexus/run.cjs detect; fi
-git add desktop/tests/e2e/github-pull-push-and-branches.spec.ts \
-  desktop/playwright.config.ts
-git commit -s -m "test(e2e): cover GitHub pull push and branch recovery"
+. ./bin/activate-hermit && cd desktop && pnpm test:e2e:smoke -- github-pull-push-and-branches.spec.ts github-snapshot-and-fetch.spec.ts
+```
+
+Expected: Pull/Push stay Fetch, Create/Delete are absent on GitHub, the failed-G1 branch picker is not interactive, and checkout Fetch still calls G4.
+
+- [ ] **Step 4: Make the empty branch picker interactive when actions exist**
+
+In `RepositoryBranchDropdown`, compute an empty-safe branch list and only return the non-interactive dash when no actions can be shown.
+
+```tsx
+const selectableBranches =
+  branchOptions.length > 0 ? branchOptions : branch ? [branch] : [];
+const hasBranchActions = Boolean(onCreateBranch || onDeleteBranch);
+const selectedValue = selectedTag ? `tag:${selectedTag}` : `branch:${branch}`;
+const RefIcon = selectedTag ? Tag : GitBranch;
+if (!branch && !hasBranchActions) {
+  return (
+    <span className="truncate font-mono text-sm font-semibold text-foreground">
+      —
+    </span>
+  );
+}
+```
+
+Add `data-testid="project-branch-picker"` to the dropdown trigger button.
+Render its text as `{selectedTag || branch || "—"}`.
+Keep the existing radio group; an empty `selectableBranches` array renders no fake empty branch.
+Change the delete label to `{branch ? `Delete ${branch}` : "Delete branch"}` so recovery never renders a blank label.
+
+- [ ] **Step 5: Replace the primary action routing without placeholders**
+
+Import `type ReactNode` from `react` and import `repoSyncPrimaryAction` from `projectGithubSync.ts` into `ProjectRepositorySource.tsx`.
+Use these exact imports.
+
+```ts
+import type { ReactNode } from "react";
+
+import { repoSyncPrimaryAction } from "@/features/projects/lib/projectGithubSync";
+```
+
+Replace `RepoSyncActionButton` with this complete implementation.
+
+```tsx
+export function RepoSyncActionButton({
+  controls,
+}: {
+  controls: RepoSourceHeaderControls;
+}) {
+  const action = repoSyncPrimaryAction({
+    githubHosted: Boolean(controls.githubHosted),
+    remoteKind: controls.remoteKind,
+    hasExternalUrl: Boolean(controls.externalUrl),
+    canPull: Boolean(controls.canPull && controls.onPull),
+    canPush: Boolean(controls.canPush && controls.onPush),
+    hasFetch: Boolean(controls.onFetch),
+  });
+
+  if (action === "open") {
+    return controls.externalUrl ? (
+      <Button
+        asChild
+        className={PROJECT_PANEL_ACTION_BUTTON_CLASS}
+        size="sm"
+        title={`Open repository on ${controls.remoteLabel}`}
+        variant="ghost"
+      >
+        <a href={controls.externalUrl} rel="noreferrer" target="_blank">
+          <ExternalLink className="h-4 w-4" />
+          Open
+        </a>
+      </Button>
+    ) : null;
+  }
+
+  let button: ReactNode;
+  if (action === "pull" && controls.onPull) {
+    const count = controls.behindCount ?? 0;
+    button = (
+      <Button
+        className={PROJECT_PANEL_ACTION_BUTTON_CLASS}
+        disabled={controls.pullDisabled}
+        onClick={controls.onPull}
+        size="sm"
+        title={controls.pullTitle ?? "Pull remote commits"}
+        variant="ghost"
+      >
+        {controls.pullPending ? (
+          <Loader2 className="h-4 w-4 animate-spin" />
+        ) : (
+          <DownloadCloud className="h-4 w-4" />
+        )}
+        Pull{count > 0 ? ` ${count}` : ""}
+      </Button>
+    );
+  } else if (action === "push" && controls.onPush) {
+    button = (
+      <Button
+        className={PROJECT_PANEL_ACTION_BUTTON_CLASS}
+        disabled={controls.pushDisabled}
+        onClick={controls.onPush}
+        size="sm"
+        title={controls.pushTitle ?? "Push local commits"}
+        variant="ghost"
+      >
+        {controls.pushPending ? (
+          <Loader2 className="h-4 w-4 animate-spin" />
+        ) : (
+          <UploadCloud className="h-4 w-4" />
+        )}
+        Push
+      </Button>
+    );
+  } else if (action === "fetch" && controls.onFetch) {
+    button = (
+      <Button
+        className={PROJECT_PANEL_ACTION_BUTTON_CLASS}
+        disabled={controls.fetchPending}
+        onClick={controls.onFetch}
+        size="sm"
+        title={controls.fetchTitle ?? "Check for remote changes"}
+        variant="ghost"
+      >
+        {controls.fetchPending ? (
+          <Loader2 className="h-4 w-4 animate-spin" />
+        ) : (
+          <RefreshCw className="h-4 w-4" />
+        )}
+        Fetch
+      </Button>
+    );
+  } else {
+    return null;
+  }
+
+  const counts =
+    controls.githubHosted &&
+    controls.aheadCount != null &&
+    controls.behindCount != null ? (
+      <span
+        className="font-mono text-2xs text-muted-foreground"
+        data-testid="repo-ahead-behind"
+      >
+        {controls.aheadCount} / {controls.behindCount}
+      </span>
+    ) : null;
+  return counts ? (
+    <div className="flex items-center gap-2">
+      {counts}
+      {button}
+    </div>
+  ) : (
+    button
+  );
+}
+```
+
+- [ ] **Step 6: Wire controls, remove G4, and preserve recovery precedence**
+
+In `useProjectRepositorySourceControls.ts`, remove the `useGithubAheadBehindQuery` and `githubAheadBehindCounts` imports, the hook call, its SHA-only variables, and every dependency on that query.
+Import `githubBranchActionReason`, `githubSyncCountDisplay`, and `parseProjectPullRequestMergeError`.
+After destructuring input, derive checkout state and structured sync recovery.
+
+```ts
+const hasCheckout = Boolean(
+  repoSyncStatusQuery.data?.localPath || localRepoSnapshotQuery.data,
+);
+const githubSyncStateError =
+  githubHosted &&
+  parseProjectPullRequestMergeError(repoSyncStatusQuery.error)
+    ? repoSyncStatusQuery.error
+    : null;
+const githubStateError = repoStateQuery.error ?? githubSyncStateError;
+const githubBranchReason = githubBranchActionReason({
+  githubHosted,
+  error: githubStateError,
+});
+const createBranchReason =
+  githubBranchReason ??
+  projectBranchCreationReason({
+    activeBranch,
+    activeBranchCommit,
+    localHead: repoSyncStatusQuery.data?.localHead,
+  });
+const githubCounts = githubSyncCountDisplay({
+  githubHosted,
+  localPath: repoSyncStatusQuery.data?.localPath,
+  aheadCount: repoSyncStatusQuery.data?.aheadCount,
+  behindCount: repoSyncStatusQuery.data?.behindCount,
+});
+```
+
+Replace `handleFetchRepo` with this complete callback.
+
+```ts
+const handleFetchRepo = React.useCallback(async () => {
+  const tasks = githubHosted
+    ? [
+        repoStateQuery.refetch(),
+        ...(repoStateQuery.isError
+          ? []
+          : [
+              repoSnapshotQuery.refetch(),
+              ...(hasCheckout ? [repoSyncStatusQuery.refetch()] : []),
+            ]),
+      ]
+    : [
+        repoSnapshotQuery.refetch(),
+        repoStateQuery.refetch(),
+        repoSyncStatusQuery.refetch(),
+      ];
+  const results = await Promise.all(tasks);
+  const error = results.find((result) => result.error)?.error;
+  if (error) {
+    toast.error(
+      githubHosted
+        ? "Could not refresh GitHub repository."
+        : "Could not fetch repository.",
+      {
+        description:
+          error instanceof Error ? error.message : "The refresh failed.",
+      },
+    );
+    return;
+  }
+  toast.success("Remote state refreshed.");
+}, [
+  githubHosted,
+  hasCheckout,
+  repoSnapshotQuery.refetch,
+  repoStateQuery.isError,
+  repoStateQuery.refetch,
+  repoSyncStatusQuery.refetch,
+]);
+```
+
+Return the following branch-action fields.
+
+```ts
+onCreateBranch: () => branchActions.setCreateOpen(true),
+createBranchDisabled:
+  branchActions.createPending || Boolean(createBranchReason),
+createBranchTitle: createBranchReason ?? "Create a remote branch",
+onDeleteBranch: () => branchActions.setDeleteOpen(true),
+deleteBranchDisabled:
+  branchActions.deletePending ||
+  Boolean(githubBranchReason) ||
+  Boolean(deleteBranchReason),
+deleteBranchTitle:
+  githubBranchReason ?? deleteBranchReason ?? "Delete this remote branch",
+```
+
+Return Pull, Push, counts, and Fetch fields using these expressions.
+
+```ts
+canPush: !selectedTag && (repoSyncStatusQuery.data?.canPush ?? false),
+onPush: selectedTag
+  ? undefined
+  : () => {
+      void input.onPush();
+    },
+canPull: !selectedTag && (repoSyncStatusQuery.data?.canPull ?? false),
+onPull: selectedTag
+  ? undefined
+  : () => {
+      void input.onPull();
+    },
+aheadCount: githubHosted
+  ? (githubCounts?.ahead ?? null)
+  : (repoSyncStatusQuery.data?.aheadCount ?? null),
+behindCount: githubHosted
+  ? (githubCounts?.behind ?? null)
+  : (repoSyncStatusQuery.data?.behindCount ?? null),
+fetchPending:
+  repoSnapshotQuery.isFetching ||
+  repoStateQuery.isFetching ||
+  ((!githubHosted || hasCheckout) && repoSyncStatusQuery.isFetching),
+fetchTitle: hasCheckout
+  ? "Check for remote changes"
+  : githubHosted
+    ? "Refresh GitHub README and files"
+    : "Check for remote changes",
+```
+
+Preserve existing push/pull disabled, pending, and title fields.
+Update recovery so a structured sync-auth failure receives the same header component and retry behavior.
+
+```ts
+showGithubStateRecovery:
+  githubHosted &&
+  (repoStateQuery.isError ||
+    githubSyncStateError != null ||
+    (repoStateQuery.isSuccess && repoSnapshotQuery.isError)),
+stateError:
+  repoStateQuery.error ??
+  githubSyncStateError ??
+  (githubHosted ? repoSnapshotQuery.error : undefined),
+onRetryState: () => {
+  if (githubHosted && repoStateQuery.isError) {
+    void repoStateQuery.refetch();
+    return;
+  }
+  if (githubHosted && githubSyncStateError != null) {
+    void repoSyncStatusQuery.refetch();
+    return;
+  }
+  if (githubHosted) {
+    void repoSnapshotQuery.refetch();
+    return;
+  }
+  void repoStateQuery.refetch();
+},
+```
+
+- [ ] **Step 7: Run unit tests, typecheck, and the three GitHub smoke specs**
+
+```bash
+. ./bin/activate-hermit && cd desktop && node --import ./test-loader.mjs --experimental-strip-types --test src/features/projects/lib/projectGithubSync.test.mjs src/features/projects/lib/projectBranchErrors.test.mjs src/features/projects/lib/projectGitError.test.mjs
+. ./bin/activate-hermit && cd desktop && pnpm typecheck
+. ./bin/activate-hermit && cd desktop && pnpm test:e2e:smoke -- github-pull-push-and-branches.spec.ts github-snapshot-and-fetch.spec.ts github-repo-state.spec.ts
+```
+
+Expected: all commands pass.
+The E2E command uses `pnpm build:e2e` through the script and must not be replaced with `pnpm run build`.
+
+- [ ] **Step 8: Commit the user-visible slice**
+
+```bash
+. ./bin/activate-hermit && if [ -f .gitnexus/run.cjs ]; then node .gitnexus/run.cjs detect; fi && git diff --check && git add desktop/src/features/projects/ui/ProjectRepositorySource.tsx desktop/src/features/projects/ui/useProjectRepositorySourceControls.ts desktop/tests/e2e/github-snapshot-and-fetch.spec.ts desktop/tests/e2e/github-pull-push-and-branches.spec.ts desktop/playwright.config.ts && git commit -s -m "feat(projects): show GitHub pull push and branch actions"
 ```
 
 ---
 
-## Spec coverage
+## Spec Coverage
 
-| Spec / requirement | Task |
-|--------------------|------|
-| `validate_git_operation_url` accepts GitHub HTTPS/SSH; rejects GitLab; Buzz still needs the active relay | 1 |
-| Do not call the new gate from `get_project_repo_snapshot` | 1 + 3 |
-| One host-aware auth builder for clone, sync, pull, push, create, delete | 2 + 3 |
-| HTTPS helper is `!<gh> auth git-credential`; no `NOSTR_PRIVATE_KEY` | 2 |
-| SSH: no helper, no nsec, no `ensure_auth` | 2 |
-| Missing `gh` / failed `ensure_auth` return structured JSON codes | 2 + 4 |
-| Remap `github_merge_failed` | 2 |
-| Buzz path still uses `git-credential-nostr` | 2 |
-| Fake-`gh` must not treat credential-helper invocations as API paths | 2 |
-| Five commands use the new gate + builder | 3 |
-| Create/delete still lease-check the expected commit | 3 |
-| Sync query enabled for GitHub only after G1; GitLab stays off | 4 |
-| Push does not call `publishProjectPullRequestUpdate` | 4 |
-| Structured errors parsed for clone / toasts / branch dialog | 4 |
-| Header: GitHub + behind → Pull; ahead → Push; else Fetch; not Open-as-primary | 4 + 5 + 6 |
-| Open stays on the source dropdown | 5 (already present) |
-| Fetch with checkout refetches sync (git fetch) + G1 + G3; no G4 | 5 |
-| Fetch without checkout is query-only | 5 + 6 |
-| Create/Delete stay visible; G1 error uses recovery copy, not “create the first commit” | 4 + 5 + 6 |
-| Hide Pull/Push unless `can_pull` / `can_push` | 5 + 6 |
-| If G1 failed, do not start sync / create / delete | 4 + 5 + 6 |
-| User-visible e2e | 5 (updated G3 spec) + 6 |
-| Existing Buzz sync/branch tests stay green | 3 + 4 + 5 |
+| Requirement | Evidence |
+|-------------|----------|
+| Strict GitHub HTTPS/SSH accepted; GitLab and malformed GitHub paths rejected | Task 1 URL tests |
+| Buzz URLs remain active-relay scoped | Task 1 URL tests and unchanged workspace validator |
+| One host-aware builder serves clone, sync, pull, push, create, and delete | Task 1 builder plus five wrapper edits; existing clone callers already use `build_git_clone_auth_config` |
+| HTTPS uses `gh auth git-credential` and handles spaces safely | Task 1 fake binary under `GitHub CLI/` and real `git credential fill` invocation |
+| SSH does not discover or authenticate `gh` | Task 1 panic-on-discovery test |
+| No GitHub process receives `NOSTR_PRIVATE_KEY` | Task 1 git-command sentinel test plus explicit removal in `configure_git_auth` and `GhRunner::run_with_limit` |
+| Buzz credential operations still receive the nsec | Task 1 command-environment test |
+| Missing CLI/auth are structured and `github_merge_failed` is remapped | Task 1 JSON-code tests |
+| Generic git stderr remains generic | Task 2 boundary helper falls back to the original error |
+| Sync starts for GitHub only after G1 | Task 3 pure policy test and all call-site options |
+| G1 failure starts no sync/create/delete | Task 3 enable gate and Task 4 recovery smoke command log |
+| Push skips Nostr PR update for GitHub | Task 3 pure policy test and hook guard |
+| GitHub checkout behind/ahead/neutral maps to Pull/Push/Fetch | Task 3 pure action test and Task 4 smoke coverage |
+| Counts appear only for a checkout | Task 3 count test and existing `0 / 0` checkout smoke |
+| Fetch with checkout runs sync + G1 + G3 and never G4 | Task 4 updated checkout Fetch smoke |
+| Fetch without checkout runs G1 + G3 and not sync/G4 | Task 4 updated no-checkout Fetch smoke |
+| Other external hosts stay Open-as-primary | Task 3 pure action test |
+| Open on GitHub remains in the source menu | Existing smoke assertion retained |
+| Create/Delete remain visible and disabled with G1 recovery copy | Task 2 reason test and Task 4 failed-G1 smoke |
+| Create and delete invoke existing commands on GitHub | Task 4 no-checkout branch smoke |
+| Default branch remains undeletable | Existing Rust round-trip test and updated `develop` menu assertion |
+| Remote create/delete leases remain intact | Unchanged blocking functions and existing Rust round-trip test |
+| G4 implementation remains in the tree | Task 4 removes only imports and hook call from project-page controls |
 
-## Acceptance criteria
+## Acceptance Criteria
 
-On a GitHub-hosted project whose default branch is `develop`, with `gh` installed and authenticated:
+- A strict `https://github.com/owner/repo[.git]`, `git@github.com:owner/repo.git`, or `ssh://git@github.com/owner/repo[.git]` clone URL passes the operation gate.
+- GitLab, GitHub issue paths, credential-bearing GitHub URLs, ports, query strings, fragments, and non-active Buzz relay URLs remain rejected by existing strict parsers.
+- GitHub HTTPS runs `gh auth status --hostname github.com` before creating a config containing a safely quoted `!<resolved-gh> auth git-credential` helper.
+- GitHub SSH creates no credential helper, carries no nsec, and does not call `GhRunner::discover` or `ensure_auth` for git operations.
+- Buzz operations continue to clear inherited helpers, install `git-credential-nostr`, and expose `NOSTR_PRIVATE_KEY` only to credential-requiring git subprocesses.
+- No `gh` subprocess or GitHub git subprocess inherits `NOSTR_PRIVATE_KEY`.
+- Missing `gh` yields `github_cli_missing`; unauthenticated `gh` yields `github_auth_required`; runner failures on this path yield `github_state_failed` unless repository classification produces `github_repo_unavailable`.
+- A GitHub checkout behind its selected remote branch shows Pull and invokes `pull_project_local_repository`, whose existing implementation uses `git pull --ff-only`.
+- A GitHub checkout ahead shows Push and invokes `push_project_local_repository` without publishing kind 1617/PR-update state through `publishProjectPullRequestUpdate`.
+- A GitHub checkout with neither action available shows Fetch and may show `0 / 0` only when a local path is present.
+- Fetch with a checkout refetches `get_project_repo_sync_status`, `get_github_repository_state`, and `get_github_repository_snapshot`, and never calls `get_github_ahead_behind`.
+- Fetch without a checkout refetches G1 and G3 only and never calls sync status or G4 during that click.
+- Create from a known G1 branch commit invokes `create_project_remote_branch`, selects the new branch, and Delete invokes `delete_project_remote_branch` with the observed commit.
+- Delete remains disabled on GitHub's default `develop` branch and the native default-branch guard remains unchanged.
+- When G1 fails, the header shows one GitHub recovery component, the branch picker is still reachable, Create and Delete are visible and disabled with the same recovery reason, and no “create the first commit” copy appears.
+- Clone, sync, pull, push, create, and delete surface structured GitHub authentication errors as readable recovery or toast/dialog copy rather than raw JSON.
+- Other external hosts retain Open as the primary action, and Buzz-hosted projects retain existing clone, sync, pull, push, create, and delete behavior.
 
-- A checkout that is behind shows Pull; Pull invokes `pull_project_local_repository` (`git pull --ff-only`).
-- A checkout that is ahead shows Push; Push invokes `push_project_local_repository` and does not publish a Nostr PR update.
-- Fetch with a checkout refetches `get_project_repo_sync_status`, `get_github_repository_state`, and `get_github_repository_snapshot`.
-- Fetch without a checkout does not call sync and does not show Pull/Push.
-- Create branch from a known G1 HEAD works.
-- Delete remains visible and refuses the default branch (`develop`) through the existing guard.
-- Without `gh` or without auth on HTTPS, G1 recovery stays on the header; Create/Delete are visible and disabled with that reason; they do not say “create the first commit”.
-- Buzz-hosted repositories still sync, pull, push, and create/delete as they do today.
+## Final Validation Commands
 
-## Validation commands
+Run every command from the repository root.
 
 ```bash
-. ./bin/activate-hermit && cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib git_operation_url
-. ./bin/activate-hermit && cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib github_git_auth
-. ./bin/activate-hermit && cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib https_github_
-. ./bin/activate-hermit && cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib ssh_github_auth
-. ./bin/activate-hermit && cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib remote_branch
-. ./bin/activate-hermit
-cd desktop && pnpm test -- src/features/projects/lib/projectGithubSync.test.mjs src/features/projects/lib/projectGitError.test.mjs src/features/projects/lib/projectBranchErrors.test.mjs && pnpm typecheck
-. ./bin/activate-hermit
-cd desktop && pnpm test:e2e:smoke -- github-pull-push-and-branches
-cd desktop && pnpm test:e2e:smoke -- github-snapshot-and-fetch
-cd desktop && pnpm test:e2e:smoke -- github-repo-state
+. ./bin/activate-hermit && cargo fmt --manifest-path desktop/src-tauri/Cargo.toml -- --check
+. ./bin/activate-hermit && cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib project_git_exec::tests
+. ./bin/activate-hermit && cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib project_git_branches::tests
+. ./bin/activate-hermit && cd desktop && node --import ./test-loader.mjs --experimental-strip-types --test src/features/projects/lib/projectGithubSync.test.mjs src/features/projects/lib/projectGitError.test.mjs src/features/projects/lib/projectBranchErrors.test.mjs src/shared/api/projectGitMergeError.test.mjs
+. ./bin/activate-hermit && cd desktop && pnpm check
+. ./bin/activate-hermit && cd desktop && pnpm typecheck
+. ./bin/activate-hermit && cd desktop && pnpm test:e2e:smoke -- github-pull-push-and-branches.spec.ts github-snapshot-and-fetch.spec.ts github-repo-state.spec.ts
+. ./bin/activate-hermit && just ci
 ```
 
-## GSTACK REVIEW REPORT
+Expected: every command passes.
+If unrelated pre-existing failures occur in the repository-wide unit or `just ci` run, record the exact failing test and show that all focused commands above pass; do not silently waive a failure introduced by this slice.
 
-| Review | Trigger | Why | Runs | Status | Findings |
-|--------|---------|-----|------|--------|----------|
-| CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | skipped | — |
-| Codex Review | `/codex review` | Independent 2nd opinion | 0 | skipped | — |
-| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 0 | skipped | — |
-| Design Review | `/plan-design-review` | UI/UX gaps | 0 | skipped | — |
-| DX Review | `/plan-devex-review` | Developer experience gaps | 0 | skipped | — |
+## Implementation Order
 
-- **VERDICT:** Plan written from the approved G5–G7 spec against the current G1–G4 tree.
-- Ready to implement this revision.
+1. Complete and commit Task 1 so every later UI path has a safe native operation and error contract.
+2. Complete and commit Task 2 so all later queries and handlers receive readable structured errors.
+3. Complete and commit Task 3 so GitHub sync is gated by G1 and push side effects are host-correct before controls are exposed.
+4. Complete and commit Task 4 so the user-visible controls are implemented only after their mock-bridge tests are red.
+5. Run Final Validation Commands, run GitNexus `detect_changes({scope: "compare", base_ref: "main"})` when available, and verify only the files in this plan and their expected execution flows changed.
 
-NO UNRESOLVED DECISIONS
+## Open Questions
+
+None.
