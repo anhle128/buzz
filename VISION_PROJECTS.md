@@ -10,7 +10,18 @@ This document is the software-forge slice of the broader Buzz platform. [VISION.
 
 ## The Project Model
 
-A project lives on the relay. `myproject.com` in a browser shows the project home. Click a repo and you're at `repoa.myproject.com` — README rendered, file tree navigable, code syntax-highlighted, clone URL at the top. The same URL serves HTML to a browser and git protocol to `git clone`. Content negotiation. One URL, two audiences.
+A project lives on the relay. `myproject.com` in a browser shows the project home. Repositories in that project have one of two **native hosts**:
+
+| Host | Clone URL | Git, issues, pull requests |
+|------|-----------|----------------------------|
+| **Buzz** | `<relay>/git/<pubkey>/<repo>` | Relay Smart HTTP + NIP-34. Npub signs pushes. |
+| **GitHub** | `https://github.com/<owner>/<repo>` | GitHub is the source of truth. Desktop talks to GitHub (`gh` + git). |
+
+Same project card, same tabs. The clone URL selects the backend. Do not dual-write issues or pull requests to both hosts.
+
+A Buzz-hosted repo at `repoa.myproject.com` still serves HTML to a browser and git to `git clone` — content negotiation, one URL, two audiences. A GitHub-hosted repo is announced with the GitHub clone URL; Projects browses, branches, issues, and PRs against GitHub.
+
+### Buzz-hosted git
 
 Git transport is standard Smart HTTP — `git clone`, `git push`, nothing special. Your npub signs pushes. Same domain, same auth, same identity as everything else on the relay. The host in the clone/push URL is also the community selector: the same `owner/repo` name may exist in two communities without sharing refs, branch protections, workflow runs, approvals, or repo announcements.
 
@@ -182,11 +193,13 @@ Every step traced. Every trace a signed event. Change the project CI once and ev
 
 ## Issues, Docs, Releases
 
-### Issues → Forum + NIP-34
+### Issues
 
-Bug reports are NIP-34 kind:1621 events, rendered through Buzz's forum surface. Threaded comments use NIP-22 kind:1111. Labels, assignees, milestones are nostr tags. Design discussions and RFCs use the forum's long-form async surface.
+**Buzz-hosted repos:** bug reports are NIP-34 kind:1621 events. Threaded comments use NIP-22 kind:1111. Labels, assignees, milestones are nostr tags. NIP-34 clients can discover them; Buzz's issue tab and forum give them a home with threading, search, and agent triage.
 
-NIP-34 clients can discover and interact with issues. Buzz's forum gives them a home with threading, search, and agent triage.
+**GitHub-hosted repos:** GitHub Issues are the issue backend — list, create, close, comment, labels, assignees. The Issues tab does not publish kind:1621 for those repositories.
+
+Design discussions and RFCs use the forum's long-form async surface either way.
 
 ### Docs → Canvases
 
@@ -254,6 +267,7 @@ If Buzz disappears tomorrow, your repos still work on gitworkshop.dev, your patc
 | Project binding (kind:30617 + `buzz-` tags) | 📋 Designed |
 | Multi-repo projects (kind:30621, [NIP-MP](docs/nips/NIP-MP.md)) | 📋 Designed |
 | Git hosting (smart HTTP + NIP-34) | ✅ Ships today |
+| GitHub as native host (git, issues, PRs) | 🚧 Contract set; Desktop git/issue/PR backends in progress |
 | Merge coordinator | 📋 Designed |
 | NIP-34 issues (kind:1621) | 📋 Designed |
 | Web-of-trust reputation | 📋 Designed |

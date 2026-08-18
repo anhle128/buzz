@@ -924,7 +924,9 @@ fn default_agent_args(command: &str) -> Option<Vec<String>> {
     match normalize_agent_command_identity(command).as_str() {
         "goose" => Some(vec!["acp".to_string()]),
         "codex" | "codex-acp" | "claude-agent-acp" | "claude-code-acp" | "claude-code"
-        | "claudecode" | "buzz-agent" => Some(Vec::new()),
+        | "claudecode" | "buzz-agent" | "hermes" | "hermes-agent" | "hermes-acp" => {
+            Some(Vec::new())
+        }
         _ => None,
     }
 }
@@ -945,6 +947,16 @@ pub(crate) fn default_agent_env(command: &str) -> &'static [(&'static str, &'sta
     match normalize_agent_command_identity(command).as_str() {
         "hermes" | "hermes-agent" | "hermes-acp" => &[("HERMES_ACP_SKIP_CONFIGURED_MCP", "1")],
         _ => &[],
+    }
+}
+
+/// Session MCP server used when the operator/desktop left `BUZZ_ACP_MCP_COMMAND`
+/// empty. Hermes tool subprocesses do not reliably inherit Buzz identity env,
+/// so an empty command would leave the session with no authenticated `buzz`.
+fn default_mcp_command(command: &str) -> Option<&'static str> {
+    match normalize_agent_command_identity(command).as_str() {
+        "hermes" | "hermes-agent" | "hermes-acp" => Some("buzz-dev-mcp"),
+        _ => None,
     }
 }
 
@@ -1286,12 +1298,20 @@ impl Config {
         let permission_config =
             ResolvedPermissionConfig::resolve(args.permission_policy, args.permission_mode)?;
 
+        let mcp_command = if args.mcp_command.is_empty() {
+            default_mcp_command(&agent_command)
+                .unwrap_or("")
+                .to_string()
+        } else {
+            args.mcp_command
+        };
+
         let config = Config {
             keys,
             relay_url: args.relay_url,
             agent_command,
             agent_args,
-            mcp_command: args.mcp_command,
+            mcp_command,
             idle_timeout_secs,
             max_turn_duration_secs,
             agents: args.agents,
@@ -1871,6 +1891,67 @@ mod tests {
         assert_eq!(normalize_agent_command_identity("   "), "");
         assert_eq!(normalize_agent_command_identity("/"), "");
         assert_eq!(normalize_agent_command_identity("///"), "");
+    }
+
+    #[test]
+    fn default_mcp_command_is_buzz_dev_mcp_for_hermes() {
+        for command in [
+            "hermes",
+            "hermes-agent",
+            "hermes-acp",
+            "/opt/hermes/bin/hermes-acp",
+            r"C:\Users\test\AppData\Roaming\npm\hermes-acp.cmd",
+        ] {
+            assert_eq!(
+                default_mcp_command(command),
+                Some("buzz-dev-mcp"),
+                "Hermes must default to buzz-dev-mcp: {command}"
+            );
+        }
+        for command in ["goose", "codex-acp", "claude-agent-acp", "buzz-agent"] {
+            assert_eq!(
+                default_mcp_command(command),
+                None,
+                "non-Hermes command must not invent an MCP default: {command}"
+            );
+        }
+    }
+
+    #[test]
+    fn from_args_defaults_empty_hermes_mcp_command() {
+        let previous = std::env::var("BUZZ_ACP_MCP_COMMAND").ok();
+        std::env::remove_var("BUZZ_ACP_MCP_COMMAND");
+        let args = CliArgs::try_parse_from([
+            "buzz-acp",
+            "--private-key",
+            "0000000000000000000000000000000000000000000000000000000000000001",
+            "--agent-command",
+            "hermes-acp",
+        ]);
+        match previous {
+            Some(value) => std::env::set_var("BUZZ_ACP_MCP_COMMAND", value),
+            None => std::env::remove_var("BUZZ_ACP_MCP_COMMAND"),
+        }
+        let args = args.expect("clap should parse args");
+        let config = Config::from_args(args).expect("hermes config");
+        assert_eq!(config.mcp_command, "buzz-dev-mcp");
+        assert!(config.agent_args.is_empty(), "hermes is a zero-arg runtime");
+    }
+
+    #[test]
+    fn from_args_preserves_explicit_hermes_mcp_command() {
+        let args = CliArgs::try_parse_from([
+            "buzz-acp",
+            "--private-key",
+            "0000000000000000000000000000000000000000000000000000000000000001",
+            "--agent-command",
+            "hermes-acp",
+            "--mcp-command",
+            "/opt/custom-mcp",
+        ])
+        .expect("clap should parse args");
+        let config = Config::from_args(args).expect("hermes config");
+        assert_eq!(config.mcp_command, "/opt/custom-mcp");
     }
 
     #[test]

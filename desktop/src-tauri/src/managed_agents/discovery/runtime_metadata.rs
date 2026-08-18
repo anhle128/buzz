@@ -5,8 +5,10 @@ pub(crate) struct KnownAcpRuntime {
     pub commands: &'static [&'static str],
     pub aliases: &'static [&'static str],
     pub avatar_url: &'static str,
-    /// Legacy MCP server binary field. Vestigial — all agents now use the bundled CLI
-    /// directly. Will be removed when runtime discovery is simplified.
+    /// Optional session MCP server injected by Desktop as `BUZZ_ACP_MCP_COMMAND`.
+    /// Required for runtimes whose tool subprocesses do not inherit Buzz identity
+    /// env (Codex, Buzz Agent, Hermes). `None` when the agent runs `buzz` from
+    /// PATH with the inherited harness environment (Goose, Claude Code).
     pub mcp_command: Option<&'static str>,
     /// Whether to enable MCP hook tools (`_Stop`, `_PostCompact`) for this agent.
     pub mcp_hooks: bool,
@@ -122,5 +124,21 @@ mod tests {
         );
         assert!(codex.adapter_install_instructions_url.contains("codex-acp"));
         assert!(codex.cli_install_hint.contains("Codex CLI"));
+    }
+
+    #[test]
+    fn hermes_is_a_known_runtime_with_authenticated_mcp() {
+        let hermes = known_acp_runtime_exact("hermes").unwrap();
+        assert_eq!(hermes.commands, &["hermes-acp"]);
+        assert_eq!(hermes.mcp_command, Some("buzz-dev-mcp"));
+        assert!(hermes.mcp_hooks);
+        assert_eq!(
+            super::super::known_acp_runtime("hermes-acp").map(|runtime| runtime.id),
+            Some("hermes")
+        );
+        assert_eq!(
+            super::super::known_acp_runtime("hermes-agent").map(|runtime| runtime.id),
+            Some("hermes")
+        );
     }
 }

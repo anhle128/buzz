@@ -1669,6 +1669,28 @@ fn builtin_catalog_entry_has_empty_definition_env() {
     );
 }
 
+#[test]
+fn hermes_catalog_entry_is_builtin_with_authenticated_mcp() {
+    use crate::managed_agents::custom_harnesses::registry_test_lock;
+    use crate::managed_agents::discovery::discover_acp_runtimes_from;
+
+    let _path_guard = crate::managed_agents::lock_path_mutex();
+    let _lock = registry_test_lock();
+    let entries = discover_acp_runtimes_from(None);
+    let hermes = entries
+        .iter()
+        .find(|entry| entry.id == "hermes")
+        .expect("hermes must appear in the runtime catalog");
+
+    assert_eq!(hermes.source, crate::managed_agents::HarnessSource::Builtin);
+    assert_eq!(hermes.mcp_command.as_deref(), Some("buzz-dev-mcp"));
+    assert_eq!(
+        entries.iter().filter(|entry| entry.id == "hermes").count(),
+        1,
+        "hermes must not appear as both builtin and preset"
+    );
+}
+
 // ── Discovery publish via the PRODUCTION call path (stale-snapshot regression) ─
 //
 // These drive `discover_acp_runtimes_from` itself and land a save/delete in
