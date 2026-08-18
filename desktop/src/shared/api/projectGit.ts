@@ -570,6 +570,7 @@ export type GithubIssueListDto = {
 export type GithubIssueCommentDto = {
   id: number;
   body: string;
+  html_url: string;
   created_at: number;
   user: GithubIssueUserDto;
 };

@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 
 const ISSUE_COMMENT_ITEM_JQ: &str = "{id, body: (.body // \"\"), html_url, created_at, user: (if .user == null then null else {login: .user.login, avatar_url: (.user.avatar_url // \"\")} end)}";
 const REPO_LABELS_JQ: &str = "[.[] | {name, color: (.color // \"\")}]";
-const LABEL_MUTATION_JQ: &str = "[.[] | {name, color: (.color // \"\")}]";
 const REPO_ASSIGNEES_JQ: &str = "[.[] | {login, avatar_url: (.avatar_url // \"\")}]";
 const USER_JQ: &str = "{login: (.login // \"\"), avatar_url: (.avatar_url // \"\")}";
 
@@ -133,7 +132,7 @@ pub(crate) fn add_github_issue_labels_with(
     let input = github_json_input(&serde_json::json!({ "labels": [name] }))?;
     let path = format!("/repos/{}/issues/{number}/labels", repo.slug());
     let _: serde_json::Value =
-        github_api_json(gh, "POST", &path, LABEL_MUTATION_JQ, Some(input.path()))
+        github_api_json(gh, "POST", &path, REPO_LABELS_JQ, Some(input.path()))
             .map_err(|error| remap_label_write_error(error, ""))?;
     fetch_updated_issue(gh, &repo, number)
 }
@@ -152,7 +151,7 @@ pub(crate) fn remove_github_issue_label_with(
         .map_err(|error| remap_issue_write_error(error, ""))?;
     let encoded = utf8_percent_encode(name, NON_ALPHANUMERIC);
     let path = format!("/repos/{}/issues/{number}/labels/{encoded}", repo.slug());
-    let _: serde_json::Value = github_api_json(gh, "DELETE", &path, LABEL_MUTATION_JQ, None)
+    let _: serde_json::Value = github_api_json(gh, "DELETE", &path, REPO_LABELS_JQ, None)
         .map_err(|error| remap_label_write_error(error, ""))?;
     fetch_updated_issue(gh, &repo, number)
 }
@@ -299,6 +298,125 @@ pub(crate) fn get_github_authenticated_user_with_runner(
 ) -> Result<GitHubIssueUserDto, ProjectPullRequestMergeError> {
     let gh = gh.map_err(|error| remap_issue_write_error(error, ""))?;
     get_github_authenticated_user_with(&gh)
+}
+
+/// Close or reopen one GitHub issue for a github.com clone URL.
+#[tauri::command]
+pub async fn update_github_issue_state(
+    clone_url: String,
+    number: u64,
+    state: String,
+) -> Result<GitHubIssueDto, ProjectPullRequestMergeError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        update_github_issue_state_with_runner(clone_url, number, state, GhRunner::discover())
+    })
+    .await
+    .map_err(|error| ProjectPullRequestMergeError::new("github_issues_failed", error.to_string()))?
+}
+
+/// Create one GitHub issue comment for a github.com clone URL.
+#[tauri::command]
+pub async fn create_github_issue_comment(
+    clone_url: String,
+    number: u64,
+    body: String,
+) -> Result<GitHubIssueCommentDto, ProjectPullRequestMergeError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        create_github_issue_comment_with_runner(clone_url, number, body, GhRunner::discover())
+    })
+    .await
+    .map_err(|error| ProjectPullRequestMergeError::new("github_issues_failed", error.to_string()))?
+}
+
+/// List repository labels for a github.com clone URL.
+#[tauri::command]
+pub async fn list_github_repo_labels(
+    clone_url: String,
+) -> Result<Vec<GitHubRepoLabelDto>, ProjectPullRequestMergeError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        list_github_repo_labels_with_runner(clone_url, GhRunner::discover())
+    })
+    .await
+    .map_err(|error| ProjectPullRequestMergeError::new("github_issues_failed", error.to_string()))?
+}
+
+/// Add one label to a GitHub issue for a github.com clone URL.
+#[tauri::command]
+pub async fn add_github_issue_labels(
+    clone_url: String,
+    number: u64,
+    name: String,
+) -> Result<GitHubIssueDto, ProjectPullRequestMergeError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        add_github_issue_labels_with_runner(clone_url, number, name, GhRunner::discover())
+    })
+    .await
+    .map_err(|error| ProjectPullRequestMergeError::new("github_issues_failed", error.to_string()))?
+}
+
+/// Remove one label from a GitHub issue for a github.com clone URL.
+#[tauri::command]
+pub async fn remove_github_issue_label(
+    clone_url: String,
+    number: u64,
+    name: String,
+) -> Result<GitHubIssueDto, ProjectPullRequestMergeError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        remove_github_issue_label_with_runner(clone_url, number, name, GhRunner::discover())
+    })
+    .await
+    .map_err(|error| ProjectPullRequestMergeError::new("github_issues_failed", error.to_string()))?
+}
+
+/// List assignable users for a github.com clone URL.
+#[tauri::command]
+pub async fn list_github_repo_assignees(
+    clone_url: String,
+) -> Result<Vec<GitHubIssueUserDto>, ProjectPullRequestMergeError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        list_github_repo_assignees_with_runner(clone_url, GhRunner::discover())
+    })
+    .await
+    .map_err(|error| ProjectPullRequestMergeError::new("github_issues_failed", error.to_string()))?
+}
+
+/// Add one assignee to a GitHub issue for a github.com clone URL.
+#[tauri::command]
+pub async fn add_github_issue_assignees(
+    clone_url: String,
+    number: u64,
+    login: String,
+) -> Result<GitHubIssueDto, ProjectPullRequestMergeError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        add_github_issue_assignees_with_runner(clone_url, number, login, GhRunner::discover())
+    })
+    .await
+    .map_err(|error| ProjectPullRequestMergeError::new("github_issues_failed", error.to_string()))?
+}
+
+/// Remove one assignee from a GitHub issue for a github.com clone URL.
+#[tauri::command]
+pub async fn remove_github_issue_assignee(
+    clone_url: String,
+    number: u64,
+    login: String,
+) -> Result<GitHubIssueDto, ProjectPullRequestMergeError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        remove_github_issue_assignee_with_runner(clone_url, number, login, GhRunner::discover())
+    })
+    .await
+    .map_err(|error| ProjectPullRequestMergeError::new("github_issues_failed", error.to_string()))?
+}
+
+/// Return the GitHub user authenticated to `gh`.
+#[tauri::command]
+pub async fn get_github_authenticated_user(
+) -> Result<GitHubIssueUserDto, ProjectPullRequestMergeError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        get_github_authenticated_user_with_runner(GhRunner::discover())
+    })
+    .await
+    .map_err(|error| ProjectPullRequestMergeError::new("github_issues_failed", error.to_string()))?
 }
 
 fn parse_github_repo(clone_url: &str) -> Result<GitHubRepoRef, ProjectPullRequestMergeError> {
@@ -828,73 +946,27 @@ mod tests {
     #[test]
     fn catalog_and_mutation_wrappers_map_missing_discovered_cli() {
         let clone_url = "https://github.com/acme/app".to_string();
-        assert_eq!(
-            error_code(
-                &list_github_repo_labels_with_runner(
-                    clone_url.clone(),
-                    GhRunner::from_resolved(None),
-                )
-                .expect_err("labels")
-            ),
-            "github_cli_missing",
-        );
-        assert_eq!(
-            error_code(
-                &add_github_issue_labels_with_runner(
-                    clone_url.clone(),
-                    42,
-                    "bug".to_string(),
-                    GhRunner::from_resolved(None),
-                )
-                .expect_err("add label")
-            ),
-            "github_cli_missing",
-        );
-        assert_eq!(
-            error_code(
-                &remove_github_issue_label_with_runner(
-                    clone_url.clone(),
-                    42,
-                    "bug".to_string(),
-                    GhRunner::from_resolved(None),
-                )
-                .expect_err("remove label")
-            ),
-            "github_cli_missing",
-        );
-        assert_eq!(
-            error_code(
-                &list_github_repo_assignees_with_runner(
-                    clone_url.clone(),
-                    GhRunner::from_resolved(None),
-                )
-                .expect_err("assignees")
-            ),
-            "github_cli_missing",
-        );
-        assert_eq!(
-            error_code(
-                &add_github_issue_assignees_with_runner(
-                    clone_url.clone(),
-                    42,
-                    "linus".to_string(),
-                    GhRunner::from_resolved(None),
-                )
-                .expect_err("add assignee")
-            ),
-            "github_cli_missing",
-        );
-        assert_eq!(
-            error_code(
-                &remove_github_issue_assignee_with_runner(
-                    clone_url,
-                    42,
-                    "linus".to_string(),
-                    GhRunner::from_resolved(None),
-                )
-                .expect_err("remove assignee")
-            ),
-            "github_cli_missing",
-        );
+        let missing = || GhRunner::from_resolved(None);
+        let errors = [
+            list_github_repo_labels_with_runner(clone_url.clone(), missing()).expect_err("labels"),
+            add_github_issue_labels_with_runner(clone_url.clone(), 42, "bug".into(), missing())
+                .expect_err("add label"),
+            remove_github_issue_label_with_runner(clone_url.clone(), 42, "bug".into(), missing())
+                .expect_err("remove label"),
+            list_github_repo_assignees_with_runner(clone_url.clone(), missing())
+                .expect_err("assignees"),
+            add_github_issue_assignees_with_runner(
+                clone_url.clone(),
+                42,
+                "linus".into(),
+                missing(),
+            )
+            .expect_err("add assignee"),
+            remove_github_issue_assignee_with_runner(clone_url, 42, "linus".into(), missing())
+                .expect_err("remove assignee"),
+        ];
+        for error in errors {
+            assert_eq!(error_code(&error), "github_cli_missing");
+        }
     }
 }
