@@ -18,7 +18,8 @@ const MAX_PREVIEW_BYTES: usize = 64 * 1024;
 const MAX_TREE_ENTRIES: usize = 250;
 const MAX_COMMITS: usize = 50;
 const COMMITS_JQ: &str = "[.[] | {sha, tree: .commit.tree.sha, name: .commit.author.name, email: .commit.author.email, date: .commit.author.date, subject: (.commit.message | split(\"\\n\")[0])}]";
-const TREE_JQ: &str = "{tree: [.tree[:250][] | {path, type, size}]}";
+const TREE_JQ: &str =
+    "{tree: [.tree[] | select(.type==\"blob\" or .type==\"commit\") | {path, type, size}][:250]}";
 
 #[derive(Debug, Deserialize)]
 struct GithubCommitRow {
@@ -133,7 +134,28 @@ fn list_commit_rows(
     serializer.append_pair("per_page", &MAX_COMMITS.to_string());
     let query = serializer.finish();
     let path = format!("/repos/{slug}/commits?{query}");
-    github_api_json(gh, &path, Some(COMMITS_JQ), 64 * 1024)
+    let output = github_api_output(gh, &path, Some(COMMITS_JQ), 64 * 1024)?;
+    if !output.status.success() {
+        let diagnostic = combined_cli_diagnostic(&output.stderr, &output.stdout);
+        let lower = diagnostic.to_ascii_lowercase();
+        // Empty GitHub repos return HTTP 409 ("Git Repository is empty."), not [].
+        if lower.contains("409") || lower.contains("empty") {
+            return Ok(vec![]);
+        }
+        return Err(remap_state_error(
+            ProjectPullRequestMergeError::new("github_merge_failed", diagnostic.clone()),
+            &diagnostic,
+        ));
+    }
+    serde_json::from_str(&output.stdout).map_err(|_| {
+        remap_state_error(
+            ProjectPullRequestMergeError::new(
+                "github_merge_failed",
+                "GitHub CLI returned an unexpected JSON response. Update gh, then retry.",
+            ),
+            &output.stderr,
+        )
+    })
 }
 
 fn list_tree(
@@ -146,6 +168,7 @@ fn list_tree(
     Ok(payload
         .tree
         .into_iter()
+        .filter(|entry| entry.kind == "blob" || entry.kind == "commit")
         .take(MAX_TREE_ENTRIES)
         .map(|entry| ProjectRepoFileInfo {
             path: entry.path,
@@ -536,6 +559,64 @@ esac
         assert!(snapshot.latest_commit.is_none());
         assert!(snapshot.commits.is_empty());
         assert!(snapshot.files.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn empty_repo_http_409_skips_tree_and_readme() {
+        let script = r#"
+case "$*" in
+  *auth*status*) exit 0 ;;
+  *"/repos/acme/app/commits"*)
+    printf 'gh: HTTP 409: Git Repository is empty.\n' >&2
+    printf '%s' '{"message":"Git Repository is empty."}'
+    exit 1
+    ;;
+  *) exit 1 ;;
+esac
+"#;
+        let (_dir, path) = fake_gh(script);
+        let gh = GhRunner::from_resolved(Some(path)).expect("runner");
+        let snapshot =
+            github_repository_snapshot_with(&gh, "https://github.com/acme/app", "develop")
+                .expect("empty repo");
+        assert!(snapshot.latest_commit.is_none());
+        assert!(snapshot.commits.is_empty());
+        assert!(snapshot.files.is_empty());
+        assert!(snapshot.contributors.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tree_entries_keep_blobs_and_commits_only() {
+        let sha = "a".repeat(40);
+        let tree = "b".repeat(40);
+        let script = format!(
+            r#"
+case "$*" in
+  *auth*status*) exit 0 ;;
+  *"/repos/acme/app/commits"*)
+    printf '%s' '[{{"sha":"{sha}","tree":"{tree}","name":"Ada","email":"ada@example.com","date":"2026-01-02T03:04:05Z","subject":"Seed"}}]'
+    ;;
+  *"/repos/acme/app/git/trees/"*)
+    printf '%s' '{{"tree":[{{"path":"src","type":"tree","size":null}},{{"path":"src/lib.rs","type":"blob","size":12}},{{"path":"vendor/dep","type":"commit","size":null}}]}}'
+    ;;
+  *"/repos/acme/app/readme"*)
+    printf 'gh: HTTP 404\n' >&2
+    exit 1
+    ;;
+  *) exit 1 ;;
+esac
+"#
+        );
+        let (_dir, path) = fake_gh(&script);
+        let gh = GhRunner::from_resolved(Some(path)).expect("runner");
+        let snapshot =
+            github_repository_snapshot_with(&gh, "https://github.com/acme/app", "develop")
+                .expect("snapshot");
+        let paths: Vec<&str> = snapshot.files.iter().map(|file| file.path.as_str()).collect();
+        assert_eq!(paths, vec!["src/lib.rs", "vendor/dep"]);
+        assert!(!paths.iter().any(|path| *path == "src"));
     }
 
     #[test]
