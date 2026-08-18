@@ -1,0 +1,6 @@
+worktree:
+  baseBranch: main
+
+github:
+  prRemote: origin
+
