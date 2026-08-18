@@ -14,6 +14,7 @@ import {
   listGithubIssues,
   listProjectLocalRepositories,
 } from "@/shared/api/projectGit";
+import { createGithubIssueComment } from "@/shared/api/projectGithubIssueWrites";
 import {
   KIND_DELETION,
   KIND_GIT_ISSUE,
@@ -31,6 +32,10 @@ import {
   fetchProjectIssuesWith,
   type GithubIssueListState,
 } from "@/features/projects/lib/projectGithubIssues";
+import {
+  createProjectIssueCommentWith,
+  projectIssueWriteInvalidationKeys,
+} from "@/features/projects/lib/projectGithubIssueWrites";
 import { fetchProjectRepoSnapshotWith } from "@/features/projects/lib/projectGithubSnapshot";
 import { fetchRepoState } from "@/features/projects/lib/projectRepoState";
 export type { RepoState } from "@/features/projects/lib/projectRepoState";
@@ -837,24 +842,27 @@ export function useCreateProjectIssueCommentMutation(
       issue: ProjectIssue;
     }) => {
       if (!project) throw new Error("No project selected.");
-      return createProjectIssueComment({
-        content,
-        mediaTags,
-        mentionPubkeys,
-        issue,
-        project,
-      });
+      return createProjectIssueCommentWith(
+        {
+          content,
+          mediaTags,
+          mentionPubkeys,
+          issue,
+          project,
+        },
+        {
+          createGithub: createGithubIssueComment,
+          publishBuzz: createProjectIssueComment,
+        },
+      );
     },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({
-        queryKey: ["project", project?.id ?? "none", "issues"],
-      });
-      void queryClient.invalidateQueries({
-        queryKey: ["projects", "work-items"],
-      });
-      void queryClient.invalidateQueries({
-        queryKey: ["projects", "activity-summaries"],
-      });
+    onSuccess: async () => {
+      if (!project) return;
+      await Promise.all(
+        projectIssueWriteInvalidationKeys(project).map((queryKey) =>
+          queryClient.invalidateQueries({ queryKey }),
+        ),
+      );
     },
   });
 }

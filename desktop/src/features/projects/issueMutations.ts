@@ -6,6 +6,7 @@ import { signRelayEvent } from "@/shared/api/tauri";
 import { KIND_GIT_ISSUE } from "@/shared/constants/kinds";
 import { isGitHubCloneUrl } from "@/features/projects/lib/projectGitError";
 import { githubIssueId } from "@/features/projects/lib/projectGithubIssues";
+import { projectIssueWriteInvalidationKeys } from "@/features/projects/lib/projectGithubIssueWrites";
 import type { Repository as Project } from "./hooks";
 import { buildGitIssueTags } from "./projectIssues.mjs";
 
@@ -63,12 +64,8 @@ export async function createProjectIssueWith(
 /** Query keys invalidated after a repository-native issue create. */
 export function projectIssueInvalidationKeys(
   project: Pick<Project, "id" | "cloneUrls">,
-): unknown[][] {
-  const keys: unknown[][] = [["project", project.id, "issues"]];
-  if (!isGitHubCloneUrl(project.cloneUrls[0])) {
-    keys.push(["projects", "work-items"], ["projects", "activity-summaries"]);
-  }
-  return keys;
+): readonly unknown[][] {
+  return projectIssueWriteInvalidationKeys(project);
 }
 
 export function useCreateProjectIssueMutation(
