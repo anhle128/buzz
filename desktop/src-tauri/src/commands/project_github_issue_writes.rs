@@ -1,11 +1,36 @@
 use crate::commands::project_git_merge_error::ProjectPullRequestMergeError;
 use crate::commands::project_github_issues::{
     github_api_json, github_json_input, map_issue, map_issue_comment, GitHubIssueCommentDto,
-    GitHubIssueCommentWire, GitHubIssueDto, GitHubIssueWire, ISSUE_ITEM_JQ,
+    GitHubIssueCommentWire, GitHubIssueDto, GitHubIssueUserDto, GitHubIssueWire, ISSUE_ITEM_JQ,
 };
 use crate::commands::project_github_pull_request::{redact_diagnostic, GhRunner, GitHubRepoRef};
+use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+use serde::{Deserialize, Serialize};
 
 const ISSUE_COMMENT_ITEM_JQ: &str = "{id, body: (.body // \"\"), html_url, created_at, user: (if .user == null then null else {login: .user.login, avatar_url: (.user.avatar_url // \"\")} end)}";
+const REPO_LABELS_JQ: &str = "[.[] | {name, color: (.color // \"\")}]";
+const LABEL_MUTATION_JQ: &str = "[.[] | {name, color: (.color // \"\")}]";
+const REPO_ASSIGNEES_JQ: &str = "[.[] | {login, avatar_url: (.avatar_url // \"\")}]";
+const USER_JQ: &str = "{login: (.login // \"\"), avatar_url: (.avatar_url // \"\")}";
+
+/// One repository label from the GitHub catalog.
+#[derive(Clone, Debug, Serialize)]
+pub struct GitHubRepoLabelDto {
+    pub name: String,
+    pub color: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GitHubRepoLabelWire {
+    name: String,
+    color: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GitHubIssueUserWire {
+    login: String,
+    avatar_url: String,
+}
 
 /// Close or reopen one GitHub issue for a github.com clone URL.
 pub(crate) fn update_github_issue_state_with(
@@ -80,6 +105,110 @@ pub(crate) fn create_github_issue_comment_with(
     })
 }
 
+/// List repository labels for a github.com clone URL.
+pub(crate) fn list_github_repo_labels_with(
+    gh: &GhRunner,
+    clone_url: &str,
+) -> Result<Vec<GitHubRepoLabelDto>, ProjectPullRequestMergeError> {
+    let repo = parse_github_repo(clone_url)?;
+    gh.ensure_auth()
+        .map_err(|error| remap_issue_write_error(error, ""))?;
+    let path = format!("/repos/{}/labels?per_page=100", repo.slug());
+    let raw: Vec<GitHubRepoLabelWire> = github_api_json(gh, "GET", &path, REPO_LABELS_JQ, None)?;
+    Ok(map_repo_labels(raw))
+}
+
+/// Add one label to a GitHub issue for a github.com clone URL.
+pub(crate) fn add_github_issue_labels_with(
+    gh: &GhRunner,
+    clone_url: &str,
+    number: u64,
+    name: &str,
+) -> Result<GitHubIssueDto, ProjectPullRequestMergeError> {
+    let name = require_label_name(name)?;
+    require_issue_number(number)?;
+    let repo = parse_github_repo(clone_url)?;
+    gh.ensure_auth()
+        .map_err(|error| remap_issue_write_error(error, ""))?;
+    let input = github_json_input(&serde_json::json!({ "labels": [name] }))?;
+    let path = format!("/repos/{}/issues/{number}/labels", repo.slug());
+    let _: serde_json::Value =
+        github_api_json(gh, "POST", &path, LABEL_MUTATION_JQ, Some(input.path()))
+            .map_err(|error| remap_label_write_error(error, ""))?;
+    fetch_updated_issue(gh, &repo, number)
+}
+
+/// Remove one label from a GitHub issue for a github.com clone URL.
+pub(crate) fn remove_github_issue_label_with(
+    gh: &GhRunner,
+    clone_url: &str,
+    number: u64,
+    name: &str,
+) -> Result<GitHubIssueDto, ProjectPullRequestMergeError> {
+    let name = require_label_name(name)?;
+    require_issue_number(number)?;
+    let repo = parse_github_repo(clone_url)?;
+    gh.ensure_auth()
+        .map_err(|error| remap_issue_write_error(error, ""))?;
+    let encoded = utf8_percent_encode(name, NON_ALPHANUMERIC);
+    let path = format!("/repos/{}/issues/{number}/labels/{encoded}", repo.slug());
+    let _: serde_json::Value = github_api_json(gh, "DELETE", &path, LABEL_MUTATION_JQ, None)
+        .map_err(|error| remap_label_write_error(error, ""))?;
+    fetch_updated_issue(gh, &repo, number)
+}
+
+/// List assignable users for a github.com clone URL.
+pub(crate) fn list_github_repo_assignees_with(
+    gh: &GhRunner,
+    clone_url: &str,
+) -> Result<Vec<GitHubIssueUserDto>, ProjectPullRequestMergeError> {
+    let repo = parse_github_repo(clone_url)?;
+    gh.ensure_auth()
+        .map_err(|error| remap_issue_write_error(error, ""))?;
+    let path = format!("/repos/{}/assignees?per_page=100", repo.slug());
+    let raw: Vec<GitHubIssueUserWire> = github_api_json(gh, "GET", &path, REPO_ASSIGNEES_JQ, None)?;
+    Ok(map_repo_assignees(raw))
+}
+
+/// Add one assignee to a GitHub issue for a github.com clone URL.
+pub(crate) fn add_github_issue_assignees_with(
+    gh: &GhRunner,
+    clone_url: &str,
+    number: u64,
+    login: &str,
+) -> Result<GitHubIssueDto, ProjectPullRequestMergeError> {
+    mutate_github_issue_assignees(gh, clone_url, number, login, "POST")
+}
+
+/// Remove one assignee from a GitHub issue for a github.com clone URL.
+pub(crate) fn remove_github_issue_assignee_with(
+    gh: &GhRunner,
+    clone_url: &str,
+    number: u64,
+    login: &str,
+) -> Result<GitHubIssueDto, ProjectPullRequestMergeError> {
+    mutate_github_issue_assignees(gh, clone_url, number, login, "DELETE")
+}
+
+/// Return the GitHub user authenticated to `gh`.
+pub(crate) fn get_github_authenticated_user_with(
+    gh: &GhRunner,
+) -> Result<GitHubIssueUserDto, ProjectPullRequestMergeError> {
+    gh.ensure_auth()
+        .map_err(|error| remap_issue_write_error(error, ""))?;
+    let raw: GitHubIssueUserWire = github_api_json(gh, "GET", "/user", USER_JQ, None)?;
+    if raw.login.trim().is_empty() {
+        return Err(ProjectPullRequestMergeError::new(
+            "github_issues_failed",
+            "GitHub returned an invalid authenticated user.",
+        ));
+    }
+    Ok(GitHubIssueUserDto {
+        login: raw.login,
+        avatar_url: raw.avatar_url,
+    })
+}
+
 /// Inject a resolved `gh` runner for close/reopen discovery tests.
 pub(crate) fn update_github_issue_state_with_runner(
     clone_url: String,
@@ -100,6 +229,201 @@ pub(crate) fn create_github_issue_comment_with_runner(
 ) -> Result<GitHubIssueCommentDto, ProjectPullRequestMergeError> {
     let gh = gh.map_err(|error| remap_issue_write_error(error, ""))?;
     create_github_issue_comment_with(&gh, &clone_url, number, &body)
+}
+
+/// Inject a resolved `gh` runner for label catalog discovery tests.
+pub(crate) fn list_github_repo_labels_with_runner(
+    clone_url: String,
+    gh: Result<GhRunner, ProjectPullRequestMergeError>,
+) -> Result<Vec<GitHubRepoLabelDto>, ProjectPullRequestMergeError> {
+    let gh = gh.map_err(|error| remap_issue_write_error(error, ""))?;
+    list_github_repo_labels_with(&gh, &clone_url)
+}
+
+/// Inject a resolved `gh` runner for label-add discovery tests.
+pub(crate) fn add_github_issue_labels_with_runner(
+    clone_url: String,
+    number: u64,
+    name: String,
+    gh: Result<GhRunner, ProjectPullRequestMergeError>,
+) -> Result<GitHubIssueDto, ProjectPullRequestMergeError> {
+    let gh = gh.map_err(|error| remap_issue_write_error(error, ""))?;
+    add_github_issue_labels_with(&gh, &clone_url, number, &name)
+}
+
+/// Inject a resolved `gh` runner for label-remove discovery tests.
+pub(crate) fn remove_github_issue_label_with_runner(
+    clone_url: String,
+    number: u64,
+    name: String,
+    gh: Result<GhRunner, ProjectPullRequestMergeError>,
+) -> Result<GitHubIssueDto, ProjectPullRequestMergeError> {
+    let gh = gh.map_err(|error| remap_issue_write_error(error, ""))?;
+    remove_github_issue_label_with(&gh, &clone_url, number, &name)
+}
+
+/// Inject a resolved `gh` runner for assignee catalog discovery tests.
+pub(crate) fn list_github_repo_assignees_with_runner(
+    clone_url: String,
+    gh: Result<GhRunner, ProjectPullRequestMergeError>,
+) -> Result<Vec<GitHubIssueUserDto>, ProjectPullRequestMergeError> {
+    let gh = gh.map_err(|error| remap_issue_write_error(error, ""))?;
+    list_github_repo_assignees_with(&gh, &clone_url)
+}
+
+/// Inject a resolved `gh` runner for assignee-add discovery tests.
+pub(crate) fn add_github_issue_assignees_with_runner(
+    clone_url: String,
+    number: u64,
+    login: String,
+    gh: Result<GhRunner, ProjectPullRequestMergeError>,
+) -> Result<GitHubIssueDto, ProjectPullRequestMergeError> {
+    let gh = gh.map_err(|error| remap_issue_write_error(error, ""))?;
+    add_github_issue_assignees_with(&gh, &clone_url, number, &login)
+}
+
+/// Inject a resolved `gh` runner for assignee-remove discovery tests.
+pub(crate) fn remove_github_issue_assignee_with_runner(
+    clone_url: String,
+    number: u64,
+    login: String,
+    gh: Result<GhRunner, ProjectPullRequestMergeError>,
+) -> Result<GitHubIssueDto, ProjectPullRequestMergeError> {
+    let gh = gh.map_err(|error| remap_issue_write_error(error, ""))?;
+    remove_github_issue_assignee_with(&gh, &clone_url, number, &login)
+}
+
+/// Inject a resolved `gh` runner for authenticated-user discovery tests.
+pub(crate) fn get_github_authenticated_user_with_runner(
+    gh: Result<GhRunner, ProjectPullRequestMergeError>,
+) -> Result<GitHubIssueUserDto, ProjectPullRequestMergeError> {
+    let gh = gh.map_err(|error| remap_issue_write_error(error, ""))?;
+    get_github_authenticated_user_with(&gh)
+}
+
+fn parse_github_repo(clone_url: &str) -> Result<GitHubRepoRef, ProjectPullRequestMergeError> {
+    GitHubRepoRef::parse(clone_url)
+        .map_err(|message| ProjectPullRequestMergeError::new("github_issues_failed", message))
+}
+
+fn require_label_name(name: &str) -> Result<&str, ProjectPullRequestMergeError> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(ProjectPullRequestMergeError::new(
+            "github_issues_failed",
+            "Label name is required.",
+        ));
+    }
+    Ok(name)
+}
+
+fn require_assignee_login(login: &str) -> Result<&str, ProjectPullRequestMergeError> {
+    let login = login.trim();
+    if login.is_empty() {
+        return Err(ProjectPullRequestMergeError::new(
+            "github_issues_failed",
+            "Assignee login is required.",
+        ));
+    }
+    Ok(login)
+}
+
+fn require_issue_number(number: u64) -> Result<(), ProjectPullRequestMergeError> {
+    if number == 0 {
+        return Err(ProjectPullRequestMergeError::new(
+            "github_issues_failed",
+            "GitHub issue number must be greater than zero.",
+        ));
+    }
+    Ok(())
+}
+
+fn fetch_updated_issue(
+    gh: &GhRunner,
+    repo: &GitHubRepoRef,
+    number: u64,
+) -> Result<GitHubIssueDto, ProjectPullRequestMergeError> {
+    let path = format!("/repos/{}/issues/{number}", repo.slug());
+    let raw: GitHubIssueWire = github_api_json(gh, "GET", &path, ISSUE_ITEM_JQ, None)
+        .map_err(|error| remap_issue_write_error(error, ""))?;
+    map_issue(repo, raw).ok_or_else(|| {
+        ProjectPullRequestMergeError::new(
+            "github_issues_failed",
+            "GitHub returned an invalid updated issue.",
+        )
+    })
+}
+
+fn mutate_github_issue_assignees(
+    gh: &GhRunner,
+    clone_url: &str,
+    number: u64,
+    login: &str,
+    method: &str,
+) -> Result<GitHubIssueDto, ProjectPullRequestMergeError> {
+    let login = require_assignee_login(login)?;
+    require_issue_number(number)?;
+    let repo = parse_github_repo(clone_url)?;
+    gh.ensure_auth()
+        .map_err(|error| remap_issue_write_error(error, ""))?;
+    let input = github_json_input(&serde_json::json!({ "assignees": [login] }))?;
+    let path = format!("/repos/{}/issues/{number}/assignees", repo.slug());
+    let raw: GitHubIssueWire =
+        github_api_json(gh, method, &path, ISSUE_ITEM_JQ, Some(input.path()))
+            .map_err(|error| remap_issue_write_error(error, ""))?;
+    map_issue(&repo, raw).ok_or_else(|| {
+        ProjectPullRequestMergeError::new(
+            "github_issues_failed",
+            "GitHub returned an invalid updated issue.",
+        )
+    })
+}
+
+fn map_repo_labels(labels: Vec<GitHubRepoLabelWire>) -> Vec<GitHubRepoLabelDto> {
+    labels
+        .into_iter()
+        .filter_map(|label| {
+            if label.name.trim().is_empty() || !is_six_ascii_hex_color(&label.color) {
+                return None;
+            }
+            Some(GitHubRepoLabelDto {
+                name: label.name,
+                color: label.color,
+            })
+        })
+        .collect()
+}
+
+fn map_repo_assignees(users: Vec<GitHubIssueUserWire>) -> Vec<GitHubIssueUserDto> {
+    users
+        .into_iter()
+        .filter(|user| !user.login.trim().is_empty())
+        .map(|user| GitHubIssueUserDto {
+            login: user.login,
+            avatar_url: user.avatar_url,
+        })
+        .collect()
+}
+
+fn is_six_ascii_hex_color(color: &str) -> bool {
+    color.len() == 6 && color.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn remap_label_write_error(
+    error: ProjectPullRequestMergeError,
+    diagnostic: &str,
+) -> ProjectPullRequestMergeError {
+    let remapped = remap_issue_write_error(error, diagnostic);
+    let value = serde_json::to_value(&remapped).unwrap_or_default();
+    if value.get("code").and_then(|value| value.as_str()) == Some("github_issue_unavailable") {
+        let message = value
+            .get("message")
+            .and_then(|value| value.as_str())
+            .filter(|message| !message.is_empty())
+            .unwrap_or("GitHub issue request failed.");
+        return ProjectPullRequestMergeError::new("github_issues_failed", message);
+    }
+    remapped
 }
 
 fn remap_issue_write_error(
@@ -193,6 +517,32 @@ mod tests {
         permissions.set_mode(0o700);
         std::fs::set_permissions(&path, permissions).expect("chmod fake gh");
         (dir, path)
+    }
+
+    #[cfg(unix)]
+    fn fake_gh_dispatch() -> (tempfile::TempDir, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("create fake gh directory");
+        let path = dir.path().join("gh");
+        let issue = projected_issue(42, "open");
+        let script = format!(
+            "#!/bin/sh\nset -eu\nroot=${{0%/gh}}\nprintf '%s\\n' \"$*\" >> \"$root/calls\"\ncase \"$*\" in\n  *auth*status*) exit 0 ;;\nesac\nprevious=\"\"\nfor argument in \"$@\"; do\n  if [ \"$previous\" = \"--input\" ]; then cp \"$argument\" \"$root/input.json\"; fi\n  previous=\"$argument\"\ndone\ncase \"$*\" in\n  */labels*)\n    printf '%s' '[]'\n    ;;\n  *)\n    printf '%s' '{}'\n    ;;\nesac\n",
+            issue,
+        );
+        std::fs::write(&path, script).expect("write fake gh");
+        let mut permissions = std::fs::metadata(&path)
+            .expect("stat fake gh")
+            .permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&path, permissions).expect("chmod fake gh");
+        (dir, path)
+    }
+
+    fn label_wire(name: &str, color: &str) -> GitHubRepoLabelWire {
+        GitHubRepoLabelWire {
+            name: name.to_string(),
+            color: color.to_string(),
+        }
     }
 
     #[cfg(unix)]
@@ -337,5 +687,214 @@ mod tests {
         )
         .expect_err("missing");
         assert_eq!(error_code(&error), "github_cli_missing");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn label_delete_percent_encodes_path_and_refetches_issue() {
+        let (dir, path) = fake_gh_dispatch();
+        let gh = GhRunner::from_resolved(Some(path)).expect("runner");
+        let issue = remove_github_issue_label_with(
+            &gh,
+            "https://github.com/acme/app",
+            42,
+            "good first #issue",
+        )
+        .expect("remove label");
+        assert_eq!(issue.number, 42);
+        let calls = std::fs::read_to_string(dir.path().join("calls")).expect("calls");
+        assert!(calls.contains("/repos/acme/app/issues/42/labels/good%20first%20%23issue"));
+        assert!(calls.contains("--method GET /repos/acme/app/issues/42"));
+        assert!(!calls.contains("labels/good first"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn assignee_add_sends_login_in_json_body() {
+        let (dir, path) = fake_gh_dispatch();
+        let gh = GhRunner::from_resolved(Some(path)).expect("runner");
+        add_github_issue_assignees_with(&gh, "https://github.com/acme/app", 42, "linus")
+            .expect("assign");
+        let input: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("input.json")).expect("input"),
+        )
+        .expect("json");
+        assert_eq!(input, json!({ "assignees": ["linus"] }));
+        let calls = std::fs::read_to_string(dir.path().join("calls")).expect("calls");
+        assert!(calls.contains("/repos/acme/app/issues/42/assignees"));
+        assert!(!calls.contains("/assignees/linus"));
+    }
+
+    #[test]
+    fn label_catalog_accepts_only_nonempty_names_and_six_hex_colors() {
+        let labels = map_repo_labels(vec![
+            label_wire("bug", "d73a4a"),
+            label_wire("docs", "0075ca"),
+            label_wire("bad", "red"),
+            label_wire("hash", "#d73a4a"),
+            label_wire("   ", "ffffff"),
+        ]);
+        assert_eq!(
+            labels
+                .into_iter()
+                .map(|label| (label.name, label.color))
+                .collect::<Vec<_>>(),
+            vec![
+                ("bug".into(), "d73a4a".into()),
+                ("docs".into(), "0075ca".into())
+            ],
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn label_rejects_blank_name_before_running_gh() {
+        let gh = GhRunner::from_resolved(Some(PathBuf::from("/bin/false"))).expect("runner");
+        let error = add_github_issue_labels_with(&gh, "https://github.com/acme/app", 42, "   ")
+            .expect_err("blank");
+        assert_eq!(error_code(&error), "github_issues_failed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn assignee_rejects_blank_login_and_zero_before_running_gh() {
+        let gh = GhRunner::from_resolved(Some(PathBuf::from("/bin/false"))).expect("runner");
+        let blank = add_github_issue_assignees_with(&gh, "https://github.com/acme/app", 42, "   ")
+            .expect_err("blank");
+        let zero =
+            remove_github_issue_assignee_with(&gh, "https://github.com/acme/app", 0, "linus")
+                .expect_err("zero");
+        assert_eq!(error_code(&blank), "github_issues_failed");
+        assert_eq!(error_code(&zero), "github_issues_failed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn user_maps_login_and_avatar() {
+        let output = json!({ "login": "ada", "avatar_url": "https://example.com/ada" });
+        let (_dir, path) = fake_gh_input(&output, 0, "");
+        let gh = GhRunner::from_resolved(Some(path)).expect("runner");
+        let user = get_github_authenticated_user_with(&gh).expect("user");
+        assert_eq!(user.login, "ada");
+        assert_eq!(user.avatar_url, "https://example.com/ada");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn catalog_404_is_repo_unavailable() {
+        let (_dir, path) = fake_gh_input(&json!([]), 1, "gh: HTTP 404");
+        let gh = GhRunner::from_resolved(Some(path)).expect("runner");
+        let error = list_github_repo_labels_with(&gh, "https://github.com/acme/app")
+            .expect_err("missing repo");
+        assert_eq!(error_code(&error), "github_repo_unavailable");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn label_write_404_is_issues_failed() {
+        let (_dir, path) = fake_gh_input(&json!([]), 1, "gh: HTTP 404");
+        let gh = GhRunner::from_resolved(Some(path)).expect("runner");
+        let error =
+            remove_github_issue_label_with(&gh, "https://github.com/acme/app", 42, "missing")
+                .expect_err("missing label");
+        assert_eq!(error_code(&error), "github_issues_failed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn assignee_remove_sends_login_in_json_body() {
+        let output = projected_issue(42, "open");
+        let (dir, path) = fake_gh_input(&output, 0, "");
+        let gh = GhRunner::from_resolved(Some(path)).expect("runner");
+        remove_github_issue_assignee_with(&gh, "https://github.com/acme/app", 42, "linus")
+            .expect("unassign");
+        let input: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("input.json")).expect("input"),
+        )
+        .expect("json");
+        assert_eq!(input, json!({ "assignees": ["linus"] }));
+        let calls = std::fs::read_to_string(dir.path().join("calls")).expect("calls");
+        assert!(calls.contains("--method DELETE /repos/acme/app/issues/42/assignees"));
+        assert!(!calls.contains("/assignees/linus"));
+    }
+
+    #[test]
+    fn user_wrapper_maps_missing_discovered_cli() {
+        let error = get_github_authenticated_user_with_runner(GhRunner::from_resolved(None))
+            .expect_err("missing");
+        assert_eq!(error_code(&error), "github_cli_missing");
+    }
+
+    #[test]
+    fn catalog_and_mutation_wrappers_map_missing_discovered_cli() {
+        let clone_url = "https://github.com/acme/app".to_string();
+        assert_eq!(
+            error_code(
+                &list_github_repo_labels_with_runner(
+                    clone_url.clone(),
+                    GhRunner::from_resolved(None),
+                )
+                .expect_err("labels")
+            ),
+            "github_cli_missing",
+        );
+        assert_eq!(
+            error_code(
+                &add_github_issue_labels_with_runner(
+                    clone_url.clone(),
+                    42,
+                    "bug".to_string(),
+                    GhRunner::from_resolved(None),
+                )
+                .expect_err("add label")
+            ),
+            "github_cli_missing",
+        );
+        assert_eq!(
+            error_code(
+                &remove_github_issue_label_with_runner(
+                    clone_url.clone(),
+                    42,
+                    "bug".to_string(),
+                    GhRunner::from_resolved(None),
+                )
+                .expect_err("remove label")
+            ),
+            "github_cli_missing",
+        );
+        assert_eq!(
+            error_code(
+                &list_github_repo_assignees_with_runner(
+                    clone_url.clone(),
+                    GhRunner::from_resolved(None),
+                )
+                .expect_err("assignees")
+            ),
+            "github_cli_missing",
+        );
+        assert_eq!(
+            error_code(
+                &add_github_issue_assignees_with_runner(
+                    clone_url.clone(),
+                    42,
+                    "linus".to_string(),
+                    GhRunner::from_resolved(None),
+                )
+                .expect_err("add assignee")
+            ),
+            "github_cli_missing",
+        );
+        assert_eq!(
+            error_code(
+                &remove_github_issue_assignee_with_runner(
+                    clone_url,
+                    42,
+                    "linus".to_string(),
+                    GhRunner::from_resolved(None),
+                )
+                .expect_err("remove assignee")
+            ),
+            "github_cli_missing",
+        );
     }
 }
