@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   cloneProjectRepository,
+  getGithubAheadBehind,
   getProjectRepoSyncStatus,
   pullProjectLocalRepository,
   pushProjectLocalRepository,
@@ -10,6 +11,7 @@ import type {
   ProjectPullRequest,
   Repository as Project,
 } from "@/features/projects/hooks";
+import { isGitHubCloneUrl } from "@/features/projects/lib/projectGitError";
 import { useProjectRepoHost } from "@/features/projects/useProjectRepoHost";
 import { useFocusedRefetchInterval } from "@/shared/lib/useDocumentVisible";
 import { publishProjectPullRequestUpdate } from "./pullRequestMutations";
@@ -52,6 +54,53 @@ export function useProjectRepoSyncStatusQuery(
     staleTime: 10_000,
     refetchInterval,
     refetchOnWindowFocus: false,
+    retry: 1,
+  });
+}
+
+/** Query local-vs-GitHub ahead/behind only when both SHAs are known. */
+export function useGithubAheadBehindQuery(input: {
+  projectId?: string;
+  cloneUrl?: string | null;
+  branch?: string | null;
+  localSha?: string | null;
+  remoteSha?: string | null;
+  enabled: boolean;
+}) {
+  return useQuery({
+    enabled: Boolean(
+      input.enabled &&
+        isGitHubCloneUrl(input.cloneUrl) &&
+        input.branch &&
+        input.localSha &&
+        input.remoteSha,
+    ),
+    queryKey: [
+      "project",
+      input.projectId ?? "none",
+      "github-ahead-behind",
+      input.cloneUrl ?? "no-clone",
+      input.branch ?? "default",
+      input.localSha ?? "no-local",
+      input.remoteSha ?? "no-remote",
+    ],
+    queryFn: () => {
+      if (
+        !input.cloneUrl ||
+        !input.branch ||
+        !input.localSha ||
+        !input.remoteSha
+      ) {
+        throw new Error("GitHub compare is missing a SHA.");
+      }
+      return getGithubAheadBehind({
+        cloneUrl: input.cloneUrl,
+        branch: input.branch,
+        localSha: input.localSha,
+        remoteSha: input.remoteSha,
+      });
+    },
+    staleTime: 10_000,
     retry: 1,
   });
 }

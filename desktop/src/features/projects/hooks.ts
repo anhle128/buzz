@@ -6,6 +6,7 @@ import { getCachedRelayOrigin } from "@/shared/lib/mediaUrl";
 import { signRelayEvent } from "@/shared/api/tauri";
 import { getIdentity } from "@/shared/api/tauriIdentity";
 import {
+  getGithubRepositorySnapshot,
   getProjectLocalRepoDiff,
   getProjectRepoDiff,
   getProjectLocalRepoSnapshot,
@@ -24,6 +25,8 @@ import {
   KIND_GIT_STATUS_OPEN,
   KIND_TEXT_NOTE,
 } from "@/shared/constants/kinds";
+import { isGitHubCloneUrl } from "@/features/projects/lib/projectGitError";
+import { fetchProjectRepoSnapshotWith } from "@/features/projects/lib/projectGithubSnapshot";
 import { fetchRepoState } from "@/features/projects/lib/projectRepoState";
 export type { RepoState } from "@/features/projects/lib/projectRepoState";
 import type {
@@ -396,19 +399,24 @@ async function fetchProjectRepoSnapshot(
   pullRequest?: ProjectPullRequest | null,
   tag?: { name: string; commit: string } | null,
 ): Promise<ProjectRepoSnapshot | null> {
-  const cloneUrl = pullRequest?.cloneUrls[0] ?? project.cloneUrls[0];
-  if (!cloneUrl) return null;
+  return fetchProjectRepoSnapshotWith(project, branchName, pullRequest, tag, {
+    loadGithub: getGithubRepositorySnapshot,
+    loadBuzz: async () => {
+      const cloneUrl = pullRequest?.cloneUrls[0] ?? project.cloneUrls[0];
+      if (!cloneUrl) return null;
 
-  return getProjectRepoSnapshot({
-    cloneUrl,
-    defaultBranch: branchName ?? project.defaultBranch,
-    baseBranch: project.defaultBranch,
-    targetCommit: tag?.commit ?? pullRequest?.commit ?? null,
-    targetRef: tag
-      ? `refs/tags/${tag.name}`
-      : pullRequest
-        ? `refs/nostr/${pullRequest.id}`
-        : null,
+      return getProjectRepoSnapshot({
+        cloneUrl,
+        defaultBranch: branchName ?? project.defaultBranch,
+        baseBranch: project.defaultBranch,
+        targetCommit: tag?.commit ?? pullRequest?.commit ?? null,
+        targetRef: tag
+          ? `refs/tags/${tag.name}`
+          : pullRequest
+            ? `refs/nostr/${pullRequest.id}`
+            : null,
+      });
+    },
   });
 }
 
@@ -629,6 +637,11 @@ export function useProjectRepoSnapshotQuery(
   enabled = true,
 ) {
   const selectedBranch = branchName ?? project?.defaultBranch ?? null;
+  const projectCloneUrl = project?.cloneUrls[0] ?? null;
+  const snapshotCloneUrl =
+    projectCloneUrl && isGitHubCloneUrl(projectCloneUrl)
+      ? projectCloneUrl
+      : (pullRequest?.cloneUrls[0] ?? projectCloneUrl);
 
   return useQuery({
     enabled: Boolean(enabled && project?.cloneUrls[0]),
@@ -636,6 +649,7 @@ export function useProjectRepoSnapshotQuery(
       "project",
       project?.id ?? "none",
       "repo-snapshot",
+      snapshotCloneUrl ?? "no-clone",
       selectedBranch ?? "default",
       pullRequest?.id ?? "none",
       pullRequest?.commit ?? "none",

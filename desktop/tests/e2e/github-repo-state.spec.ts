@@ -77,4 +77,10 @@ test("GitHub auth recovery does not fall back to announced main", async ({
     selectionRow.getByRole("button").filter({ hasText: /^main$/ }),
   ).toHaveCount(0);
   await expect(selectionRow.getByText("—")).toBeVisible();
+  const commands = await page.evaluate(
+    () => window.__BUZZ_E2E_COMMANDS__ ?? [],
+  );
+  expect(commands).toContain("get_github_repository_state");
+  expect(commands).not.toContain("get_github_repository_snapshot");
+  expect(commands).not.toContain("get_github_ahead_behind");
 });

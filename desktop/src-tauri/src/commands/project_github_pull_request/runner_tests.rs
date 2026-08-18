@@ -432,6 +432,26 @@ wait
 
 #[cfg(unix)]
 #[test]
+fn gh_runner_run_with_limit_keeps_more_than_default_stream_cap() {
+    let (_dir, binary) = fake_gh(
+        r#"
+head -c 200000 /dev/zero | tr '\0' r
+"#,
+    );
+    let runner = GhRunner {
+        binary,
+        timeout: Duration::from_secs(5),
+    };
+    let output = runner
+        .run_with_limit(&[], 256 * 1024)
+        .expect("drain fake gh output");
+    assert!(output.status.success());
+    assert_eq!(output.stdout.len(), 200_000);
+    assert!(output.stdout.bytes().all(|byte| byte == b'r'));
+}
+
+#[cfg(unix)]
+#[test]
 fn gh_runner_kills_and_reaps_a_timed_out_child() {
     let (_dir, binary) = fake_gh(
         r#"
