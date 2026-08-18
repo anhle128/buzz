@@ -13,6 +13,7 @@ import { ViewLoadingFallback } from "@/shared/ui/ViewLoadingFallback";
 
 type ChannelRouteSearch = {
   agentSession?: string;
+  agentSessionChannel?: string;
   /**
    * When set, the composer on mount will auto-submit its loaded draft once,
    * then clear this param. Value is the draft key that was loaded so the
@@ -31,11 +32,13 @@ function nonEmptyString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
-function validateChannelSearch(
+/** Validate and normalize channel-route search params. */
+export function validateChannelSearch(
   search: Record<string, unknown>,
 ): ChannelRouteSearch {
   return {
     agentSession: nonEmptyString(search.agentSession),
+    agentSessionChannel: nonEmptyString(search.agentSessionChannel),
     autoSend: nonEmptyString(search.autoSend),
     messageId: nonEmptyString(search.messageId),
     profile: nonEmptyString(search.profile),
