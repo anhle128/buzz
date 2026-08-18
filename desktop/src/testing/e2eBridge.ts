@@ -1268,6 +1268,15 @@ declare global {
       ahead?: number;
       behind?: number;
     };
+    /** Structured error returned by GitHub issue mock commands. */
+    __BUZZ_E2E_GITHUB_ISSUES_ERROR__?: { code: string; message: string };
+    /** Structured error returned only by the GitHub comment mock command. */
+    __BUZZ_E2E_GITHUB_ISSUE_COMMENTS_ERROR__?: {
+      code: string;
+      message: string;
+    };
+    /** Created GitHub issue DTOs retained for later list calls. */
+    __BUZZ_E2E_GITHUB_CREATED_ISSUES__?: Array<Record<string, unknown>>;
     /** Overrides the first mock repository owner for delegated-owner tests. */
     __BUZZ_E2E_PROJECT_OWNER_OVERRIDE__?: string;
     __BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__?: string;
@@ -10302,6 +10311,7 @@ export function maybeInstallE2eTauriMocks() {
   window.__BUZZ_E2E_COMMANDS__ = [];
   window.__BUZZ_E2E_COMMAND_PAYLOADS__ = [];
   window.__BUZZ_E2E_COMMAND_LOG__ = [];
+  window.__BUZZ_E2E_GITHUB_CREATED_ISSUES__ = [];
   mockMediaProxyPort = config.mock?.mediaProxyInitiallyUnavailable
     ? 0
     : MOCK_MEDIA_PROXY_PORT;
@@ -11636,6 +11646,76 @@ export function maybeInstallE2eTauriMocks() {
           return { status: "compared", ahead: 0, behind: 0 };
         }
         return { status: "unpushed" };
+      }
+      case "list_github_issues": {
+        if (window.__BUZZ_E2E_GITHUB_ISSUES_ERROR__) {
+          throw window.__BUZZ_E2E_GITHUB_ISSUES_ERROR__;
+        }
+        const input = payload as { state?: string };
+        if (input.state !== "open")
+          throw new Error("Expected GitHub state=open");
+        return {
+          issues: [
+            {
+              number: 42,
+              title: "Broken login",
+              body: "Repro steps",
+              state: "open",
+              html_url: "https://github.com/acme/app/issues/42",
+              comments: 2,
+              created_at: 1_704_166_645,
+              updated_at: 1_704_253_045,
+              user: { login: "ada", avatar_url: "" },
+              labels: ["bug"],
+              assignees: [{ login: "linus", avatar_url: "" }],
+            },
+            ...(window.__BUZZ_E2E_GITHUB_CREATED_ISSUES__ ?? []),
+          ],
+          has_more: false,
+        };
+      }
+      case "create_github_issue": {
+        if (window.__BUZZ_E2E_GITHUB_ISSUES_ERROR__) {
+          throw window.__BUZZ_E2E_GITHUB_ISSUES_ERROR__;
+        }
+        const input = payload as { title?: string; body?: string };
+        const created = {
+          number: 43,
+          title: input.title ?? "Untitled",
+          body: input.body ?? "",
+          state: "open",
+          html_url: "https://github.com/acme/app/issues/43",
+          comments: 0,
+          created_at: 1_704_253_100,
+          updated_at: 1_704_253_100,
+          user: { login: "ada", avatar_url: "" },
+          labels: [],
+          assignees: [],
+        };
+        window.__BUZZ_E2E_GITHUB_CREATED_ISSUES__ = [
+          ...(window.__BUZZ_E2E_GITHUB_CREATED_ISSUES__ ?? []),
+          created,
+        ];
+        return created;
+      }
+      case "list_github_issue_comments": {
+        if (window.__BUZZ_E2E_GITHUB_ISSUE_COMMENTS_ERROR__) {
+          throw window.__BUZZ_E2E_GITHUB_ISSUE_COMMENTS_ERROR__;
+        }
+        return [
+          {
+            id: 2,
+            body: "API-order first comment.",
+            created_at: 1_704_253_100,
+            user: { login: "grace", avatar_url: "" },
+          },
+          {
+            id: 10,
+            body: "API-order second comment.",
+            created_at: 1_704_253_100,
+            user: { login: "linus", avatar_url: "" },
+          },
+        ];
       }
       case "get_project_repo_snapshot":
         return {
