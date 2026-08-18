@@ -19,6 +19,7 @@ import {
 } from "@/features/projects/hooks";
 import {
   useCloneProjectRepositoryMutation,
+  useGithubAheadBehindQuery,
   useProjectRepoSyncStatusQuery,
   usePullProjectLocalRepositoryMutation,
   usePushProjectLocalRepositoryMutation,
@@ -59,6 +60,8 @@ import {
   projectBranchOptionsFromSync,
   resolveProjectDefaultBranch,
 } from "@/features/projects/lib/projectBranches";
+import { githubAheadBehindCounts } from "@/features/projects/lib/projectGithubAheadBehind";
+import { githubRemoteSnapshotEnabled } from "@/features/projects/lib/projectGithubSnapshot";
 import { isGitHubCloneUrl } from "@/features/projects/lib/projectGitError";
 import { githubRepositoryStateUnresolved } from "@/features/projects/lib/projectRepoState";
 import { normalizeRepositoryUrl } from "@/features/projects/lib/projectsViewHelpers";
@@ -155,7 +158,6 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
   const pullRequestsQuery = useProjectPullRequestsQuery(repository);
   // GitHub pending/error must not fall back to the announcement default ("main").
   const githubHosted = isGitHubCloneUrl(repository?.cloneUrls[0]);
-  const githubStateFailed = githubHosted && repoStateQuery.isError;
   const githubStateUnresolved = githubRepositoryStateUnresolved(
     githubHosted,
     repoStateQuery,
@@ -270,12 +272,17 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
   const [repoSource, setRepoSource] = React.useState<"remote" | "local">(
     "remote",
   );
+  const snapshotEnabled = githubRemoteSnapshotEnabled({
+    cloneUrl: repository?.cloneUrls[0],
+    buzzHost: repoRemote.host.kind === "buzz",
+    githubStateReady: repoStateQuery.isSuccess,
+  });
   const repoSnapshotQuery = useProjectRepoSnapshotQuery(
     repository,
     activeBranch,
     selectedTag ? null : selectedBranchPullRequest,
     activeTag,
-    repoRemote.host.kind === "buzz",
+    snapshotEnabled,
   );
   const repoDiffQuery = useProjectRepoDiffQuery(
     repository,
@@ -301,6 +308,20 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
     activeCommunity?.reposDir,
     activeBranch,
   );
+  const activeRemoteSha =
+    repoStateQuery.data?.branches.find((item) => item.name === activeBranch)
+      ?.commit ?? null;
+  const localHeadSha =
+    localRepoSnapshotQuery.data?.snapshot.latestCommit?.hash ?? null;
+  const githubAheadBehindQuery = useGithubAheadBehindQuery({
+    projectId: repository?.id,
+    cloneUrl: repository?.cloneUrls[0],
+    branch: activeBranch,
+    localSha: localHeadSha,
+    remoteSha: activeRemoteSha,
+    enabled: githubHosted && repoStateQuery.isSuccess,
+  });
+  const githubCounts = githubAheadBehindCounts(githubAheadBehindQuery.data);
   const repoSyncStatusQuery = useProjectRepoSyncStatusQuery(
     repository,
     activeCommunity?.reposDir,
@@ -394,21 +415,46 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
     localHead: repoSyncStatusQuery.data?.localHead,
   });
   const handleFetchRepo = React.useCallback(async () => {
-    const results = await Promise.all([
-      repoSnapshotQuery.refetch(),
-      repoStateQuery.refetch(),
-      repoSyncStatusQuery.refetch(),
-    ]);
+    const tasks = githubHosted
+      ? [
+          repoStateQuery.refetch(),
+          ...(repoStateQuery.isError ? [] : [repoSnapshotQuery.refetch()]),
+          ...(githubAheadBehindQuery.isFetched ||
+          (localHeadSha && activeRemoteSha)
+            ? [githubAheadBehindQuery.refetch()]
+            : []),
+        ]
+      : [
+          repoSnapshotQuery.refetch(),
+          repoStateQuery.refetch(),
+          repoSyncStatusQuery.refetch(),
+        ];
+    const results = await Promise.all(tasks);
     const error = results.find((result) => result.error)?.error;
     if (error) {
-      toast.error("Could not fetch repository.", {
-        description:
-          error instanceof Error ? error.message : "The Git fetch failed.",
-      });
+      toast.error(
+        githubHosted
+          ? "Could not refresh GitHub repository."
+          : "Could not fetch repository.",
+        {
+          description:
+            error instanceof Error ? error.message : "The refresh failed.",
+        },
+      );
       return;
     }
     toast.success("Remote state refreshed.");
-  }, [repoSnapshotQuery, repoStateQuery, repoSyncStatusQuery]);
+  }, [
+    activeRemoteSha,
+    githubAheadBehindQuery.isFetched,
+    githubAheadBehindQuery.refetch,
+    githubHosted,
+    localHeadSha,
+    repoSnapshotQuery.refetch,
+    repoStateQuery.isError,
+    repoStateQuery.refetch,
+    repoSyncStatusQuery.refetch,
+  ]);
   // Compact branch + remote/local controls shared by the readme and Files
   // tab headers.
   const filesSourceControls: RepoSourceHeaderControls = {
@@ -418,10 +464,14 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
     tagOptions: repoTags,
     onBranchChange: handleBranchChange,
     onTagChange: handleTagChange,
-    onCreateBranch: () => branchActions.setCreateOpen(true),
+    onCreateBranch: githubHosted
+      ? undefined
+      : () => branchActions.setCreateOpen(true),
     createBranchDisabled: branchActions.createPending || !activeBranchCommit,
     createBranchTitle: createBranchReason ?? "Create a remote branch",
-    onDeleteBranch: () => branchActions.setDeleteOpen(true),
+    onDeleteBranch: githubHosted
+      ? undefined
+      : () => branchActions.setDeleteOpen(true),
     deleteBranchDisabled:
       branchActions.deletePending || Boolean(deleteBranchReason),
     deleteBranchTitle: deleteBranchReason ?? "Delete this remote branch",
@@ -438,6 +488,7 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
         ? "Local"
         : "Local missing",
     ...repoRemote.controls,
+    githubHosted,
     onCloneLocal:
       !selectedTag && repository?.cloneUrls[0] && repoRemote.canCloneLocally
         ? () => {
@@ -445,44 +496,70 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
           }
         : undefined,
     clonePending: cloneRepoMutation.isPending,
-    canPush: !selectedTag && (repoSyncStatusQuery.data?.canPush ?? false),
-    onPush: selectedTag
-      ? undefined
-      : () => {
-          void handlePushLocalRepo();
-        },
+    canPush: githubHosted
+      ? false
+      : !selectedTag && (repoSyncStatusQuery.data?.canPush ?? false),
+    onPush:
+      githubHosted || selectedTag
+        ? undefined
+        : () => {
+            void handlePushLocalRepo();
+          },
     pushDisabled:
       pushLocalRepoMutation.isPending || !repoSyncStatusQuery.data?.canPush,
     pushPending: pushLocalRepoMutation.isPending,
     pushTitle:
       repoSyncStatusQuery.data?.pushBlockReason ??
       pushPullTitle("Push", repoSyncStatusQuery.data?.aheadCount, "local"),
-    canPull: !selectedTag && (repoSyncStatusQuery.data?.canPull ?? false),
-    onPull: selectedTag
-      ? undefined
-      : () => {
-          void handlePullLocalRepo();
-        },
+    canPull: githubHosted
+      ? false
+      : !selectedTag && (repoSyncStatusQuery.data?.canPull ?? false),
+    onPull:
+      githubHosted || selectedTag
+        ? undefined
+        : () => {
+            void handlePullLocalRepo();
+          },
     pullDisabled:
       pullLocalRepoMutation.isPending || !repoSyncStatusQuery.data?.canPull,
     pullPending: pullLocalRepoMutation.isPending,
     pullTitle:
       repoSyncStatusQuery.data?.pullBlockReason ??
       pushPullTitle("Pull", repoSyncStatusQuery.data?.behindCount, "remote"),
-    aheadCount: repoSyncStatusQuery.data?.aheadCount ?? null,
-    behindCount: repoSyncStatusQuery.data?.behindCount ?? null,
+    aheadCount: githubHosted
+      ? (githubCounts?.ahead ?? null)
+      : (repoSyncStatusQuery.data?.aheadCount ?? null),
+    behindCount: githubHosted
+      ? (githubCounts?.behind ?? null)
+      : (repoSyncStatusQuery.data?.behindCount ?? null),
     onFetch: () => {
       void handleFetchRepo();
     },
-    fetchPending:
-      repoSnapshotQuery.isFetching ||
-      repoStateQuery.isFetching ||
-      repoSyncStatusQuery.isFetching,
-    fetchTitle:
-      repoSyncStatusQuery.data?.pullBlockReason ?? "Check for remote changes",
-    showGithubStateRecovery: githubStateFailed,
-    stateError: repoStateQuery.error,
+    fetchPending: githubHosted
+      ? repoSnapshotQuery.isFetching ||
+        repoStateQuery.isFetching ||
+        githubAheadBehindQuery.isFetching
+      : repoSnapshotQuery.isFetching ||
+        repoStateQuery.isFetching ||
+        repoSyncStatusQuery.isFetching,
+    fetchTitle: githubHosted
+      ? "Refresh GitHub README, files, and compare"
+      : (repoSyncStatusQuery.data?.pullBlockReason ??
+        "Check for remote changes"),
+    showGithubStateRecovery:
+      githubHosted &&
+      (repoStateQuery.isError ||
+        (repoStateQuery.isSuccess && repoSnapshotQuery.isError)),
+    stateError: repoStateQuery.error ?? (githubHosted ? repoSnapshotQuery.error : undefined),
     onRetryState: () => {
+      if (githubHosted && repoStateQuery.isError) {
+        void repoStateQuery.refetch();
+        return;
+      }
+      if (githubHosted) {
+        void repoSnapshotQuery.refetch();
+        return;
+      }
       void repoStateQuery.refetch();
     },
   };
@@ -504,6 +581,7 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
       if (currentSource === "local" && !hasLocalCheckout) return "remote";
       if (
         currentSource === "remote" &&
+        !githubHosted &&
         !hasRemoteSnapshot &&
         hasLocalCheckout
       ) {
@@ -511,7 +589,7 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
       }
       return currentSource;
     });
-  }, [hasLocalCheckout, hasRemoteSnapshot, selectedTag]);
+  }, [githubHosted, hasLocalCheckout, hasRemoteSnapshot, selectedTag]);
   const peoplePubkeys = React.useMemo(() => {
     if (!repository) return [];
     // Include PR authors/updaters so commit rows can resolve avatars for
@@ -981,7 +1059,10 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
                 selectedPullRequestId={selectedPullRequestId}
                 snapshot={repoSnapshotQuery.data}
                 snapshotError={repoSnapshotQuery.error}
-                snapshotLoading={repoSnapshotQuery.isLoading}
+                snapshotLoading={
+                  repoSnapshotQuery.isLoading ||
+                  (githubHosted && repoStateQuery.isPending)
+                }
                 sourceControls={filesSourceControls}
                 viewerGitIdentity={viewerGitIdentity}
               />

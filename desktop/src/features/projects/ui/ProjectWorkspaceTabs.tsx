@@ -26,6 +26,7 @@ import {
   type ViewerGitIdentity,
 } from "@/features/projects/lib/projectContributorMatching";
 import { repositoryDiscussionQuery } from "@/features/projects/lib/discussionChannels";
+import { githubSplashHost } from "@/features/projects/lib/projectGithubRemoteView";
 import type { ProjectRepoHost } from "@/features/projects/lib/projectRepoHost";
 import {
   projectRepoUnavailableReason,
@@ -194,13 +195,15 @@ export function WorkspaceTabs({
     displayedSnapshot?.contributors ?? repoContributors;
   const files = displayedSnapshot?.files ?? [];
   const readmeFile = React.useMemo(() => findReadmeFile(files), [files]);
-  const externalHost =
-    repoSource === "remote" && repoHost.kind === "external"
-      ? repoHost.host
-      : undefined;
+  const splashHost = githubSplashHost({
+    repoSource,
+    hostKind: repoHost.kind,
+    host: repoHost.kind === "external" ? repoHost.host : undefined,
+    cloneUrl: project.cloneUrls[0],
+  });
   const gitDataState: GitDataState = displayedSnapshotLoading
     ? "checking"
-    : externalHost || displayedSnapshotError || !displayedSnapshot
+    : splashHost || displayedSnapshotError || !displayedSnapshot
       ? "unavailable"
       : files.length === 0
         ? "empty"
@@ -210,7 +213,7 @@ export function WorkspaceTabs({
   // binding and the viewer's memberships before it reaches the UI copy.
   const memberChannelIds = useMemberChannelIds();
   const unavailableReason =
-    gitDataState === "unavailable" && !externalHost
+    gitDataState === "unavailable" && !splashHost
       ? refineRepoUnavailableReason({
           reason: projectRepoUnavailableReason(displayedSnapshotError),
           repositoryChannelId: project.channelId,
@@ -520,8 +523,8 @@ export function WorkspaceTabs({
           <ProjectOverviewPanel
             accessChannelId={project.channelId}
             contributors={displayedContributors}
-            externalHost={externalHost}
-            externalUrl={externalHost ? sourceControls?.externalUrl : null}
+            externalHost={splashHost}
+            externalUrl={splashHost ? sourceControls?.externalUrl : null}
             files={files}
             gitDataState={gitDataState}
             hideReadmeHeader
@@ -621,8 +624,8 @@ export function WorkspaceTabs({
             profiles={profiles}
             snapshot={displayedSnapshot}
             unavailableMessage={
-              externalHost
-                ? `Not mirrored on Buzz. Repository files are hosted on ${externalHost}.`
+              splashHost
+                ? `Not mirrored on Buzz. Repository files are hosted on ${splashHost}.`
                 : undefined
             }
           />

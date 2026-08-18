@@ -513,6 +513,32 @@ export async function getGithubRepositorySnapshot(input: {
   }
 }
 
+/** GitHub compare status for the selected local and remote commits. */
+export type GithubAheadBehind = {
+  status: "compared" | "unpushed";
+  ahead?: number;
+  behind?: number;
+};
+
+/** Compare a local HEAD against the loaded GitHub branch tip. */
+export async function getGithubAheadBehind(input: {
+  cloneUrl: string;
+  branch: string;
+  localSha: string;
+  remoteSha: string;
+}): Promise<GithubAheadBehind> {
+  try {
+    return await invokeTauri<GithubAheadBehind>("get_github_ahead_behind", {
+      cloneUrl: input.cloneUrl,
+      branch: input.branch,
+      localSha: input.localSha,
+      remoteSha: input.remoteSha,
+    });
+  } catch (error) {
+    throw parseProjectPullRequestMergeError(error) ?? error;
+  }
+}
+
 type RawProjectRepoMergeResult = {
   message: string;
   merge_commit: string;

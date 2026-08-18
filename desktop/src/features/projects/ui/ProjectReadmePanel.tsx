@@ -36,7 +36,12 @@ export function findReadmeFile(files: ProjectRepoFile[]) {
     /^readme(?:\.(?:md|markdown|mdx|txt))?$/i.test(baseName(file.path)),
   );
 
-  return readmes.find((file) => !file.path.includes("/")) ?? readmes[0] ?? null;
+  return (
+    readmes.find((file) => !file.path.includes("/")) ??
+    readmes[0] ??
+    files.find((file) => Boolean(file.previewContent)) ??
+    null
+  );
 }
 
 function decodeHtmlEntities(value: string) {
