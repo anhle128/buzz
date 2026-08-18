@@ -542,6 +542,78 @@ export async function getGithubAheadBehind(input: {
   }
 }
 
+/** GitHub login identity returned by the native issue commands. */
+export type GithubIssueUserDto = { login: string; avatar_url: string };
+
+/** Bounded GitHub issue returned by the native issue commands. */
+export type GithubIssueDto = {
+  number: number;
+  title: string;
+  body: string;
+  state: "open" | "closed";
+  html_url: string;
+  comments: number;
+  created_at: number;
+  updated_at: number;
+  user: GithubIssueUserDto;
+  labels: string[];
+  assignees: GithubIssueUserDto[];
+};
+
+/** One bounded GitHub issue page. */
+export type GithubIssueListDto = {
+  issues: GithubIssueDto[];
+  has_more: boolean;
+};
+
+/** One read-only GitHub issue comment. */
+export type GithubIssueCommentDto = {
+  id: number;
+  body: string;
+  created_at: number;
+  user: GithubIssueUserDto;
+};
+
+/** List the first GitHub issue page for a github.com clone URL. */
+export async function listGithubIssues(input: {
+  cloneUrl: string;
+  state: "open" | "closed";
+}): Promise<GithubIssueListDto> {
+  try {
+    return await invokeTauri<GithubIssueListDto>("list_github_issues", input);
+  } catch (error) {
+    throw parseProjectPullRequestMergeError(error) ?? error;
+  }
+}
+
+/** Create one GitHub issue for a github.com clone URL. */
+export async function createGithubIssue(input: {
+  cloneUrl: string;
+  title: string;
+  body: string;
+}): Promise<GithubIssueDto> {
+  try {
+    return await invokeTauri<GithubIssueDto>("create_github_issue", input);
+  } catch (error) {
+    throw parseProjectPullRequestMergeError(error) ?? error;
+  }
+}
+
+/** List the first read-only comment page for one GitHub issue. */
+export async function listGithubIssueComments(input: {
+  cloneUrl: string;
+  number: number;
+}): Promise<GithubIssueCommentDto[]> {
+  try {
+    return await invokeTauri<GithubIssueCommentDto[]>(
+      "list_github_issue_comments",
+      input,
+    );
+  } catch (error) {
+    throw parseProjectPullRequestMergeError(error) ?? error;
+  }
+}
+
 type RawProjectRepoMergeResult = {
   message: string;
   merge_commit: string;

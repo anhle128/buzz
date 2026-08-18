@@ -137,3 +137,30 @@ test("issue and pull request links require a repo coordinate and hex id", () => 
     null,
   );
 });
+
+test("issueShareLink accepts only a canonical GitHub issue URL", () => {
+  const base = { id: "42", repoAddress: REPO_ADDRESS };
+  assert.equal(
+    issueShareLink({
+      ...base,
+      htmlUrl: "https://github.com/acme/app/issues/42",
+    }),
+    "https://github.com/acme/app/issues/42",
+  );
+  for (const htmlUrl of [
+    "https://evil.example/acme/app/issues/42",
+    "https://github.com/acme/app/issues/42?x=1",
+    "https://github.com/acme/app/issues/42#x",
+    "https://github.com/acme/app/issues/42/",
+    "https://github.com/acme/app/pull/42",
+  ]) {
+    assert.equal(issueShareLink({ ...base, htmlUrl }), null, htmlUrl);
+  }
+});
+
+test("issueShareLink preserves the existing Buzz deep link", () => {
+  assert.equal(
+    issueShareLink({ id: EVENT_ID, repoAddress: REPO_ADDRESS, htmlUrl: null }),
+    `buzz://issue?id=${EVENT_ID}&owner=${OWNER}&d=flappy-bee`,
+  );
+});
