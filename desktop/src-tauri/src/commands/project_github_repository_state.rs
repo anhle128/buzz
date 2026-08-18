@@ -1,8 +1,5 @@
 //! Map GitHub `gh api` payloads into repository branch state.
 
-// Reachable once the Tauri command invokes `github_repository_state_with`.
-#![allow(dead_code)]
-
 use crate::commands::project_git_merge_error::ProjectPullRequestMergeError;
 use crate::commands::project_github_pull_request::{redact_diagnostic, GhRunner, GitHubRepoRef};
 use serde::{Deserialize, Serialize};
@@ -65,6 +62,27 @@ pub(crate) fn github_repository_state_with(
         tags: vec![],
         updated_at: unix_now(),
     })
+}
+
+pub(crate) fn get_github_repository_state_with_runner(
+    clone_url: String,
+    gh: Result<GhRunner, ProjectPullRequestMergeError>,
+) -> Result<GitHubRepositoryState, ProjectPullRequestMergeError> {
+    let gh = gh.map_err(|error| remap_state_error(error, ""))?;
+    github_repository_state_with(&gh, &clone_url)
+}
+
+#[tauri::command]
+pub async fn get_github_repository_state(
+    clone_url: String,
+) -> Result<GitHubRepositoryState, ProjectPullRequestMergeError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        get_github_repository_state_with_runner(clone_url, GhRunner::discover())
+    })
+    .await
+    .map_err(|error| {
+        ProjectPullRequestMergeError::new("github_state_failed", error.to_string())
+    })?
 }
 
 fn get_json<T: serde::de::DeserializeOwned>(
@@ -238,6 +256,17 @@ esac
             github_repository_state_with(&gh, "https://gitlab.com/acme/app").expect_err("gitlab");
         let value = serde_json::to_value(err).expect("json");
         assert_eq!(value["code"], "github_state_failed");
+    }
+
+    #[test]
+    fn wrapper_maps_discover_failure() {
+        let err = get_github_repository_state_with_runner(
+            "https://github.com/acme/app".into(),
+            GhRunner::from_resolved(None),
+        )
+        .expect_err("missing");
+        let value = serde_json::to_value(err).expect("json");
+        assert_eq!(value["code"], "github_cli_missing");
     }
 
     #[cfg(unix)]

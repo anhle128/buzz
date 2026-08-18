@@ -111,6 +111,7 @@ pub use project_git_branches::*;
 pub use project_git_diff::*;
 pub use project_git_recipient_notes::*;
 pub use project_git_workflow::*;
+pub use project_github_repository_state::*;
 pub use project_terminal::*;
 pub use qr_download::*;
 pub use relay_members::*;
