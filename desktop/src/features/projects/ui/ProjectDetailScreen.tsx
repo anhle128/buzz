@@ -175,16 +175,16 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
             (pullRequest) => pullRequest.branchName ?? null,
           ) ?? []),
     });
+  const repoTags = githubStateFailed ? [] : (repoStateQuery.data?.tags ?? []);
   const { activeBranch, selectBranch, selectedTag, selectTag } =
     useProjectRepositoryRefSelection({
       branchOptions,
       defaultBranch,
       projectAvailable: Boolean(repository),
       projectPending: projectQuery.isPending,
-      tags: repoStateQuery.data?.tags ?? [],
+      tags: repoTags,
     });
-  const activeTag =
-    repoStateQuery.data?.tags.find((tag) => tag.name === selectedTag) ?? null;
+  const activeTag = repoTags.find((tag) => tag.name === selectedTag) ?? null;
   const [selectedPullRequestId, setSelectedPullRequestId] = React.useState<
     string | null
   >(pullRequestId ?? null);
@@ -408,7 +408,7 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
     branch: activeBranch ?? "",
     branchOptions: branchOptionsWithLocal,
     selectedTag,
-    tagOptions: repoStateQuery.data?.tags ?? [],
+    tagOptions: repoTags,
     onBranchChange: handleBranchChange,
     onTagChange: handleTagChange,
     onCreateBranch: () => branchActions.setCreateOpen(true),
@@ -473,6 +473,11 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
       repoSyncStatusQuery.isFetching,
     fetchTitle:
       repoSyncStatusQuery.data?.pullBlockReason ?? "Check for remote changes",
+    showGithubStateRecovery: githubStateFailed,
+    stateError: repoStateQuery.error,
+    onRetryState: () => {
+      void repoStateQuery.refetch();
+    },
   };
   const projectPending = projectQuery.isPending;
   React.useEffect(() => {

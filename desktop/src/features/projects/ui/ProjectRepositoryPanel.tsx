@@ -38,6 +38,7 @@ import {
   PROJECT_DETAIL_PANEL_CLASS,
   PROJECT_DETAIL_PANEL_MESSAGE_CLASS,
 } from "./projectPanelStyles";
+import { GitHubRepoStateRecovery } from "./GitHubRepoStateRecovery";
 import {
   type RepoSourceHeaderControls,
   RepoSourceDropdown,
@@ -725,6 +726,14 @@ export function RepositoryFilesPanel({
             <RepoSyncActionButton controls={sourceControls} />
           </div>
         </div>
+        {sourceControls.showGithubStateRecovery ? (
+          <div className="border-border/50 border-b px-3 py-2">
+            <GitHubRepoStateRecovery
+              error={sourceControls.stateError}
+              onRetry={sourceControls.onRetryState}
+            />
+          </div>
+        ) : null}
         <div className="p-4 text-sm text-muted-foreground">{stateMessage}</div>
       </div>
     );
@@ -745,55 +754,65 @@ export function RepositoryFilesPanel({
   return (
     <div className={PROJECT_DETAIL_PANEL_CLASS} data-project-detail-panel>
       {sourceControls || pathSegments.length > 0 ? (
-        <div className="flex min-h-14 min-w-0 items-center gap-1 border-border/50 border-b px-3 py-3">
-          {sourceControls ? (
-            <>
-              <RepoSourceDropdown controls={sourceControls} />
-              <RepositoryBranchDropdown
-                branch={sourceControls.branch}
-                branchOptions={sourceControls.branchOptions}
-                createBranchDisabled={sourceControls.createBranchDisabled}
-                createBranchTitle={sourceControls.createBranchTitle}
-                deleteBranchDisabled={sourceControls.deleteBranchDisabled}
-                deleteBranchTitle={sourceControls.deleteBranchTitle}
-                onBranchChange={sourceControls.onBranchChange}
-                onCreateBranch={sourceControls.onCreateBranch}
-                onDeleteBranch={sourceControls.onDeleteBranch}
-                onTagChange={sourceControls.onTagChange}
-                selectedTag={sourceControls.selectedTag}
-                tagOptions={sourceControls.tagOptions}
-              />
-            </>
-          ) : (
-            <BreadcrumbButton onClick={() => setCurrentPath("")}>
-              Files
-            </BreadcrumbButton>
-          )}
-          {sourceControls && pathSegments.length > 0 ? (
-            <>
-              <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground/60" />
+        <>
+          <div className="flex min-h-14 min-w-0 items-center gap-1 border-border/50 border-b px-3 py-3">
+            {sourceControls ? (
+              <>
+                <RepoSourceDropdown controls={sourceControls} />
+                <RepositoryBranchDropdown
+                  branch={sourceControls.branch}
+                  branchOptions={sourceControls.branchOptions}
+                  createBranchDisabled={sourceControls.createBranchDisabled}
+                  createBranchTitle={sourceControls.createBranchTitle}
+                  deleteBranchDisabled={sourceControls.deleteBranchDisabled}
+                  deleteBranchTitle={sourceControls.deleteBranchTitle}
+                  onBranchChange={sourceControls.onBranchChange}
+                  onCreateBranch={sourceControls.onCreateBranch}
+                  onDeleteBranch={sourceControls.onDeleteBranch}
+                  onTagChange={sourceControls.onTagChange}
+                  selectedTag={sourceControls.selectedTag}
+                  tagOptions={sourceControls.tagOptions}
+                />
+              </>
+            ) : (
               <BreadcrumbButton onClick={() => setCurrentPath("")}>
                 Files
               </BreadcrumbButton>
-            </>
-          ) : null}
-          {pathSegments.map((segment, index) => {
-            const nextPath = pathSegments.slice(0, index + 1).join("/");
-            return (
-              <React.Fragment key={nextPath}>
+            )}
+            {sourceControls && pathSegments.length > 0 ? (
+              <>
                 <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground/60" />
-                <BreadcrumbButton onClick={() => setCurrentPath(nextPath)}>
-                  {segment}
+                <BreadcrumbButton onClick={() => setCurrentPath("")}>
+                  Files
                 </BreadcrumbButton>
-              </React.Fragment>
-            );
-          })}
-          {sourceControls ? (
-            <div className="ml-auto flex shrink-0 items-center">
-              <RepoSyncActionButton controls={sourceControls} />
+              </>
+            ) : null}
+            {pathSegments.map((segment, index) => {
+              const nextPath = pathSegments.slice(0, index + 1).join("/");
+              return (
+                <React.Fragment key={nextPath}>
+                  <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground/60" />
+                  <BreadcrumbButton onClick={() => setCurrentPath(nextPath)}>
+                    {segment}
+                  </BreadcrumbButton>
+                </React.Fragment>
+              );
+            })}
+            {sourceControls ? (
+              <div className="ml-auto flex shrink-0 items-center">
+                <RepoSyncActionButton controls={sourceControls} />
+              </div>
+            ) : null}
+          </div>
+          {sourceControls?.showGithubStateRecovery ? (
+            <div className="border-border/50 border-b px-3 py-2">
+              <GitHubRepoStateRecovery
+                error={sourceControls.stateError}
+                onRetry={sourceControls.onRetryState}
+              />
             </div>
           ) : null}
-        </div>
+        </>
       ) : null}
 
       <div className="overflow-x-auto">
