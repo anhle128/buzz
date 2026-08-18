@@ -4,6 +4,7 @@ import { test } from "node:test";
 import {
   fetchProjectIssuesWith,
   githubIssueCommentsRequest,
+  githubIssueId,
   issueDisplayNumber,
   issueIdentityPubkeys,
   mapGithubCommentToProjectIssueComment,
@@ -59,6 +60,20 @@ test("GitHub issue mapper fills the complete ProjectIssue contract", () => {
     commentCount: 3,
     htmlUrl: "https://github.com/acme/app/issues/42",
   });
+});
+
+test("GitHub issue ids reject non-positive and unsafe native numbers", () => {
+  assert.equal(githubIssueId(42), "42");
+  for (const number of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+    assert.throws(
+      () => githubIssueId(number),
+      /GitHub returned an invalid issue number/,
+    );
+    assert.throws(
+      () => mapGithubIssueToProjectIssue({ ...dto, number }, REPO_ADDRESS),
+      /GitHub returned an invalid issue number/,
+    );
+  }
 });
 
 test("GitHub comment mapper keeps login and avatar without pubkey conversion", () => {

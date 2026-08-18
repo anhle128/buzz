@@ -13,13 +13,21 @@ import { isGitHubCloneUrl } from "./projectGitError";
 /** Host-routed issue list consumed by the repository Issues tab. */
 export type ProjectIssuesResult = { issues: ProjectIssue[]; hasMore: boolean };
 
+/** Convert a positive safe GitHub issue number into its decimal selection id. */
+export function githubIssueId(number: number): string {
+  if (!Number.isSafeInteger(number) || number <= 0) {
+    throw new Error("GitHub returned an invalid issue number.");
+  }
+  return String(number);
+}
+
 /** Map a bounded native GitHub issue onto the shared Projects issue model. */
 export function mapGithubIssueToProjectIssue(
   dto: GithubIssueDto,
   repoAddress: string,
 ): ProjectIssue {
   return {
-    id: String(dto.number),
+    id: githubIssueId(dto.number),
     title: dto.title,
     content: dto.body ?? "",
     tags: [],

@@ -5,6 +5,7 @@ import { relayClient } from "@/shared/api/relayClient";
 import { signRelayEvent } from "@/shared/api/tauri";
 import { KIND_GIT_ISSUE } from "@/shared/constants/kinds";
 import { isGitHubCloneUrl } from "@/features/projects/lib/projectGitError";
+import { githubIssueId } from "@/features/projects/lib/projectGithubIssues";
 import type { Repository as Project } from "./hooks";
 import { buildGitIssueTags } from "./projectIssues.mjs";
 
@@ -54,7 +55,7 @@ export async function createProjectIssueWith(
       title: input.title,
       body: input.body,
     });
-    return String(issue.number);
+    return githubIssueId(issue.number);
   }
   return loaders.publishBuzz(project, input);
 }

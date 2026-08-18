@@ -38,6 +38,27 @@ test("GitHub create never calls the Buzz issue publisher", async () => {
   assert.deepEqual(calls, { github: 1, buzz: 0 });
 });
 
+test("GitHub create rejects an unsafe native issue number", async () => {
+  await assert.rejects(
+    createProjectIssueWith(
+      {
+        id: "p1",
+        owner: "a".repeat(64),
+        repoAddress: REPO_ADDRESS,
+        cloneUrls: ["https://github.com/acme/app"],
+      },
+      { title: "Broken login", body: "steps" },
+      {
+        createGithub: async () => ({
+          number: Number.MAX_SAFE_INTEGER + 1,
+        }),
+        publishBuzz: async () => "e".repeat(64),
+      },
+    ),
+    /GitHub returned an invalid issue number/,
+  );
+});
+
 test("Buzz create never calls the GitHub creator", async () => {
   const calls = { github: 0, buzz: 0 };
   const id = await createProjectIssueWith(

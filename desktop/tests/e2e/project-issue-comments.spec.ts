@@ -33,6 +33,7 @@ test("issue comments use the project activity timeline", async ({ page }) => {
 
   const composer = page.getByTestId("project-issue-comment-composer");
   await expect(composer).toBeVisible();
+  await expect(page.getByRole("button", { name: "New issue" })).toHaveCount(0);
 
   for (const comment of ISSUE_COMMENTS) {
     await composer.locator('[contenteditable="true"]').fill(comment);

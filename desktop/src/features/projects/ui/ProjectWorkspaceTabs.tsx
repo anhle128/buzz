@@ -335,7 +335,7 @@ export function WorkspaceTabs({
       <ProjectSectionHeader icon={FilesIcon} title="Files" />
     ) : selectedTab === "activity" && !selectedCommitHash ? (
       <ProjectSectionHeader icon={GitCommitHorizontal} title="Commits" />
-    ) : selectedTab === "issues" ? (
+    ) : selectedTab === "issues" && (githubHosted || !selectedIssueId) ? (
       <ProjectSectionHeader
         action={{
           disabled: createIssueAction.pending,
