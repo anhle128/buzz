@@ -642,7 +642,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn invoke_credential_helper(auth: &GitAuthConfig) {
+    fn invoke_credential_helper(auth: &GitAuthConfig) -> std::process::ExitStatus {
         use std::io::Write;
         use std::process::{Command, Stdio};
         let mut command = Command::new(&auth.git_path);
@@ -659,7 +659,7 @@ mod tests {
             .write_all(b"protocol=https\nhost=github.com\n\n")
             .expect("write credential request");
         drop(stdin);
-        let _ = child.wait().expect("wait for git credential fill");
+        child.wait().expect("wait for git credential fill")
     }
 
     #[cfg(unix)]
@@ -668,12 +668,13 @@ mod tests {
         let script = r#"
 printf '%s\n' "$*" >> "${0%/GitHub CLI/gh}/calls"
 case "$*" in
-  *auth*status*) exit 0 ;;
-  *auth*git-credential*)
+  'auth status --hostname github.com') exit 0 ;;
+  'auth git-credential get')
     if [ "${NOSTR_PRIVATE_KEY+x}" = x ]; then exit 41; fi
+    printf 'username=test-user\npassword=test-token\n'
     exit 0
     ;;
-  *api*) exit 42 ;;
+  api\ *) exit 42 ;;
   *) exit 43 ;;
 esac
 "#;
@@ -689,7 +690,8 @@ esac
         assert!(helper.starts_with("!'"), "{helper}");
         assert!(helper.ends_with("' auth git-credential"), "{helper}");
         assert!(auth.nsec.is_empty());
-        invoke_credential_helper(&auth);
+        let status = invoke_credential_helper(&auth);
+        assert!(status.success(), "git credential fill failed: {status}");
         let calls = std::fs::read_to_string(dir.path().join("calls")).expect("read calls");
         assert!(calls
             .lines()
@@ -723,7 +725,7 @@ esac
         let (_dir, path) = fake_gh(
             r#"
 case "$*" in
-  *auth*status*) exit 1 ;;
+  'auth status --hostname github.com') exit 1 ;;
   *) exit 43 ;;
 esac
 "#,

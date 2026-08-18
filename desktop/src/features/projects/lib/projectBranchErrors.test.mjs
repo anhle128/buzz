@@ -70,3 +70,13 @@ test("derives a GitHub branch-action recovery reason and gates it by host", () =
   );
   assert.equal(githubBranchActionReason({ githubHosted: false, error }), null);
 });
+
+test("disables GitHub branch actions for an unstructured G1 failure", () => {
+  assert.equal(
+    githubBranchActionReason({
+      githubHosted: true,
+      error: new Error("GitHub state bridge failed."),
+    }),
+    "GitHub state bridge failed.",
+  );
+});

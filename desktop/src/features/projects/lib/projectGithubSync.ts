@@ -14,11 +14,14 @@ export function projectRepoSyncStatusEnabled(input: {
 /** Return displayable GitHub counts only when sync examined a checkout. */
 export function githubSyncCountDisplay(input: {
   githubHosted: boolean;
+  syncStatusReady: boolean;
   localPath?: string | null;
   aheadCount?: number | null;
   behindCount?: number | null;
 }): { ahead: number; behind: number } | null {
-  if (!input.githubHosted || !input.localPath) return null;
+  if (!input.githubHosted || !input.syncStatusReady || !input.localPath) {
+    return null;
+  }
   if (
     typeof input.aheadCount !== "number" ||
     typeof input.behindCount !== "number"
@@ -38,6 +41,7 @@ export function shouldPublishPullRequestUpdateAfterPush(
 /** Select the single primary repository sync action for the header. */
 export function repoSyncPrimaryAction(input: {
   githubHosted: boolean;
+  syncStatusReady?: boolean;
   remoteKind?: "buzz" | "external";
   hasExternalUrl?: boolean;
   canPull?: boolean;
@@ -46,6 +50,9 @@ export function repoSyncPrimaryAction(input: {
 }): "pull" | "push" | "fetch" | "open" | null {
   if (!input.githubHosted && input.remoteKind === "external") {
     return input.hasExternalUrl ? "open" : null;
+  }
+  if (input.githubHosted && !input.syncStatusReady) {
+    return input.hasFetch ? "fetch" : null;
   }
   if (input.canPull) return "pull";
   if (input.canPush) return "push";

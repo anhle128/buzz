@@ -47,6 +47,7 @@ test("GitHub counts require a checkout and numeric sync data", () => {
   assert.equal(
     githubSyncCountDisplay({
       githubHosted: true,
+      syncStatusReady: true,
       localPath: null,
       aheadCount: 0,
       behindCount: 0,
@@ -56,6 +57,7 @@ test("GitHub counts require a checkout and numeric sync data", () => {
   assert.deepEqual(
     githubSyncCountDisplay({
       githubHosted: true,
+      syncStatusReady: true,
       localPath: "/tmp/acme-app",
       aheadCount: 1,
       behindCount: 0,
@@ -65,8 +67,19 @@ test("GitHub counts require a checkout and numeric sync data", () => {
   assert.equal(
     githubSyncCountDisplay({
       githubHosted: true,
+      syncStatusReady: true,
       localPath: "/tmp/acme-app",
       aheadCount: null,
+      behindCount: 0,
+    }),
+    null,
+  );
+  assert.equal(
+    githubSyncCountDisplay({
+      githubHosted: true,
+      syncStatusReady: false,
+      localPath: "/tmp/acme-app",
+      aheadCount: 1,
       behindCount: 0,
     }),
     null,
@@ -90,6 +103,7 @@ test("GitHub uses Pull Push Fetch while other external hosts use Open", () => {
   assert.equal(
     repoSyncPrimaryAction({
       githubHosted: true,
+      syncStatusReady: true,
       remoteKind: "external",
       hasExternalUrl: true,
       canPull: true,
@@ -100,6 +114,7 @@ test("GitHub uses Pull Push Fetch while other external hosts use Open", () => {
   assert.equal(
     repoSyncPrimaryAction({
       githubHosted: true,
+      syncStatusReady: true,
       remoteKind: "external",
       hasExternalUrl: true,
       canPush: true,
@@ -110,6 +125,7 @@ test("GitHub uses Pull Push Fetch while other external hosts use Open", () => {
   assert.equal(
     repoSyncPrimaryAction({
       githubHosted: true,
+      syncStatusReady: true,
       remoteKind: "external",
       hasExternalUrl: true,
       hasFetch: true,
@@ -125,5 +141,17 @@ test("GitHub uses Pull Push Fetch while other external hosts use Open", () => {
       hasFetch: true,
     }),
     "open",
+  );
+  assert.equal(
+    repoSyncPrimaryAction({
+      githubHosted: true,
+      syncStatusReady: false,
+      remoteKind: "external",
+      hasExternalUrl: true,
+      canPull: true,
+      canPush: true,
+      hasFetch: true,
+    }),
+    "fetch",
   );
 });

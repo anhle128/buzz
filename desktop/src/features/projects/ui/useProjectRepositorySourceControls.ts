@@ -79,6 +79,9 @@ export function useProjectRepositorySourceControls(
   const hasCheckout = Boolean(
     repoSyncStatusQuery.data?.localPath || localRepoSnapshotQuery.data,
   );
+  const syncStatusReady =
+    repoSyncStatusQuery.isSuccess &&
+    (!githubHosted || repoStateQuery.isSuccess);
   const githubSyncStateError =
     githubHosted && parseProjectPullRequestMergeError(repoSyncStatusQuery.error)
       ? repoSyncStatusQuery.error
@@ -97,6 +100,7 @@ export function useProjectRepositorySourceControls(
     });
   const githubCounts = githubSyncCountDisplay({
     githubHosted,
+    syncStatusReady,
     localPath: repoSyncStatusQuery.data?.localPath,
     aheadCount: repoSyncStatusQuery.data?.aheadCount,
     behindCount: repoSyncStatusQuery.data?.behindCount,
@@ -180,7 +184,10 @@ export function useProjectRepositorySourceControls(
           }
         : undefined,
     clonePending,
-    canPush: !selectedTag && (repoSyncStatusQuery.data?.canPush ?? false),
+    canPush:
+      syncStatusReady &&
+      !selectedTag &&
+      (repoSyncStatusQuery.data?.canPush ?? false),
     onPush: selectedTag
       ? undefined
       : () => {
@@ -191,7 +198,10 @@ export function useProjectRepositorySourceControls(
     pushTitle:
       repoSyncStatusQuery.data?.pushBlockReason ??
       pushPullTitle("Push", repoSyncStatusQuery.data?.aheadCount, "local"),
-    canPull: !selectedTag && (repoSyncStatusQuery.data?.canPull ?? false),
+    canPull:
+      syncStatusReady &&
+      !selectedTag &&
+      (repoSyncStatusQuery.data?.canPull ?? false),
     onPull: selectedTag
       ? undefined
       : () => {
@@ -204,10 +214,15 @@ export function useProjectRepositorySourceControls(
       pushPullTitle("Pull", repoSyncStatusQuery.data?.behindCount, "remote"),
     aheadCount: githubHosted
       ? (githubCounts?.ahead ?? null)
-      : (repoSyncStatusQuery.data?.aheadCount ?? null),
+      : syncStatusReady
+        ? (repoSyncStatusQuery.data?.aheadCount ?? null)
+        : null,
     behindCount: githubHosted
       ? (githubCounts?.behind ?? null)
-      : (repoSyncStatusQuery.data?.behindCount ?? null),
+      : syncStatusReady
+        ? (repoSyncStatusQuery.data?.behindCount ?? null)
+        : null,
+    syncStatusReady,
     onFetch: () => {
       void handleFetchRepo();
     },

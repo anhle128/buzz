@@ -2,6 +2,7 @@
 //! the repository from the relay first when no local checkout exists.
 
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 use std::process::Command;
 use tauri::State;
 
@@ -53,6 +54,24 @@ fn merge_recovery_ref(expected_commit: &str) -> String {
 
 fn merge_recovery_target_ref(target_commit: &str) -> String {
     format!("refs/buzz/merge-recovery-target/{target_commit}")
+}
+
+fn build_clone_auth_if_needed<T, F>(
+    existing_checkout: Option<&Path>,
+    clone_url: Option<&str>,
+    build_auth: F,
+) -> Result<Option<T>, String>
+where
+    F: FnOnce(&str) -> Result<T, String>,
+{
+    if existing_checkout.is_some() {
+        return Ok(None);
+    }
+    let clone_url = clone_url
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "No local checkout and no clone URL available.".to_string())?;
+    build_auth(clone_url).map(Some)
 }
 
 #[cfg(target_os = "macos")]
@@ -115,36 +134,51 @@ pub async fn open_project_terminal(
     if let Some(clone_url) = clone_url.as_deref() {
         validate_local_clone_url_for_workspace(clone_url, &state)?;
     }
-    // Public GitHub clones stay anonymous; Buzz remotes use the workspace
-    // identity. Keep the result outside the blocking task so it borrows no
-    // Tauri state.
-    let auth = if let Some(clone_url) = clone_url.as_deref() {
-        build_git_clone_auth_config(clone_url, &state)
-    } else {
-        build_git_auth_config(&state)
-    };
-    tauri::async_runtime::spawn_blocking(move || {
+
+    // Resolve an existing checkout before GitHub CLI discovery or auth. Opening
+    // local work must stay local even when gh is unavailable or unauthenticated.
+    let lookup_repos_dir = repos_dir.clone();
+    let lookup_project_dtag = project_dtag.clone();
+    let lookup_clone_url = clone_url.clone();
+    let local_dir = tauri::async_runtime::spawn_blocking(move || {
         // An inaccessible repos root (fresh machine, nothing cloned yet) is
         // not fatal here — the clone path below creates the default root. A
         // misconfigured explicit reposDir still errors in clone_destination_root.
-        let local_dir =
-            find_local_repo_dir(repos_dir.as_deref(), &project_dtag, clone_url.as_deref())
-                .ok()
-                .flatten();
-        if let Some(repo_dir) = local_dir {
+        find_local_repo_dir(
+            lookup_repos_dir.as_deref(),
+            &lookup_project_dtag,
+            lookup_clone_url.as_deref(),
+        )
+        .ok()
+        .flatten()
+    })
+    .await
+    .map_err(|error| format!("resolve local checkout task failed: {error}"))?;
+
+    let auth =
+        build_clone_auth_if_needed(local_dir.as_deref(), clone_url.as_deref(), |clone_url| {
+            build_git_clone_auth_config(clone_url, &state)
+        })?;
+
+    if let Some(repo_dir) = local_dir {
+        return tauri::async_runtime::spawn_blocking(move || {
             launch_terminal_at(&repo_dir)?;
-            return Ok(ProjectTerminalResult {
+            Ok(ProjectTerminalResult {
                 path: repo_dir.display().to_string(),
                 cloned: false,
-            });
-        }
+            })
+        })
+        .await
+        .map_err(|error| format!("open terminal task failed: {error}"))?;
+    }
 
+    tauri::async_runtime::spawn_blocking(move || {
         let clone_url = clone_url
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .ok_or_else(|| "No local checkout and no clone URL available.".to_string())?;
-        let auth = auth?;
+        let auth = auth.ok_or_else(|| "Clone authentication was not prepared.".to_string())?;
         let clone_result = clone_project_repository_blocking(
             repos_dir.as_deref(),
             &project_dtag,
@@ -267,7 +301,20 @@ pub async fn open_project_merge_recovery_terminal(
 
 #[cfg(test)]
 mod tests {
-    use super::{merge_recovery_ref, merge_recovery_target_ref};
+    use super::{build_clone_auth_if_needed, merge_recovery_ref, merge_recovery_target_ref};
+
+    #[test]
+    fn existing_checkout_does_not_build_clone_auth() {
+        let checkout = std::path::Path::new("/tmp/existing-project");
+        let auth = build_clone_auth_if_needed(
+            Some(checkout),
+            Some("https://github.com/acme/app.git"),
+            |_| -> Result<(), String> { panic!("existing checkout must not authenticate") },
+        )
+        .expect("existing checkout decision");
+
+        assert!(auth.is_none());
+    }
 
     #[test]
     fn recovery_ref_is_namespaced_by_verified_commit() {

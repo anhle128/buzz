@@ -31,10 +31,14 @@ export function githubBranchActionReason(input: {
 }): string | null {
   if (!input.githubHosted || input.error == null) return null;
   const parsed = parseProjectPullRequestMergeError(input.error);
-  if (!parsed) return null;
-  return parsed.code === "github_cli_missing"
-    ? "Install GitHub CLI, then retry."
-    : parsed.message;
+  if (parsed) {
+    return parsed.code === "github_cli_missing"
+      ? "Install GitHub CLI, then retry."
+      : parsed.message;
+  }
+  return input.error instanceof Error && input.error.message.trim()
+    ? input.error.message
+    : "Could not load GitHub branches.";
 }
 
 /** Map a thrown branch-operation error to user-facing dialog copy. */

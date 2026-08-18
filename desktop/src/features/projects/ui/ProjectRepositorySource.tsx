@@ -207,6 +207,8 @@ export type RepoSourceHeaderControls = {
   /** Commits the local checkout is ahead/behind the remote branch. */
   aheadCount?: number | null;
   behindCount?: number | null;
+  /** True only while the current sync result is usable for actions/counts. */
+  syncStatusReady?: boolean;
   /** Manual sync-status refresh (runs a git fetch under the hood). */
   onFetch?: () => void;
   fetchPending?: boolean;
@@ -315,6 +317,7 @@ export function RepoSyncActionButton({
 }) {
   const action = repoSyncPrimaryAction({
     githubHosted: Boolean(controls.githubHosted),
+    syncStatusReady: controls.syncStatusReady,
     remoteKind: controls.remoteKind,
     hasExternalUrl: Boolean(controls.externalUrl),
     canPull: Boolean(controls.canPull && controls.onPull),
