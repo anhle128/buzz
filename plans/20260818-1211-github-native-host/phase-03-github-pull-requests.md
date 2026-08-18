@@ -13,7 +13,7 @@ Create/review of Buzz PRs is Nostr and host-agnostic. Merge for GitHub already g
 | ID | Feature | Notes |
 |----|---------|--------|
 | P1 | List GitHub PRs | PR tab |
-| P2 | Create GitHub PR | `gh pr create` / existing REST |
+| P2 | Create GitHub PR | `gh api` REST `POST /repos/.../pulls` |
 | P3 | Show review / checks | Merge path already reads gates |
 | P4 | Merge | **Exists** — keep |
 | P5 | Review comments | Later |
@@ -42,3 +42,9 @@ Create/review of Buzz PRs is Nostr and host-agnostic. Merge for GitHub already g
 ## Success
 
 PR tab on a GitHub-hosted repo shows GitHub PRs. Opening a PR creates a GitHub PR. Merge still uses `gh`.
+
+## Suggested Superpowers slice
+
+Start **P1 + P2** only (list + create). Hide Merge, review writes, and Files changed. Then **P3** (checks / review chrome). Then **P4 adapt** (merge the listed `#N`, no find-or-create, no kind:1631). **P5** later.
+
+**P1+P2 spec:** [docs/superpowers/specs/2026-08-18-github-pull-requests-design.md](../../docs/superpowers/specs/2026-08-18-github-pull-requests-design.md)
