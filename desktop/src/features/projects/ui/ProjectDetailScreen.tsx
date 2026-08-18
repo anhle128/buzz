@@ -308,6 +308,8 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
     repository,
     activeCommunity?.reposDir,
     activeBranch,
+    undefined,
+    { githubStateReady: repoStateQuery.isSuccess },
   );
   const pushLocalRepoMutation = usePushProjectLocalRepositoryMutation(
     repository,
