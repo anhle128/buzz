@@ -1,11 +1,11 @@
 # Buzz — Your Project, Your Domain
 
-`myproject.com` is your workspace. Not a GitHub org page that happens to have your
-name on it. Not a Discord server that Discord could delete tomorrow. Your domain.
-Your relay. One thing.
+`myproject.com` is your workspace. Not a Discord server that Discord could delete
+tomorrow. Your domain. Your relay. One collaboration surface.
 
-The relay is the workspace. Code lives there. Conversation lives there. Agents connect
-to it. Automation flows through it. Artifacts publish from it. You type the URL, you
+The relay is the workspace. Conversation lives there. Agents connect to it.
+Automation flows through it. Artifacts publish from it. Code may live on the
+relay or on GitHub — both are native repository hosts. You type the URL, you
 see the workspace. That's the whole idea.
 
 Nothing here is novel on its own. Git hosting is solved. Chat is solved. Agents are
@@ -22,10 +22,11 @@ and hosts files. What you build with that is up to you.
 
 ## What You See
 
-You type `myproject.com`. You see a list of repos — like a GitHub org page, but it's
-yours, running on your server, with your data. You click one. You're at
-`repoa.myproject.com`. The README renders. The file tree is there. Click into `src/`
-and the code is syntax-highlighted. The clone URL sits at the top:
+You type `myproject.com`. You see a list of repos — Buzz-hosted on your relay,
+GitHub-hosted in your org, or both in one project. You click one. For a
+relay-hosted repo you're at `repoa.myproject.com`. The README renders. The file
+tree is there. Click into `src/` and the code is syntax-highlighted. The clone
+URL sits at the top:
 
 ```
 git clone repoa.myproject.com
@@ -62,10 +63,11 @@ boundary that may be its own dedicated deployment or one of thousands sharing
 infrastructure. Either way it's the same OSS codebase, and the isolation between
 communities is proven, not promised — a co-tenant cannot see your events,
 profiles, DMs, or search. Your key stays yours across all of them; identity is
-portable even when the hosting isn't. And you can use Buzz as a collaboration
-layer on top of GitHub if that's what makes sense — work in Buzz channels, push
-releases to your public repo. The sovereign setup is the full version. But the
-tools work at every level of commitment.
+portable even when the hosting isn't. GitHub is a native code host, not an
+optional plugin: work in Buzz channels, browse and review the GitHub repo in
+Projects, push with the same desktop git controls. Relay-hosted git remains
+available when you want the repo on the same domain. The tools work at every
+level of commitment.
 
 ---
 
@@ -164,9 +166,10 @@ because it's all on the same relay.
 
 ## Identity
 
-Your npub is your identity everywhere. One keypair. No accounts to create on each
-new platform. No "sign in with GitHub" that means GitHub owns your identity. Your
-keys, your identity.
+Your npub is your identity in Buzz. One keypair for channels, agents, and
+relay-hosted git. GitHub does not own that account. When a repository is hosted
+on GitHub, git, issues, and pull requests use GitHub auth (`gh auth login`) —
+that is host credentials, not Buzz identity.
 
 Reputation follows you across projects. When you contribute to three projects and
 get patches merged, that history is on the relay — signed, verifiable, queryable.
@@ -226,10 +229,10 @@ You're early, and early means occasionally hitting edges that haven't been smoot
 Your contributors are early too. Most developers don't have a nostr keypair.
 Onboarding friction is real — not insurmountable, but real. The "Connect on Buzz"
 button is easy. Explaining what a keypair is takes a sentence. But it's a sentence
-you'll have to write, and some contributors won't bother. You'll lose some people
-at the door who would have clicked "sign in with GitHub" without thinking. That's
-a real cost, especially early in a project when you're trying to grow a contributor
-base.
+you'll have to write, and some contributors won't bother. Contributors who already
+have GitHub can use GitHub-hosted repos immediately (`gh auth login`); they still
+need a Buzz identity for channels and agents. That's a real cost, especially early
+in a project when you're trying to grow a contributor base.
 
 These are honest costs. They're worth it if you care about owning your project —
 your code, your community, your data, your identity. They're not worth it if you

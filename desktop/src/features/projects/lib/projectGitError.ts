@@ -8,7 +8,8 @@ function errorText(error: unknown) {
   return typeof error === "string" ? error.toLowerCase() : "";
 }
 
-function isGitHubUrl(cloneUrl: string | null | undefined) {
+/** True when the clone URL points at github.com (https or SSH). */
+export function isGitHubCloneUrl(cloneUrl: string | null | undefined) {
   if (cloneUrl?.startsWith("git@github.com:")) return true;
   try {
     return new URL(cloneUrl ?? "").hostname.toLowerCase() === "github.com";
@@ -22,7 +23,7 @@ export function projectCloneErrorPresentation(
   cloneUrl?: string | null,
 ): ProjectGitErrorPresentation {
   const message = errorText(error);
-  const github = isGitHubUrl(cloneUrl);
+  const github = isGitHubCloneUrl(cloneUrl);
 
   if (
     /\b(?:401|403)\b|authenticat|authoriz|permission denied|access denied|ssh certificate/.test(

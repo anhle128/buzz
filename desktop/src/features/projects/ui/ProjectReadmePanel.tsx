@@ -22,6 +22,7 @@ import {
   formatLastChangedAt,
   languageForPath,
 } from "./ProjectRepositoryPanel";
+import { GitHubRepoStateRecovery } from "./GitHubRepoStateRecovery";
 import {
   type RepoSourceHeaderControls,
   RepoSourceDropdown,
@@ -164,26 +165,36 @@ export function ReadmePanel({
   const header = hideHeader ? null : (
     <>
       {sourceControls ? (
-        <div className="flex min-h-14 min-w-0 items-center gap-1 border-border/50 border-b px-3 py-3">
-          <RepoSourceDropdown controls={sourceControls} />
-          <RepositoryBranchDropdown
-            branch={sourceControls.branch}
-            branchOptions={sourceControls.branchOptions}
-            createBranchDisabled={sourceControls.createBranchDisabled}
-            createBranchTitle={sourceControls.createBranchTitle}
-            deleteBranchDisabled={sourceControls.deleteBranchDisabled}
-            deleteBranchTitle={sourceControls.deleteBranchTitle}
-            onBranchChange={sourceControls.onBranchChange}
-            onCreateBranch={sourceControls.onCreateBranch}
-            onDeleteBranch={sourceControls.onDeleteBranch}
-            onTagChange={sourceControls.onTagChange}
-            selectedTag={sourceControls.selectedTag}
-            tagOptions={sourceControls.tagOptions}
-          />
-          <div className="ml-auto flex shrink-0 items-center">
-            <RepoSyncActionButton controls={sourceControls} />
+        <>
+          <div className="flex min-h-14 min-w-0 items-center gap-1 border-border/50 border-b px-3 py-3">
+            <RepoSourceDropdown controls={sourceControls} />
+            <RepositoryBranchDropdown
+              branch={sourceControls.branch}
+              branchOptions={sourceControls.branchOptions}
+              createBranchDisabled={sourceControls.createBranchDisabled}
+              createBranchTitle={sourceControls.createBranchTitle}
+              deleteBranchDisabled={sourceControls.deleteBranchDisabled}
+              deleteBranchTitle={sourceControls.deleteBranchTitle}
+              onBranchChange={sourceControls.onBranchChange}
+              onCreateBranch={sourceControls.onCreateBranch}
+              onDeleteBranch={sourceControls.onDeleteBranch}
+              onTagChange={sourceControls.onTagChange}
+              selectedTag={sourceControls.selectedTag}
+              tagOptions={sourceControls.tagOptions}
+            />
+            <div className="ml-auto flex shrink-0 items-center">
+              <RepoSyncActionButton controls={sourceControls} />
+            </div>
           </div>
-        </div>
+          {sourceControls.showGithubStateRecovery ? (
+            <div className="border-border/50 border-b px-3 py-2">
+              <GitHubRepoStateRecovery
+                error={sourceControls.stateError}
+                onRetry={sourceControls.onRetryState}
+              />
+            </div>
+          ) : null}
+        </>
       ) : null}
       <div className="flex min-h-10 items-center gap-2 border-border/50 border-b bg-muted/20 px-4">
         <BookOpen className="h-4 w-4 text-muted-foreground" />

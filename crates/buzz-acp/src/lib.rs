@@ -4724,12 +4724,35 @@ impl PoolStartup {
             agents: config.agents,
             command: config.agent_command.clone(),
             args: config.agent_args.clone(),
-            extra_env: config.persona_env_vars.clone(),
+            extra_env: identity_child_env(config),
             has_generated_codex_config: config.has_generated_codex_config,
             model: config.model.clone(),
             observer,
         }
     }
+}
+
+/// Env the agent child must receive even when the parent process already
+/// exports the same keys. Persona values are appended after identity so a
+/// reserved-key strip in the persona layer still cannot clobber them.
+fn identity_child_env(config: &Config) -> Vec<(String, String)> {
+    let nsec = config
+        .keys
+        .secret_key()
+        .to_bech32()
+        .expect("secret key bech32 encoding should never fail");
+    let mut env = vec![
+        ("BUZZ_PRIVATE_KEY".into(), nsec.clone()),
+        ("NOSTR_PRIVATE_KEY".into(), nsec),
+        ("BUZZ_RELAY_URL".into(), config.relay_url.clone()),
+    ];
+    if let Ok(tag) = std::env::var("BUZZ_AUTH_TAG") {
+        if !tag.is_empty() {
+            env.push(("BUZZ_AUTH_TAG".into(), tag));
+        }
+    }
+    env.extend(config.persona_env_vars.iter().cloned());
+    env
 }
 
 async fn initialize_agent_pool(

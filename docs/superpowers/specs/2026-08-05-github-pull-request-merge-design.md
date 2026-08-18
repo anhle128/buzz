@@ -33,12 +33,13 @@ The Nostr owner remains authoritative for permission to operate on the Buzz pull
 ## Non-Goals
 
 - GitHub OAuth, device flow, token storage, or token refresh inside Buzz.
-- GitHub Enterprise Server, GitLab, Bitbucket, SSH clone URLs, or arbitrary git hosts.
+- GitHub Enterprise Server, GitLab, Bitbucket, or arbitrary git hosts.
 - Selecting merge, squash, or rebase strategy in the UI.
 - Enabling auto-merge or integrating with GitHub merge queues in this version.
-- Synchronizing GitHub reviews or comments back into Buzz.
 - Replacing GitHub CLI with a direct HTTP client.
-- Changing relay schemas, Nostr event kinds, or repository metadata.
+- Changing relay schemas or Nostr event kinds for Buzz-hosted repositories.
+
+GitHub-hosted repositories are a native host. Listing GitHub pull requests, reviews, and comments in Projects is in scope for follow-up work; this document remains the merge path.
 
 ## Product Decisions
 

@@ -7,6 +7,9 @@ import {
   useProjectPullRequestsQuery,
   useRepoStateQuery,
 } from "@/features/projects/hooks";
+import { resolveProjectDefaultBranch } from "@/features/projects/lib/projectBranches";
+import { isGitHubCloneUrl } from "@/features/projects/lib/projectGitError";
+import { githubRepositoryStateUnresolved } from "@/features/projects/lib/projectRepoState";
 import { selectProjectRepository } from "@/features/projects/projectModels";
 import { useCreateProjectPullRequestMutation } from "@/features/projects/pullRequestMutations";
 import { useProjectRepoSyncStatusQuery } from "@/features/projects/repoSyncHooks";
@@ -58,26 +61,39 @@ export function CreatePullRequestDialog({
   const repository = selection?.repository;
   const repoStateQuery = useRepoStateQuery(repository);
   const pullRequestsQuery = useProjectPullRequestsQuery(repository);
+  const githubHosted = isGitHubCloneUrl(repository?.cloneUrls[0]);
+  const githubStateUnresolved = githubRepositoryStateUnresolved(
+    githubHosted,
+    repoStateQuery,
+  );
+  const defaultBranch =
+    !repository || githubStateUnresolved
+      ? ""
+      : resolveProjectDefaultBranch(
+          repository.defaultBranch,
+          repoStateQuery.data,
+        );
   const initialSyncQuery = useProjectRepoSyncStatusQuery(
     repository,
     reposDir,
-    repository?.defaultBranch,
+    defaultBranch || null,
   );
   const branchOptions = React.useMemo(() => {
     const names = [
-      repository?.defaultBranch,
-      ...(repoStateQuery.data?.branches.map((branch) => branch.name) ?? []),
+      defaultBranch || null,
+      ...(githubStateUnresolved
+        ? []
+        : (repoStateQuery.data?.branches.map((branch) => branch.name) ?? [])),
       initialSyncQuery.data?.localBranch,
     ].filter((name): name is string => Boolean(name));
     return [...new Set(names)];
   }, [
+    defaultBranch,
+    githubStateUnresolved,
     initialSyncQuery.data?.localBranch,
-    repository?.defaultBranch,
     repoStateQuery.data?.branches,
   ]);
-  const [targetBranch, setTargetBranch] = React.useState(
-    repository?.defaultBranch ?? "",
-  );
+  const [targetBranch, setTargetBranch] = React.useState(defaultBranch);
   const [sourceBranch, setSourceBranch] = React.useState("");
   const sourceSyncQuery = useProjectRepoSyncStatusQuery(
     repository,
@@ -97,9 +113,9 @@ export function CreatePullRequestDialog({
 
   React.useEffect(() => {
     if (!repository) return;
-    setTargetBranch(repository.defaultBranch);
+    setTargetBranch(defaultBranch);
     setSourceBranch("");
-  }, [repository]);
+  }, [defaultBranch, repository]);
 
   React.useEffect(() => {
     if (

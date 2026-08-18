@@ -506,6 +506,13 @@ fn build_client_capabilities() -> serde_json::Value {
     })
 }
 
+fn force_child_env_key(key: &str) -> bool {
+    matches!(
+        key,
+        "BUZZ_PRIVATE_KEY" | "NOSTR_PRIVATE_KEY" | "BUZZ_RELAY_URL" | "BUZZ_AUTH_TAG"
+    )
+}
+
 impl AcpClient {
     /// Kill the agent subprocess and wait for it to exit (no zombies).
     ///
@@ -601,7 +608,11 @@ impl AcpClient {
                 // Handled by build_codex_config_env; skip here to avoid double-setting.
                 continue;
             }
-            if std::env::var_os(key).is_none() {
+            // Identity keys must come from the harness config, not a stale
+            // parent-process value. Hermes (and some adapters) also sanitize
+            // inherited env for tool children; an explicit write is the only
+            // way those keys reach `buzz messages send`.
+            if force_child_env_key(key) || std::env::var_os(key).is_none() {
                 cmd.env(key, value);
             }
         }
@@ -3939,6 +3950,18 @@ mod tests {
         observed
     }
 
+    #[test]
+    fn force_child_env_key_covers_identity_keys_only() {
+        assert!(super::force_child_env_key("BUZZ_PRIVATE_KEY"));
+        assert!(super::force_child_env_key("NOSTR_PRIVATE_KEY"));
+        assert!(super::force_child_env_key("BUZZ_RELAY_URL"));
+        assert!(super::force_child_env_key("BUZZ_AUTH_TAG"));
+        assert!(!super::force_child_env_key("GOOSE_MODEL"));
+        assert!(!super::force_child_env_key(
+            "HERMES_ACP_SKIP_CONFIGURED_MCP"
+        ));
+    }
+
     /// Buzz-owned Hermes processes get the configured-MCP isolation default,
     /// and an explicit persona entry still overrides it (defaults are applied
     /// before `extra_env`, so the later `Command::env` write wins).
@@ -3966,6 +3989,29 @@ mod tests {
             spawn_named_and_read_child_env("other-agent", VAR, &[]).await,
             "<unset>",
             "non-Hermes spawns must not receive Hermes defaults"
+        );
+    }
+
+    /// Identity keys are forced onto the child even when the parent process
+    /// already exports a different value. Hermes tools otherwise inherit a
+    /// stale or empty key and `buzz messages send` returns auth_error.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn spawn_forces_identity_env_over_parent() {
+        const KEY: &str = "BUZZ_PRIVATE_KEY";
+        const PARENT: &str = "nsec1parentvalue";
+        const CHILD: &str = "nsec1childvalue";
+        let previous = std::env::var(KEY).ok();
+        std::env::set_var(KEY, PARENT);
+        let observed =
+            spawn_named_and_read_child_env("hermes-acp", KEY, &[(KEY.into(), CHILD.into())]).await;
+        match previous {
+            Some(value) => std::env::set_var(KEY, value),
+            None => std::env::remove_var(KEY),
+        }
+        assert_eq!(
+            observed, CHILD,
+            "child must receive the harness identity key, not the parent value"
         );
     }
 

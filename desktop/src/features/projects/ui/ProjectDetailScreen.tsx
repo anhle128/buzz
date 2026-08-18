@@ -59,6 +59,8 @@ import {
   projectBranchOptionsFromSync,
   resolveProjectDefaultBranch,
 } from "@/features/projects/lib/projectBranches";
+import { isGitHubCloneUrl } from "@/features/projects/lib/projectGitError";
+import { githubRepositoryStateUnresolved } from "@/features/projects/lib/projectRepoState";
 import { normalizeRepositoryUrl } from "@/features/projects/lib/projectsViewHelpers";
 import {
   shareTabForWorkspaceTab,
@@ -151,29 +153,45 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
   );
   const repoStateQuery = useRepoStateQuery(repository);
   const pullRequestsQuery = useProjectPullRequestsQuery(repository);
-  const defaultBranch = repository
-    ? resolveProjectDefaultBranch(repository.defaultBranch, repoStateQuery.data)
-    : null;
+  // GitHub pending/error must not fall back to the announcement default ("main").
+  const githubHosted = isGitHubCloneUrl(repository?.cloneUrls[0]);
+  const githubStateFailed = githubHosted && repoStateQuery.isError;
+  const githubStateUnresolved = githubRepositoryStateUnresolved(
+    githubHosted,
+    repoStateQuery,
+  );
+  const defaultBranch =
+    !repository || githubStateUnresolved
+      ? null
+      : resolveProjectDefaultBranch(
+          repository.defaultBranch,
+          repoStateQuery.data,
+        );
   const { branchOptions, forgetBranch, managedBranches, rememberBranch } =
     useOptimisticProjectBranches({
       defaultBranch,
-      observedBranches: repoStateQuery.data?.branches ?? [],
+      observedBranches: githubStateUnresolved
+        ? []
+        : (repoStateQuery.data?.branches ?? []),
       projectId: repository?.id ?? projectId,
-      referencedBranches:
-        pullRequestsQuery.data?.map(
-          (pullRequest) => pullRequest.branchName ?? null,
-        ) ?? [],
+      referencedBranches: githubStateUnresolved
+        ? []
+        : (pullRequestsQuery.data?.map(
+            (pullRequest) => pullRequest.branchName ?? null,
+          ) ?? []),
     });
+  const repoTags = githubStateUnresolved
+    ? []
+    : (repoStateQuery.data?.tags ?? []);
   const { activeBranch, selectBranch, selectedTag, selectTag } =
     useProjectRepositoryRefSelection({
       branchOptions,
       defaultBranch,
       projectAvailable: Boolean(repository),
       projectPending: projectQuery.isPending,
-      tags: repoStateQuery.data?.tags ?? [],
+      tags: repoTags,
     });
-  const activeTag =
-    repoStateQuery.data?.tags.find((tag) => tag.name === selectedTag) ?? null;
+  const activeTag = repoTags.find((tag) => tag.name === selectedTag) ?? null;
   const [selectedPullRequestId, setSelectedPullRequestId] = React.useState<
     string | null
   >(pullRequestId ?? null);
@@ -397,7 +415,7 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
     branch: activeBranch ?? "",
     branchOptions: branchOptionsWithLocal,
     selectedTag,
-    tagOptions: repoStateQuery.data?.tags ?? [],
+    tagOptions: repoTags,
     onBranchChange: handleBranchChange,
     onTagChange: handleTagChange,
     onCreateBranch: () => branchActions.setCreateOpen(true),
@@ -462,6 +480,11 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
       repoSyncStatusQuery.isFetching,
     fetchTitle:
       repoSyncStatusQuery.data?.pullBlockReason ?? "Check for remote changes",
+    showGithubStateRecovery: githubStateFailed,
+    stateError: repoStateQuery.error,
+    onRetryState: () => {
+      void repoStateQuery.refetch();
+    },
   };
   const projectPending = projectQuery.isPending;
   React.useEffect(() => {

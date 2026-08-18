@@ -90,6 +90,16 @@ test("preserves HEAD for empty repositories", () => {
   );
 });
 
+test("prefers a published GitHub HEAD over the announcement default", () => {
+  assert.equal(
+    resolveProjectDefaultBranch("main", {
+      head: "develop",
+      branches: [{ name: "develop" }, { name: "main" }],
+    }),
+    "develop",
+  );
+});
+
 test("derives branch commits and deletion safeguards", () => {
   const branches = [
     { name: "main", commit: "a".repeat(40) },

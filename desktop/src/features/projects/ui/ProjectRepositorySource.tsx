@@ -204,6 +204,12 @@ export type RepoSourceHeaderControls = {
   onFetch?: () => void;
   fetchPending?: boolean;
   fetchTitle?: string;
+  /** Structured GitHub state error shown under the branch picker. */
+  stateError?: unknown;
+  /** Refetch repository state after a GitHub recovery action. */
+  onRetryState?: () => void;
+  /** When true, render GitHub CLI/auth recovery under the header row. */
+  showGithubStateRecovery?: boolean;
 };
 
 /** Compact dropdown picking the repository source (remote or local). */

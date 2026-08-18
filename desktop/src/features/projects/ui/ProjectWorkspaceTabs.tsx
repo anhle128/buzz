@@ -38,6 +38,7 @@ import { Button } from "@/shared/ui/button";
 import { Tabs, TabsContent } from "@/shared/ui/tabs";
 import { findReadmeFile } from "./ProjectReadmePanel";
 import { RepositoryFilesPanel } from "./ProjectRepositoryPanel";
+import { GitHubRepoStateRecovery } from "./GitHubRepoStateRecovery";
 import {
   type RepoSourceHeaderControls,
   RepoSourceDropdown,
@@ -408,34 +409,44 @@ export function WorkspaceTabs({
         data-testid="project-workspace-panel"
       >
         {showRepositorySelection && (repositoryControls || sourceControls) ? (
-          <div
-            className="flex min-h-12 min-w-0 flex-wrap items-center gap-1.5 border-border/50 border-b px-3 py-2"
-            data-testid="project-repository-selection-row"
-          >
-            {repositoryControls}
-            {sourceControls ? (
-              <>
-                <RepoSourceDropdown controls={sourceControls} />
-                <RepositoryBranchDropdown
-                  branch={sourceControls.branch}
-                  branchOptions={sourceControls.branchOptions}
-                  createBranchDisabled={sourceControls.createBranchDisabled}
-                  createBranchTitle={sourceControls.createBranchTitle}
-                  deleteBranchDisabled={sourceControls.deleteBranchDisabled}
-                  deleteBranchTitle={sourceControls.deleteBranchTitle}
-                  onBranchChange={sourceControls.onBranchChange}
-                  onCreateBranch={sourceControls.onCreateBranch}
-                  onDeleteBranch={sourceControls.onDeleteBranch}
-                  onTagChange={sourceControls.onTagChange}
-                  selectedTag={sourceControls.selectedTag}
-                  tagOptions={sourceControls.tagOptions}
+          <>
+            <div
+              className="flex min-h-12 min-w-0 flex-wrap items-center gap-1.5 border-border/50 border-b px-3 py-2"
+              data-testid="project-repository-selection-row"
+            >
+              {repositoryControls}
+              {sourceControls ? (
+                <>
+                  <RepoSourceDropdown controls={sourceControls} />
+                  <RepositoryBranchDropdown
+                    branch={sourceControls.branch}
+                    branchOptions={sourceControls.branchOptions}
+                    createBranchDisabled={sourceControls.createBranchDisabled}
+                    createBranchTitle={sourceControls.createBranchTitle}
+                    deleteBranchDisabled={sourceControls.deleteBranchDisabled}
+                    deleteBranchTitle={sourceControls.deleteBranchTitle}
+                    onBranchChange={sourceControls.onBranchChange}
+                    onCreateBranch={sourceControls.onCreateBranch}
+                    onDeleteBranch={sourceControls.onDeleteBranch}
+                    onTagChange={sourceControls.onTagChange}
+                    selectedTag={sourceControls.selectedTag}
+                    tagOptions={sourceControls.tagOptions}
+                  />
+                  <div className="ml-auto flex shrink-0 items-center">
+                    <RepoSyncActionButton controls={sourceControls} />
+                  </div>
+                </>
+              ) : null}
+            </div>
+            {sourceControls?.showGithubStateRecovery ? (
+              <div className="border-border/50 border-b px-3 py-2">
+                <GitHubRepoStateRecovery
+                  error={sourceControls.stateError}
+                  onRetry={sourceControls.onRetryState}
                 />
-                <div className="ml-auto flex shrink-0 items-center">
-                  <RepoSyncActionButton controls={sourceControls} />
-                </div>
-              </>
+              </div>
             ) : null}
-          </div>
+          </>
         ) : null}
         {sectionHeader}
         {selectedPullRequest ? (
