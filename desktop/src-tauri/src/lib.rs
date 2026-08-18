@@ -647,6 +647,7 @@ pub fn run() {
             get_git_identity,
             get_project_repo_snapshot,
             get_github_repository_state,
+            get_github_repository_snapshot,
             get_project_repo_diff,
             get_project_local_repo_diff,
             get_project_local_repo_snapshot,

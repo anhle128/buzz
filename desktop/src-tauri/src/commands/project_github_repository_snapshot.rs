@@ -82,6 +82,34 @@ pub(crate) fn github_repository_snapshot_with(
     })
 }
 
+pub(crate) fn get_github_repository_snapshot_with_runner(
+    clone_url: String,
+    ref_name: String,
+    gh: Result<GhRunner, ProjectPullRequestMergeError>,
+) -> Result<ProjectRepoSnapshotInfo, ProjectPullRequestMergeError> {
+    let gh = gh.map_err(|error| remap_state_error(error, ""))?;
+    github_repository_snapshot_with(&gh, &clone_url, &ref_name)
+}
+
+/// Load README, file tree, and recent commits for a github.com clone URL.
+#[tauri::command]
+pub async fn get_github_repository_snapshot(
+    clone_url: String,
+    ref_name: String,
+) -> Result<ProjectRepoSnapshotInfo, ProjectPullRequestMergeError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        get_github_repository_snapshot_with_runner(
+            clone_url,
+            ref_name,
+            GhRunner::discover(),
+        )
+    })
+    .await
+    .map_err(|error| {
+        ProjectPullRequestMergeError::new("github_state_failed", error.to_string())
+    })?
+}
+
 fn clean_github_branch(git_ref: &str) -> Result<String, ProjectPullRequestMergeError> {
     let trimmed = git_ref.trim();
     if trimmed.starts_with("refs/") && !trimmed.starts_with("refs/heads/") {
@@ -508,6 +536,18 @@ esac
         assert!(snapshot.latest_commit.is_none());
         assert!(snapshot.commits.is_empty());
         assert!(snapshot.files.is_empty());
+    }
+
+    #[test]
+    fn wrapper_maps_discover_failure() {
+        let err = get_github_repository_snapshot_with_runner(
+            "https://github.com/acme/app".into(),
+            "develop".into(),
+            GhRunner::from_resolved(None),
+        )
+        .expect_err("missing");
+        let value = serde_json::to_value(err).expect("json");
+        assert_eq!(value["code"], "github_cli_missing");
     }
 
     #[test]
