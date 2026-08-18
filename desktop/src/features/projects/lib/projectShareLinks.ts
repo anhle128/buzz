@@ -118,7 +118,50 @@ export function repositoryShareLink(repository: Repository): string | null {
     : null;
 }
 
+function isSafeGitHubIssueUrl(raw: string): boolean {
+  try {
+    if (
+      raw !== raw.trim() ||
+      !raw.startsWith("https://github.com/") ||
+      raw.endsWith("/") ||
+      raw.includes("\\")
+    ) {
+      return false;
+    }
+    const url = new URL(raw);
+    if (
+      url.protocol !== "https:" ||
+      url.hostname !== "github.com" ||
+      url.port !== "" ||
+      url.username !== "" ||
+      url.password !== "" ||
+      url.search !== "" ||
+      url.hash !== "" ||
+      url.pathname.includes("%") ||
+      url.pathname.includes("//")
+    ) {
+      return false;
+    }
+    const [owner, repo, segment, number, ...rest] = url.pathname
+      .split("/")
+      .filter(Boolean);
+    return (
+      rest.length === 0 &&
+      segment === "issues" &&
+      /^[A-Za-z0-9-]+$/.test(owner ?? "") &&
+      /^[A-Za-z0-9._-]+$/.test(repo ?? "") &&
+      /^[1-9][0-9]*$/.test(number ?? "") &&
+      raw === `https://github.com/${owner}/${repo}/issues/${number}`
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function issueShareLink(issue: ProjectIssue): string | null {
+  if (issue.htmlUrl && isSafeGitHubIssueUrl(issue.htmlUrl)) {
+    return issue.htmlUrl;
+  }
   const coordinate = repositoryCoordinate(issue.repoAddress);
   return coordinate &&
     HEX64_RE.test(issue.id) &&

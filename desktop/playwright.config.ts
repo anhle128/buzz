@@ -114,6 +114,7 @@ export default defineConfig({
         "**/project-issue-comments.spec.ts",
         "**/project-pr-review.spec.ts",
         "**/github-repo-state.spec.ts",
+        "**/github-issues.spec.ts",
         "**/github-snapshot-and-fetch.spec.ts",
         "**/github-pull-push-and-branches.spec.ts",
         "**/persona-model-combobox-screenshots.spec.ts",

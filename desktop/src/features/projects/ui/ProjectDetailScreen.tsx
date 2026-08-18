@@ -60,6 +60,7 @@ import {
 } from "@/features/projects/lib/projectBranches";
 import { githubRemoteSnapshotEnabled } from "@/features/projects/lib/projectGithubSnapshot";
 import { isGitHubCloneUrl } from "@/features/projects/lib/projectGitError";
+import { issueIdentityPubkeys } from "@/features/projects/lib/projectGithubIssues";
 import { githubRepositoryStateUnresolved } from "@/features/projects/lib/projectRepoState";
 import { normalizeRepositoryUrl } from "@/features/projects/lib/projectsViewHelpers";
 import {
@@ -433,12 +434,7 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
         ...pullRequest.approvals.map((approval) => approval.author),
       ],
     );
-    const issuePubkeys = (issuesQuery.data ?? []).flatMap((issue) => [
-      issue.author,
-      ...issue.recipients,
-      ...issue.assignees,
-      ...issue.comments.map((comment) => comment.author),
-    ]);
+    const issuePubkeys = issueIdentityPubkeys(issuesQuery.data?.issues ?? []);
     return [
       ...new Set([
         ...projectPeople(repository),
@@ -752,7 +748,8 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
     pullRequestsQuery.data?.find((item) => item.id === selectedPullRequestId) ??
     null;
   const selectedIssue =
-    issuesQuery.data?.find((item) => item.id === selectedIssueId) ?? null;
+    issuesQuery.data?.issues.find((item) => item.id === selectedIssueId) ??
+    null;
   const displayedSnapshotCommits =
     repoSource === "local"
       ? (localRepoSnapshotQuery.data?.snapshot.commits ?? [])

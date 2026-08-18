@@ -11,6 +11,7 @@ import {
   getProjectRepoDiff,
   getProjectLocalRepoSnapshot,
   getProjectRepoSnapshot,
+  listGithubIssues,
   listProjectLocalRepositories,
 } from "@/shared/api/projectGit";
 import {
@@ -26,6 +27,7 @@ import {
   KIND_TEXT_NOTE,
 } from "@/shared/constants/kinds";
 import { isGitHubCloneUrl } from "@/features/projects/lib/projectGitError";
+import { fetchProjectIssuesWith } from "@/features/projects/lib/projectGithubIssues";
 import { fetchProjectRepoSnapshotWith } from "@/features/projects/lib/projectGithubSnapshot";
 import { fetchRepoState } from "@/features/projects/lib/projectRepoState";
 export type { RepoState } from "@/features/projects/lib/projectRepoState";
@@ -176,7 +178,7 @@ export async function fetchProjects(
   });
 }
 
-async function fetchProjectIssues(
+async function fetchBuzzProjectIssues(
   project: Repository,
 ): Promise<ProjectIssue[]> {
   const issuePromise = relayClient.fetchEvents({
@@ -771,7 +773,10 @@ export function useProjectIssuesQuery(project: Repository | null | undefined) {
     queryKey: ["project", project?.id ?? "none", "issues"],
     queryFn: () => {
       if (!project) throw new Error("No project selected.");
-      return fetchProjectIssues(project);
+      return fetchProjectIssuesWith(project, {
+        loadGithub: listGithubIssues,
+        loadBuzz: () => fetchBuzzProjectIssues(project),
+      });
     },
     staleTime: 30_000,
   });

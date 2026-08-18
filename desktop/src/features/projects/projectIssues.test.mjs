@@ -451,3 +451,26 @@ test("orders consecutive issue comments across whole-second timestamps", () => {
   assert.equal(nextProjectIssueCommentCreatedAt(issue, 200, AUTHOR), 202);
   assert.equal(nextProjectIssueCommentCreatedAt(issue, 300, AUTHOR), 300);
 });
+
+test("Nostr issues expose neutral GitHub extension fields", () => {
+  const issue = eventToProjectIssue(
+    issueEvent(),
+    [],
+    [
+      {
+        id: "c".repeat(64),
+        kind: 1,
+        pubkey: AUTHOR,
+        created_at: 110,
+        content: "hi",
+        tags: [["e", "e".repeat(64)]],
+      },
+    ],
+  );
+  assert.equal(issue.status, PROJECT_ISSUE_STATUS.BACKLOG);
+  assert.equal(PROJECT_ISSUE_STATUS.OPEN, "Open");
+  assert.equal(issue.commentCount, 1);
+  assert.equal(issue.htmlUrl, null);
+  assert.equal(issue.authorAvatarUrl, null);
+  assert.deepEqual(issue.assigneeAvatars, {});
+});

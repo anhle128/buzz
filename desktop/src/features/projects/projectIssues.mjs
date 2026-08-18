@@ -9,6 +9,7 @@ export const ISSUE_ASSIGNMENT_LABEL = "assignment";
 export const ISSUE_UNASSIGNMENT_LABEL = "unassignment";
 
 export const PROJECT_ISSUE_STATUS = {
+  OPEN: "Open",
   TRIAGE: "Triage",
   BACKLOG: "Backlog",
   IN_PROGRESS: "In Progress",
@@ -201,6 +202,7 @@ export function eventToProjectIssue(
     content: issue.content,
     tags: getImetaTags(issue),
     author: issue.pubkey,
+    authorAvatarUrl: null,
     createdAt: issue.created_at,
     repoAddress: getTag(issue, "a") ?? null,
     channelId: getTag(issue, "h") ?? null,
@@ -208,6 +210,7 @@ export function eventToProjectIssue(
     labels: getAllTags(issue, "t"),
     recipients: getAllTags(issue, "p"),
     assignees: assignmentState.assignees,
+    assigneeAvatars: {},
     assigneeOperationHeads: assignmentState.heads,
     status: statusFromEvent(issue, latestStatus),
     statusEventId: latestStatus?.id ?? null,
@@ -218,6 +221,8 @@ export function eventToProjectIssue(
       ].sort((left, right) => right.createdAt - left.createdAt)[0]?.createdAt ??
       issue.created_at,
     comments,
+    commentCount: comments.length,
+    htmlUrl: null,
   };
 }
 

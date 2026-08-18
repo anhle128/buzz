@@ -4,17 +4,17 @@ import { parseProjectPullRequestMergeError } from "@/shared/api/projectGit";
 import { copyTextToClipboard } from "@/shared/lib/clipboard";
 import { Button } from "@/shared/ui/button";
 
-function githubStateErrorTitle(code: string | undefined): string {
+function githubStateErrorTitle(
+  code: string | undefined,
+  unavailableTitle: string,
+): string {
   switch (code) {
     case "github_cli_missing":
       return "GitHub CLI is required";
     case "github_auth_required":
       return "GitHub authentication required";
-    case "github_repo_unavailable":
-    case "github_state_failed":
-      return "Could not load GitHub branches";
     default:
-      return "Could not load GitHub branches";
+      return unavailableTitle;
   }
 }
 
@@ -22,26 +22,28 @@ function githubStateErrorTitle(code: string | undefined): string {
 export function GitHubRepoStateRecovery({
   error,
   onRetry,
+  titleId = "github-repo-state-recovery-title",
+  unavailableTitle = "Could not load GitHub branches",
 }: {
   error?: unknown;
   onRetry?: () => void;
+  titleId?: string;
+  unavailableTitle?: string;
 }) {
   const parsed = parseProjectPullRequestMergeError(error);
   const code = parsed?.code;
   const message =
     parsed?.message ??
-    (error instanceof Error
-      ? error.message
-      : "Could not load GitHub branches.");
-  const title = githubStateErrorTitle(code);
+    (error instanceof Error ? error.message : unavailableTitle);
+  const title = githubStateErrorTitle(code, unavailableTitle);
 
   return (
     <section
-      aria-labelledby="github-repo-state-recovery-title"
+      aria-labelledby={titleId}
       className="w-full rounded-md border border-border bg-muted/40 p-3"
       role="status"
     >
-      <h3 className="text-sm font-medium" id="github-repo-state-recovery-title">
+      <h3 className="text-sm font-medium" id={titleId}>
         {title}
       </h3>
       <p className="mt-1 text-sm text-muted-foreground">{message}</p>

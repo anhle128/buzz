@@ -20,20 +20,25 @@ const COLLAPSED_COMMENT_COUNT = 3;
 
 export function ProjectIssueCommentTimeline({
   comments,
+  githubMode = false,
   profiles,
 }: {
   comments: ProjectIssue["comments"];
+  githubMode?: boolean;
   profiles?: UserProfileLookup;
 }) {
   const [isCollapsed, setIsCollapsed] = React.useState(false);
   const [isExpanded, setIsExpanded] = React.useState(false);
   const orderedComments = React.useMemo(
     () =>
-      [...comments].sort(
-        (left, right) =>
-          left.createdAt - right.createdAt || left.id.localeCompare(right.id),
-      ),
-    [comments],
+      githubMode
+        ? [...comments]
+        : [...comments].sort(
+            (left, right) =>
+              left.createdAt - right.createdAt ||
+              left.id.localeCompare(right.id),
+          ),
+    [comments, githubMode],
   );
   const earlierCommentCount = Math.max(
     0,
@@ -98,10 +103,12 @@ export function ProjectIssueCommentTimeline({
       ) : null}
 
       {displayedComments.map((comment, index) => {
-        const authorLabel = resolveUserLabel({
-          profiles,
-          pubkey: comment.author,
-        });
+        const authorLabel = githubMode
+          ? comment.author
+          : resolveUserLabel({ profiles, pubkey: comment.author });
+        const avatarUrl = githubMode
+          ? (comment.authorAvatarUrl ?? null)
+          : (profiles?.[normalizePubkey(comment.author)]?.avatarUrl ?? null);
         return (
           <div
             className="flex min-h-10 min-w-0 items-start gap-2 py-2.5 text-sm text-muted-foreground"
@@ -115,9 +122,7 @@ export function ProjectIssueCommentTimeline({
               {/* bg-background keeps the connector line from showing through
                   while the avatar image (or delayed fallback) loads. */}
               <UserAvatar
-                avatarUrl={
-                  profiles?.[normalizePubkey(comment.author)]?.avatarUrl ?? null
-                }
+                avatarUrl={avatarUrl}
                 className="relative z-10 bg-background ring-1 ring-border/70"
                 displayName={authorLabel}
                 size="xs"
@@ -127,9 +132,13 @@ export function ProjectIssueCommentTimeline({
               {/* h-5 matches the avatar so the header line centers on it. */}
               <div className="flex h-5 min-w-0 items-center text-xs leading-4">
                 <span className="min-w-0 flex-1 truncate">
-                  <ProfileAuthorName pubkey={comment.author}>
-                    {authorLabel}
-                  </ProfileAuthorName>
+                  {githubMode ? (
+                    <span>{authorLabel}</span>
+                  ) : (
+                    <ProfileAuthorName pubkey={comment.author}>
+                      {authorLabel}
+                    </ProfileAuthorName>
+                  )}
                 </span>
                 <span
                   className="ml-auto w-20 shrink-0 text-right text-muted-foreground/70"

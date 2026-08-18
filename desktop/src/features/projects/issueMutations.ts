@@ -1,8 +1,11 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
+import { createGithubIssue } from "@/shared/api/projectGit";
 import { relayClient } from "@/shared/api/relayClient";
 import { signRelayEvent } from "@/shared/api/tauri";
 import { KIND_GIT_ISSUE } from "@/shared/constants/kinds";
+import { isGitHubCloneUrl } from "@/features/projects/lib/projectGitError";
+import { githubIssueId } from "@/features/projects/lib/projectGithubIssues";
 import type { Repository as Project } from "./hooks";
 import { buildGitIssueTags } from "./projectIssues.mjs";
 
@@ -32,6 +35,42 @@ export async function publishProjectIssue(
   return event.id;
 }
 
+/** Create an issue through exactly one repository-native backend. */
+export async function createProjectIssueWith(
+  project: Project,
+  input: CreateProjectIssueInput,
+  loaders: {
+    createGithub: (input: {
+      cloneUrl: string;
+      title: string;
+      body: string;
+    }) => Promise<{ number: number }>;
+    publishBuzz: typeof publishProjectIssue;
+  },
+): Promise<string> {
+  const cloneUrl = project.cloneUrls[0] ?? "";
+  if (isGitHubCloneUrl(cloneUrl)) {
+    const issue = await loaders.createGithub({
+      cloneUrl,
+      title: input.title,
+      body: input.body,
+    });
+    return githubIssueId(issue.number);
+  }
+  return loaders.publishBuzz(project, input);
+}
+
+/** Query keys invalidated after a repository-native issue create. */
+export function projectIssueInvalidationKeys(
+  project: Pick<Project, "id" | "cloneUrls">,
+): unknown[][] {
+  const keys: unknown[][] = [["project", project.id, "issues"]];
+  if (!isGitHubCloneUrl(project.cloneUrls[0])) {
+    keys.push(["projects", "work-items"], ["projects", "activity-summaries"]);
+  }
+  return keys;
+}
+
 export function useCreateProjectIssueMutation(
   project: Project | null | undefined,
 ) {
@@ -39,20 +78,18 @@ export function useCreateProjectIssueMutation(
   return useMutation({
     mutationFn: (input: CreateProjectIssueInput) => {
       if (!project) throw new Error("No project selected.");
-      return publishProjectIssue(project, input);
+      return createProjectIssueWith(project, input, {
+        createGithub: createGithubIssue,
+        publishBuzz: publishProjectIssue,
+      });
     },
     onSuccess: async () => {
-      await Promise.all([
-        queryClient.invalidateQueries({
-          queryKey: ["project", project?.id ?? "none", "issues"],
-        }),
-        queryClient.invalidateQueries({
-          queryKey: ["projects", "work-items"],
-        }),
-        queryClient.invalidateQueries({
-          queryKey: ["projects", "activity-summaries"],
-        }),
-      ]);
+      if (!project) return;
+      await Promise.all(
+        projectIssueInvalidationKeys(project).map((queryKey) =>
+          queryClient.invalidateQueries({ queryKey }),
+        ),
+      );
     },
   });
 }

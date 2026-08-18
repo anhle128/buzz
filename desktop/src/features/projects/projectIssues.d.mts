@@ -1,6 +1,7 @@
 import type { RelayEvent } from "@/shared/api/types";
 
 export type ProjectIssueStatus =
+  | "Open"
   | "Triage"
   | "Backlog"
   | "In Progress"
@@ -13,6 +14,7 @@ export type ProjectIssueComment = {
   content: string;
   tags: string[][];
   author: string;
+  authorAvatarUrl?: string | null;
   createdAt: number;
 };
 
@@ -22,6 +24,7 @@ export type ProjectIssue = {
   content: string;
   tags: string[][];
   author: string;
+  authorAvatarUrl: string | null;
   createdAt: number;
   repoAddress: string | null;
   channelId: string | null;
@@ -29,17 +32,21 @@ export type ProjectIssue = {
   labels: string[];
   recipients: string[];
   assignees: string[];
+  assigneeAvatars: Record<string, string>;
   assigneeOperationHeads: Record<string, string>;
   status: ProjectIssueStatus;
   statusEventId: string | null;
   updatedAt: number;
   comments: ProjectIssueComment[];
+  commentCount: number;
+  htmlUrl: string | null;
 };
 
 export const ISSUE_ASSIGNMENT_LABEL: "assignment";
 export const ISSUE_UNASSIGNMENT_LABEL: "unassignment";
 
 export const PROJECT_ISSUE_STATUS: {
+  OPEN: "Open";
   TRIAGE: "Triage";
   BACKLOG: "Backlog";
   IN_PROGRESS: "In Progress";

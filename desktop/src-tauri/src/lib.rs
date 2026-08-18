@@ -647,6 +647,9 @@ pub fn run() {
             get_git_identity,
             get_project_repo_snapshot,
             get_github_repository_state,
+            list_github_issues,
+            create_github_issue,
+            list_github_issue_comments,
             get_github_repository_snapshot,
             get_github_ahead_behind,
             get_project_repo_diff,
@@ -928,7 +931,6 @@ pub fn run() {
     let shutdown_done = Arc::new(AtomicBool::new(false));
     #[cfg(unix)]
     shutdown::install_signal_handler(app.handle().clone(), Arc::clone(&shutdown_done));
-
     let run_shutdown_done = Arc::clone(&shutdown_done);
     let restart_requested = Arc::new(AtomicBool::new(false));
     app.run(move |app_handle, event| match event {
@@ -980,12 +982,10 @@ pub fn run() {
         RunEvent::Exit => {
             shut_down_app(app_handle, &run_shutdown_done);
             app_handle.state::<ClipboardState>().release();
-
             #[cfg(all(feature = "mesh-llm", target_os = "macos"))]
             if restart_requested.load(Ordering::SeqCst) {
                 relaunch_after_mesh_shutdown(app_handle);
             }
-
             // AppKit terminates through libc exit(), which runs C++ static
             // destructors. The embedded ggml/Metal runtime currently aborts in
             // that destructor phase even after its node has stopped cleanly.

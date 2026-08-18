@@ -15,6 +15,7 @@ import {
   type UserProfileLookup,
 } from "@/features/profile/lib/identity";
 import { entityDiscussionQuery } from "@/features/projects/lib/discussionChannels";
+import { isGitHubCloneUrl } from "@/features/projects/lib/projectGitError";
 import { issueShareLink } from "@/features/projects/lib/projectShareLinks";
 import { relativeTime } from "@/features/projects/lib/projectsViewHelpers";
 import { useIdentityQuery } from "@/shared/api/hooks";
@@ -28,6 +29,8 @@ import {
   ProjectFeedRowMonoCell,
 } from "./ProjectFeedRow";
 import { DiscussedInChannels } from "./DiscussionChannels";
+import { GitHubIssueDetail, GitHubIssueRow } from "./GitHubProjectIssues";
+import { GitHubRepoStateRecovery } from "./GitHubRepoStateRecovery";
 import { ProjectIssueCommentTimeline } from "./ProjectIssueCommentTimeline";
 import { ProjectOriginReference } from "./ProjectOriginReference";
 import { OverviewRailSection } from "./ProjectOverviewPanel";
@@ -386,7 +389,8 @@ export function ProjectIssuesPanel({
   selectedIssueId: string | null;
 }) {
   const issuesQuery = useProjectIssuesQuery(project);
-  const issues = issuesQuery.data ?? [];
+  const issues = issuesQuery.data?.issues ?? [];
+  const githubHosted = isGitHubCloneUrl(project.cloneUrls[0]);
   const selectedIssue =
     issues.find((issue) => issue.id === selectedIssueId) ?? null;
 
@@ -394,23 +398,68 @@ export function ProjectIssuesPanel({
     return <p className="p-4 text-sm text-muted-foreground">Loading issues…</p>;
   }
 
-  if (issues.length === 0) {
+  if (githubHosted && issuesQuery.isError) {
+    return (
+      <div className="p-4">
+        <GitHubRepoStateRecovery
+          error={issuesQuery.error}
+          onRetry={() => void issuesQuery.refetch()}
+          titleId="github-issues-recovery-title"
+          unavailableTitle="Could not load GitHub issues"
+        />
+      </div>
+    );
+  }
+
+  if (issuesQuery.isError) {
     return (
       <p className="p-4 text-sm text-muted-foreground">
-        {issuesQuery.error
-          ? "Could not load issues for this repository."
-          : "No issues yet."}
+        Could not load issues for this repository.
       </p>
     );
   }
 
-  if (selectedIssue) {
+  if (issues.length === 0) {
     return (
+      <div className="space-y-2 p-4 text-sm text-muted-foreground">
+        <p>{githubHosted ? "No open issues." : "No issues yet."}</p>
+        {githubHosted && issuesQuery.data?.hasMore ? (
+          <p>More open issues exist on GitHub.</p>
+        ) : null}
+      </div>
+    );
+  }
+
+  if (selectedIssue) {
+    return githubHosted ? (
+      <GitHubIssueDetail issue={selectedIssue} project={project} />
+    ) : (
       <ProjectIssueDetail
         issue={selectedIssue}
         profiles={profiles}
         project={project}
       />
+    );
+  }
+
+  if (githubHosted) {
+    return (
+      <div>
+        <div className="divide-y divide-border/50">
+          {issues.map((issue) => (
+            <GitHubIssueRow
+              issue={issue}
+              key={issue.id}
+              onOpen={() => onSelectedIssueIdChange(issue.id)}
+            />
+          ))}
+        </div>
+        {issuesQuery.data?.hasMore ? (
+          <p className="border-t border-border/50 p-4 text-xs text-muted-foreground">
+            More open issues exist on GitHub.
+          </p>
+        ) : null}
+      </div>
     );
   }
 
