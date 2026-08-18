@@ -63,4 +63,6 @@ On a GitHub repo whose default is `develop`:
 Start **G1 + G2** only. Then G3+G4. Then G5–G7.
 
 **G1+G2 implementation plan:** [docs/superpowers/plans/2026-08-18-github-repository-state.md](../../docs/superpowers/plans/2026-08-18-github-repository-state.md)  
-**Spec:** [docs/superpowers/specs/2026-08-18-github-repository-state-design.md](../../docs/superpowers/specs/2026-08-18-github-repository-state-design.md)
+**G1+G2 spec:** [docs/superpowers/specs/2026-08-18-github-repository-state-design.md](../../docs/superpowers/specs/2026-08-18-github-repository-state-design.md)
+
+**G3+G4 spec:** [docs/superpowers/specs/2026-08-18-github-snapshot-and-fetch-design.md](../../docs/superpowers/specs/2026-08-18-github-snapshot-and-fetch-design.md)
