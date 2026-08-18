@@ -55,6 +55,7 @@ mod project_git_push;
 mod project_git_recipient_notes;
 mod project_git_workflow;
 mod project_github_pull_request;
+mod project_github_repository_snapshot;
 mod project_github_repository_state;
 mod project_repo_paths;
 mod project_terminal;
