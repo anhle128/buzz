@@ -19,8 +19,8 @@ type GhJob = crate::managed_agents::JobHandle;
 type GhJob = ();
 
 pub(crate) struct GitHubRepoRef {
-    owner: String,
-    repo: String,
+    pub(crate) owner: String,
+    pub(crate) repo: String,
 }
 
 impl GitHubRepoRef {
