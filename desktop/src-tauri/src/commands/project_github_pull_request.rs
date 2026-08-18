@@ -91,7 +91,7 @@ impl GitHubRepoRef {
         })
     }
 
-    fn slug(&self) -> String {
+    pub(crate) fn slug(&self) -> String {
         format!("{}/{}", self.owner, self.repo)
     }
 
@@ -273,24 +273,26 @@ fn select_pull(
 }
 
 #[derive(Debug)]
-struct GhRunner {
+pub(crate) struct GhRunner {
     binary: PathBuf,
     timeout: Duration,
 }
 
 #[derive(Debug)]
-struct GhOutput {
-    status: ExitStatus,
-    stdout: String,
-    stderr: String,
+pub(crate) struct GhOutput {
+    pub(crate) status: ExitStatus,
+    pub(crate) stdout: String,
+    pub(crate) stderr: String,
 }
 
 impl GhRunner {
-    fn discover() -> Result<Self, ProjectPullRequestMergeError> {
+    pub(crate) fn discover() -> Result<Self, ProjectPullRequestMergeError> {
         Self::from_resolved(crate::managed_agents::resolve_command("gh"))
     }
 
-    fn from_resolved(binary: Option<PathBuf>) -> Result<Self, ProjectPullRequestMergeError> {
+    pub(crate) fn from_resolved(
+        binary: Option<PathBuf>,
+    ) -> Result<Self, ProjectPullRequestMergeError> {
         let binary = binary.ok_or_else(missing_cli_error)?;
         Ok(Self {
             binary,
@@ -298,7 +300,7 @@ impl GhRunner {
         })
     }
 
-    fn ensure_auth(&self) -> Result<(), ProjectPullRequestMergeError> {
+    pub(crate) fn ensure_auth(&self) -> Result<(), ProjectPullRequestMergeError> {
         let output = self.run(&[
             OsString::from("auth"),
             OsString::from("status"),
@@ -314,7 +316,7 @@ impl GhRunner {
         ))
     }
 
-    fn run_json<T: DeserializeOwned>(
+    pub(crate) fn run_json<T: DeserializeOwned>(
         &self,
         args: &[OsString],
         accepted_codes: &[i32],
@@ -335,7 +337,7 @@ impl GhRunner {
         })
     }
 
-    fn run(&self, args: &[OsString]) -> Result<GhOutput, ProjectPullRequestMergeError> {
+    pub(crate) fn run(&self, args: &[OsString]) -> Result<GhOutput, ProjectPullRequestMergeError> {
         let mut command = Command::new(&self.binary);
         command
             .args(args)
@@ -943,7 +945,7 @@ fn read_pipe_bounded(pipe: Option<impl Read>, limit: usize) -> String {
     truncate_utf8_bytes(&output, limit)
 }
 
-fn redact_diagnostic(raw: &str) -> String {
+pub(crate) fn redact_diagnostic(raw: &str) -> String {
     static TOKEN: OnceLock<Regex> = OnceLock::new();
     static AUTHORIZATION: OnceLock<Regex> = OnceLock::new();
     static CREDENTIAL: OnceLock<Regex> = OnceLock::new();
