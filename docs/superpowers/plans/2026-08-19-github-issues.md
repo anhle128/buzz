@@ -3,161 +3,301 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task.
 > Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** When a Projects repository clone URL is `github.com`, the per-repo Issues tab lists and creates GitHub Issues via `gh api` and never publishes NIP-34 `kind:1621`.
+**Goal:** When a Projects repository uses a plain `github.com` clone URL, its per-repository Issues tab lists open GitHub Issues, creates GitHub Issues, and never reads or publishes NIP-34 `kind:1621` for that repository.
 
-**Architecture:** Add three Tauri commands that reuse `GhRunner` and `GitHubRepoRef`.
-`fetchProjectIssues` and `useCreateProjectIssueMutation` become host-aware: `isGitHubCloneUrl` routes to GitHub only, and Buzz `/git/...` remotes keep kind:1621.
-The existing Issues tab and create dialog stay; GitHub rows use numeric `#N`, login identities, read-only labels and assignees, and a separate comments query.
+**Architecture:** Add three Tauri commands backed by the existing bounded `GhRunner` and `GitHubRepoRef` abstractions.
+Route the existing issue query and create mutation by the selected repository's first clone URL, map bounded GitHub DTOs into `ProjectIssue`, and keep the Buzz-hosted issue path unchanged.
+Put GitHub-only list/detail chrome in a focused component so GitHub logins never reach pubkey normalization, profile lookup, or Nostr assignment/comment mutations.
 
-**Tech Stack:** Tauri 2 desktop crate, `gh api`, React 19, TanStack Query, Node `node:test` via desktop `pnpm test`, Playwright mock-bridge smoke.
+**Tech Stack:** Rust, Tauri 2, `gh api`, React 19, TanStack Query, Node `node:test`, and Playwright with the E2E mock bridge.
 
 **Spec:** [2026-08-18-github-issues-design.md](../specs/2026-08-18-github-issues-design.md)
 
-**Product contract:** [VISION.md](../../../VISION.md) and [VISION_PROJECTS.md](../../../VISION_PROJECTS.md) make GitHub the native issue backend when the clone URL is `github.com`.
-Buzz remains the collaboration layer and the only issue backend for Buzz-hosted remotes.
+**Product contract:** [VISION.md](../../../VISION.md) and [VISION_PROJECTS.md](../../../VISION_PROJECTS.md) make GitHub the native issue backend for GitHub-hosted repositories while Buzz remains the collaboration layer.
 
-**Phase doc:** [phase-02-github-issues.md](../../../plans/20260818-1211-github-native-host/phase-02-github-issues.md) slice I1 + I2.
+**Phase doc:** [phase-02-github-issues.md](../../../plans/20260818-1211-github-native-host/phase-02-github-issues.md), slice I1 + I2 only.
 
 ## Global Constraints
 
-- I1 + I2 only: list open issues, create title+body, load comments as read-only.
-- Do not implement close/reopen (I3), posting comments (I4), label writes (I5), or assignee writes (I6).
-- Do not add an Open | Closed filter, `state=all`, a second page, or Load more.
-- Do not change the global Projects Issues list, card/activity counts, CLI, mobile, or `buzz://issue`.
-- Do not dual-write.
-- Do not import GitHub issues into Nostr.
-- Do not call `gh issue`.
-- Do not add a provider trait.
-- Do not store a GitHub token.
-- Auth is installed `gh` plus `gh auth status --hostname github.com`.
-- Use `gh api` only.
-- `list_github_issues` requires `state` of `open` or `closed`.
-- I1+I2 UI always sends `state=open`.
-- One page, `per_page=100`, `sort=updated`, `direction=desc`, no `--paginate`.
-- Drop any item that has a GitHub `pull_request` field.
-- `has_more` is `raw_items.len() == 100` before PR/html_url filtering.
-- `number` is a `u64` greater than 0, never a raw unparsed path segment.
-- Authors and assignees are GitHub logins + avatar URLs, never pubkeys.
-- Never pass a login to `ProfileIdentityButton`, `normalizePubkey`, `useUsersBatchQuery`, or assignment mutations.
-- Add `"Open"` to `PROJECT_ISSUE_STATUS`.
-- GitHub `open` maps to `"Open"`.
-- GitHub `closed` maps to `"Closed"`.
-- Do not map open to Backlog.
-- Copy link uses a validated `html_url` only.
-- Create sends `{ "title", "body" }` only.
-- Title is required after trim and at most 256 characters.
-- Body may be empty.
-- On GitHub create success, invalidate only `["project", id, "issues"]`.
-- Do not invalidate `work-items` or `activity-summaries` for GitHub creates.
-- Buzz create keeps today's invalidation.
-- Query key stays `["project", id, "issues"]` in this slice.
-- I3–I6 will add `state` to the GitHub key later.
-- Error codes from the three new commands: only `github_cli_missing`, `github_auth_required`, `github_repo_unavailable`, `github_issues_failed`.
-- Remap every `github_merge_failed` and do not leak `github_state_failed`.
-- Never invent an empty issue list on CLI or auth failure.
-- Check GitHub errors before the empty-success branch.
-- GitHub empty success copy is `No open issues.`
-- Do not show `No issues yet` or `Could not load issues for this repository.` on a GitHub CLI/auth/repo failure.
-- Buzz empty and Buzz error copy stay unchanged.
-- `desktop/src-tauri/src/commands/project_github_pull_request.rs` is 998 lines.
-- Do not add functions to that file.
-- Only mark `GitHubRepoRef` fields `pub(crate)` there.
-- `desktop/src/features/projects/ui/ProjectDetailScreen.tsx` is 953 lines and `hooks.ts` is 921 lines.
-- Keep those diffs tiny and put new logic in new files.
-- No `unsafe`.
-- No new `unwrap()` or `expect()` on production paths.
-- New public Rust and TypeScript APIs get doc comments.
-- Desktop text uses rem tokens (`text-xs`, `text-2xs`), never `text-[Npx]`.
-- Activate Hermit in every shell: `. ./bin/activate-hermit && …`.
-- CWD does not persist across tool calls.
-- Commits use `git commit -s`.
-- Before each commit run `if [ -f .gitnexus/run.cjs ]; then node .gitnexus/run.cjs detect; fi`.
-- Before editing a symbol, run GitNexus `impact({target, direction: "upstream"})` when MCP tools are available and warn on HIGH or CRITICAL.
-- No live GitHub in unit tests.
+- Implement I1 + I2 only: list open issues, create an issue with title and body, and load existing comments read-only when detail opens.
+- Do not implement close/reopen, posting comments, label writes, assignee writes, an Open/Closed filter, `state=all`, a second page, or Load more.
+- Do not change the global Projects Issues list, project card/activity counts, CLI, mobile, or the `buzz://issue` scheme.
+- Do not union GitHub Issues with kind `1621`, import GitHub issues into Nostr, or dual-write.
+- Do not call `gh issue`, add a provider trait, or store a GitHub token.
+- Authenticate only through installed `gh` and `gh auth status --hostname github.com`.
+- Use `gh api` with one page, `per_page=100`, `sort=updated`, `direction=desc`, and no `--paginate`.
+- Require `list_github_issues.state` to be exactly `open` or `closed`; this slice's UI always sends `open`.
+- Drop items whose projected `has_pull_request` is true.
+- Compute `has_more` from the projected raw page length before filtering pull requests or invalid URLs.
+- Accept only positive `u64` issue numbers in Rust and positive safe decimal integers in TypeScript.
+- Treat GitHub authors and assignees as logins plus avatar URLs, never as Nostr pubkeys.
+- Never pass a GitHub login to `ProfileIdentityButton`, `ProfileAuthorName`, `normalizePubkey`, `useUsersBatchQuery`, `IssueAssigneesRow`, or Nostr assignment/comment mutations.
+- Add `Open` to both the runtime and declaration-file `ProjectIssueStatus` definitions.
+- Map GitHub `open` to `Open` and GitHub `closed` to `Closed`; never map GitHub `open` to `Backlog`.
+- Copy only a validated GitHub issue URL, and keep the existing hex-event `buzz://issue` fallback for Buzz issues.
+- Create with exactly `{ "title", "body" }` through a tempfile passed to `gh api --input`.
+- Trim the title, reject an empty title, and reject more than 256 Unicode scalar values before running `gh`.
+- Preserve the body supplied to the native command, including an empty body.
+- On GitHub create success, invalidate only `["project", project.id, "issues"]`.
+- On Buzz create success, preserve the current issues, work-items, and activity-summaries invalidations.
+- Keep the issue list query key `["project", project.id, "issues"]` in this slice.
+- Use only `github_cli_missing`, `github_auth_required`, `github_repo_unavailable`, and `github_issues_failed` from the new native module.
+- Do not leak `github_merge_failed` or `github_state_failed` from any new command.
+- Check GitHub errors before empty-success rendering.
+- GitHub empty-success copy is `No open issues.` and the existing Buzz empty/error copy stays unchanged.
+- Do not run live GitHub requests in automated tests.
+- Do not add production `unsafe`, `unwrap()`, or `expect()` calls.
+- Add doc comments to every new public Rust or TypeScript API.
+- Use named rem-based text tokens and do not add arbitrary text sizes.
+- Activate Hermit in every shell command with `. ./bin/activate-hermit && ...` or as the first line of the same shell block.
+- Run GitNexus `impact({ target, direction: "upstream" })` before editing each existing symbol when the MCP tools are available.
+- Warn before proceeding if GitNexus reports HIGH or CRITICAL risk.
+- Run GitNexus `detect_changes({ scope: "staged" })` before every commit and `detect_changes({ scope: "compare", base_ref: "main" })` before final handoff when the MCP tools are available.
+- If GitNexus tools are unavailable, record that fact in the implementation handoff and use `git diff --stat`, `git diff --name-only`, and `git diff --check` as the fallback scope evidence.
+- Sign every commit with `git commit -s`.
 
-## Required Impact Checks
+## Resolved Implementation Decisions
 
-Run these before the task's first edit when GitNexus MCP tools are available.
-Report direct callers, affected processes, and risk level before editing.
+- Use `GH_ISSUE_STREAM_LIMIT = 32 * 1024 * 1024` for issue-list, create, and comment JSON.
+- The 32 MiB cap accommodates one page of 100 large UTF-8 bodies plus projected metadata while remaining bounded.
+- A response that exceeds the cap becomes invalid/truncated JSON and returns `github_issues_failed`; never substitute an empty list.
+- A created issue whose `html_url` fails repository-bound validation returns `github_issues_failed`.
+- List recovery title is `Could not load GitHub issues`.
+- Comment recovery title is `Could not load GitHub comments` and retries only the comment query.
+- `desktop/src-tauri/src/lib.rs` is currently 999 lines.
+- Registering three commands adds three lines, so Task 3 removes the two existing blank lines between `ClipboardState::release()`, the macOS restart block, and the native-destructor comment to keep the formatted file at exactly 1,000 lines.
 
-- Task 1: `GitHubRepoRef` field visibility.
-- Task 1: new `project_github_issues` module only after that visibility change.
-- Task 3: `get_github_repository_state` registration in `lib.rs` as the neighboring invoke handler.
-- Task 4: `eventToProjectIssue`, `PROJECT_ISSUE_STATUS`, and `issueShareLink`.
-- Task 5: `fetchProjectIssues`, `useProjectIssuesQuery`, `useCreateProjectIssueMutation`, and `publishProjectIssue`.
-- Task 6: `ProjectIssuesPanel`, `ProjectIssueDetail`, `IssueRow`, `ProjectIssueCommentTimeline`, and `GitHubRepoStateRecovery`.
-- Task 6: `ProjectDetailScreen` `issuesQuery.data` readers and `peoplePubkeys`.
-- Task 7: `maybeInstallE2eTauriMocks` / the mock invoke switch in `desktop/src/testing/e2eBridge.ts`, plus the Playwright smoke `testMatch` list.
+## File Map
 
-## Open Questions
-
-1. **List and comment payload size versus `GH_STREAM_LIMIT` (64 KiB).**
-   One hundred GitHub issues with bodies will not fit the default `GhRunner::run` cap.
-   **Provisional default:** call `run_with_limit` at `2 * 1024 * 1024` bytes and pass `--jq` that projects only DTO fields plus `has_pull_request: has("pull_request")`.
-   Do not silently truncate issue or comment bodies.
-   If stdout is truncated JSON, return `github_issues_failed`.
-
-2. **Created issue with an invalid `html_url`.**
-   The spec says drop a list item when `html_url` fails the repo-bound check.
-   **Provisional default:** create fails with `github_issues_failed` instead of returning an issue the tab cannot share.
-
-3. **Comment-load recovery title.**
-   The spec names tab copy `Could not load GitHub issues`.
-   **Provisional default:** the list uses that title, and the comment section uses `Could not load GitHub comments` so a comment failure is not mistaken for a list failure.
+| File | Responsibility |
+|------|----------------|
+| `desktop/src-tauri/src/commands/project_github_pull_request.rs` | Expose only `GitHubRepoRef.owner` and `.repo` as `pub(crate)` |
+| Create `desktop/src-tauri/src/commands/project_github_issues.rs` | Bounded list/create/comments commands, DTO mapping, URL validation, and issue-specific error remapping |
+| `desktop/src-tauri/src/commands/mod.rs` | Declare and re-export the new command module |
+| `desktop/src-tauri/src/lib.rs` | Register three commands without crossing the 1,000-line ratchet |
+| `desktop/src/shared/api/projectGit.ts` | Native DTO types and three Tauri invoke wrappers |
+| `desktop/src/features/projects/projectIssues.mjs` | Add `Open` and populate neutral GitHub-extension fields on Nostr issues |
+| `desktop/src/features/projects/projectIssues.d.mts` | Keep `ProjectIssue`, comments, and status declarations aligned with the runtime object |
+| `desktop/src/features/projects/projectIssues.test.mjs` | Protect the unchanged Nostr mapping defaults |
+| Create `desktop/src/features/projects/lib/projectGithubIssues.ts` | Host routing, DTO mapping, display helpers, identity filtering, and comment query |
+| Create `desktop/src/features/projects/lib/projectGithubIssues.test.mjs` | Protect routing, mapping, identity, number, and comment-query contracts |
+| `desktop/src/features/projects/lib/projectShareLinks.ts` | Prefer a strictly validated GitHub issue URL before the existing Buzz fallback |
+| `desktop/src/features/projects/lib/projectShareLinks.test.mjs` | Protect GitHub URL validation and the existing Buzz deep link |
+| `desktop/src/features/projects/hooks.ts` | Route `useProjectIssuesQuery` and retain the current Nostr loader |
+| `desktop/src/features/projects/issueMutations.ts` | Route create and select the correct invalidation set |
+| Create `desktop/src/features/projects/issueMutations.test.mjs` | Prove GitHub never calls the Buzz publisher and invalidates only issues |
+| `desktop/src/features/projects/ui/GitHubRepoStateRecovery.tsx` | Accept issue-specific titles and unique heading IDs |
+| Create `desktop/src/features/projects/ui/GitHubProjectIssues.tsx` | Render GitHub list rows, read-only detail, login identities, assignee facepile, and comment states |
+| `desktop/src/features/projects/ui/ProjectIssuesPanel.tsx` | Branch once by host and preserve the existing Buzz issue components |
+| `desktop/src/features/projects/ui/ProjectIssueCommentTimeline.tsx` | Render GitHub login/avatar comments without pubkey helpers |
+| `desktop/src/features/projects/ui/ProjectDetailScreen.tsx` | Read the new query shape and filter profile lookup to 64-hex identities |
+| `desktop/src/testing/e2eBridge.ts` | Stub list/create/comments and a structured issues error |
+| Create `desktop/tests/e2e/github-issues.spec.ts` | Exercise list, detail comments, create, hidden write controls, and auth recovery |
+| `desktop/playwright.config.ts` | Add the new spec to the smoke project |
 
 ---
 
-## File map
-
-| File | Role |
-|------|------|
-| `desktop/src-tauri/src/commands/project_github_pull_request.rs` | Mark `GitHubRepoRef.owner` and `GitHubRepoRef.repo` `pub(crate)` only |
-| Create: `desktop/src-tauri/src/commands/project_github_issues.rs` | Parse URL, list/create/comments, remap errors, Tauri commands |
-| `desktop/src-tauri/src/commands/mod.rs` | `mod project_github_issues;` and `pub use project_github_issues::*;` |
-| `desktop/src-tauri/src/lib.rs` | Register `list_github_issues`, `create_github_issue`, `list_github_issue_comments` next to `get_github_repository_state` |
-| `desktop/src/shared/api/projectGit.ts` | `listGithubIssues`, `createGithubIssue`, `listGithubIssueComments` |
-| `desktop/src/features/projects/projectIssues.mjs` | `PROJECT_ISSUE_STATUS.OPEN`, plus `commentCount`, `htmlUrl`, `authorAvatarUrl`, `assigneeAvatars` on Nostr rows |
-| Create: `desktop/src/features/projects/lib/projectGithubIssues.ts` | Host-aware fetch, DTO mapper, number parser, hex identity filter, comments hook |
-| Create: `desktop/src/features/projects/lib/projectGithubIssues.test.mjs` | Routing, mapper, number, pubkey-filter tests |
-| `desktop/src/features/projects/lib/projectShareLinks.ts` | `issueShareLink` prefers a validated GitHub `htmlUrl` |
-| `desktop/src/features/projects/lib/projectShareLinks.test.mjs` | GitHub URL vs hex `buzz://issue` |
-| `desktop/src/features/projects/projectIssues.test.mjs` | Nostr mapper sets `commentCount` and `htmlUrl: null` |
-| `desktop/src/features/projects/hooks.ts` | `useProjectIssuesQuery` returns `{ issues, hasMore }` via `fetchProjectIssuesWith` |
-| `desktop/src/features/projects/issueMutations.ts` | Host-aware create; GitHub skips work-item invalidation |
-| Create: `desktop/src/features/projects/issueMutations.test.mjs` | GitHub create does not sign or publish |
-| `desktop/src/features/projects/ui/GitHubRepoStateRecovery.tsx` | Optional `unavailableTitle` and `titleId` |
-| Create: `desktop/src/features/projects/ui/GitHubIssueIdentity.tsx` | Login + avatar; read-only assignee facepile |
-| `desktop/src/features/projects/ui/ProjectIssuesPanel.tsx` | Host-aware list/detail, recovery, `#N`, hide composer |
-| `desktop/src/features/projects/ui/ProjectIssueCommentTimeline.tsx` | Optional GitHub identity mode |
-| `desktop/src/features/projects/ui/ProjectDetailScreen.tsx` | Read `data.issues`; hex-only profile lookup |
-| `desktop/src/testing/e2eBridge.ts` | Stub the three commands and optional auth error |
-| Create: `desktop/tests/e2e/github-issues.spec.ts` | Smoke: `#N` + Open, create, no composer, auth recovery |
-| `desktop/playwright.config.ts` | Register the spec in the smoke `testMatch` list |
-
-Do not create other files.
-
----
-
-### Task 1: Map `gh api` issue list JSON in Rust
+### Task 1: Add the bounded Rust issue-list core
 
 **Files:**
-- Modify: `desktop/src-tauri/src/commands/project_github_pull_request.rs`
-- Create: `desktop/src-tauri/src/commands/project_github_issues.rs`
-- Modify: `desktop/src-tauri/src/commands/mod.rs` (`mod project_github_issues;`)
+
+- Modify `desktop/src-tauri/src/commands/project_github_pull_request.rs:21-24`.
+- Create `desktop/src-tauri/src/commands/project_github_issues.rs`.
+- Modify `desktop/src-tauri/src/commands/mod.rs` to add only `mod project_github_issues;` in this task.
 
 **Interfaces:**
-- Consumes: `pub(crate)` `GitHubRepoRef::{parse, slug, owner, repo}`, `GhRunner::{from_resolved, ensure_auth, run, run_with_limit}`, `GhOutput`, `redact_diagnostic`, `combined_cli_diagnostic`
-- Produces:
-  - `pub struct GitHubIssueUserDto { pub login: String, pub avatar_url: String }`
-  - `pub struct GitHubIssueDto { pub number: u64, pub title: String, pub body: String, pub state: String, pub html_url: String, pub comments: u64, pub created_at: i64, pub updated_at: i64, pub user: GitHubIssueUserDto, pub labels: Vec<String>, pub assignees: Vec<GitHubIssueUserDto> }`
-  - `pub struct GitHubIssueListDto { pub issues: Vec<GitHubIssueDto>, pub has_more: bool }`
-  - `pub(crate) fn list_github_issues_with(gh: &GhRunner, clone_url: &str, state: &str) -> Result<GitHubIssueListDto, ProjectPullRequestMergeError>`
-  - `pub(crate) fn remap_issues_error(error: ProjectPullRequestMergeError, diagnostic: &str) -> ProjectPullRequestMergeError`
-  - `pub(crate) fn is_issue_html_url(repo: &GitHubRepoRef, html_url: &str, number: u64) -> bool`
 
-- [ ] **Step 1: Expose owner and repo without growing the runner file**
+- Consumes `GitHubRepoRef::{parse, slug, owner, repo}`, `GhRunner::{ensure_auth, from_resolved, run_with_limit}`, `combined_cli_diagnostic`, `redact_diagnostic`, and `ProjectPullRequestMergeError`.
+- Produces `GitHubIssueUserDto`, `GitHubIssueDto`, `GitHubIssueListDto`, `list_github_issues_with`, `is_issue_html_url`, and `remap_issues_error`.
 
-In `GitHubRepoRef` change only the two field visibilities:
+- [ ] **Step 1: Run impact checks before touching existing symbols**
+
+Run GitNexus upstream impact for `GitHubRepoRef`, `GhRunner::run_with_limit`, `combined_cli_diagnostic`, and `remap_state_error`.
+Report direct callers, affected processes, and risk level.
+Stop and warn before editing if any result is HIGH or CRITICAL.
+
+- [ ] **Step 2: Add the module declaration and write failing tests first**
+
+Add `mod project_github_issues;` beside the other `project_github_*` modules so its unit tests compile as part of the desktop library.
+Create the new file with test-only fixtures and tests that reference the not-yet-defined production functions.
+The fake `gh` output must already match the declared `--jq` projection: labels are strings and every issue has `has_pull_request`.
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::project_git_merge_error::ProjectPullRequestMergeError;
+    use crate::commands::project_github_pull_request::{GhRunner, GitHubRepoRef};
+    use serde_json::json;
+    use std::path::PathBuf;
+
+    fn error_code(error: &ProjectPullRequestMergeError) -> String {
+        serde_json::to_value(error).expect("serialize error")["code"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    fn projected_issue(number: u64, has_pull_request: bool) -> serde_json::Value {
+        json!({
+            "number": number,
+            "title": format!("Issue {number}"),
+            "body": "Steps",
+            "state": "open",
+            "html_url": format!("https://github.com/acme/app/issues/{number}"),
+            "comments": 3,
+            "created_at": "2026-01-02T03:04:05Z",
+            "updated_at": "2026-01-03T03:04:05Z",
+            "user": { "login": "ada", "avatar_url": "https://avatars.githubusercontent.com/u/1" },
+            "labels": ["bug"],
+            "assignees": [{ "login": "linus", "avatar_url": "https://avatars.githubusercontent.com/u/2" }],
+            "has_pull_request": has_pull_request,
+        })
+    }
+
+    #[cfg(unix)]
+    fn fake_gh(output: &serde_json::Value, status: i32, stderr: &str) -> (tempfile::TempDir, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("create fake gh directory");
+        let path = dir.path().join("gh");
+        let script = format!(
+            "#!/bin/sh\nset -eu\nroot=${{0%/gh}}\nprintf '%s\\n' \"$*\" >> \"$root/calls\"\ncase \"$*\" in\n  *auth*status*) exit 0 ;;\n  *) printf '%s' '{}' ; printf '%s' '{}' >&2; exit {} ;;\nesac\n",
+            output.to_string(),
+            stderr,
+            status,
+        );
+        std::fs::write(&path, script).expect("write fake gh");
+        let mut permissions = std::fs::metadata(&path).expect("stat fake gh").permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&path, permissions).expect("chmod fake gh");
+        (dir, path)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn maps_projected_open_issue_fields() {
+        let output = json!([projected_issue(42, false)]);
+        let (dir, path) = fake_gh(&output, 0, "");
+        let gh = GhRunner::from_resolved(Some(path)).expect("runner");
+        let page = list_github_issues_with(&gh, "https://github.com/acme/app", "open").expect("list");
+        assert_eq!(page.issues.len(), 1);
+        assert_eq!(page.issues[0].number, 42);
+        assert_eq!(page.issues[0].state, "open");
+        assert_eq!(page.issues[0].user.login, "ada");
+        assert_eq!(page.issues[0].labels, vec!["bug"]);
+        assert_eq!(page.issues[0].assignees[0].login, "linus");
+        assert!(!page.has_more);
+        let calls = std::fs::read_to_string(dir.path().join("calls")).expect("calls");
+        assert!(calls.contains("/repos/acme/app/issues?state=open&per_page=100&sort=updated&direction=desc"));
+        assert!(calls.contains("--jq"));
+        assert!(calls.contains("has_pull_request"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn drops_projected_pull_request_items() {
+        let output = json!([projected_issue(7, true), projected_issue(42, false)]);
+        let (_dir, path) = fake_gh(&output, 0, "");
+        let gh = GhRunner::from_resolved(Some(path)).expect("runner");
+        let page = list_github_issues_with(&gh, "https://github.com/acme/app", "open").expect("list");
+        assert_eq!(page.issues.iter().map(|issue| issue.number).collect::<Vec<_>>(), vec![42]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn raw_projected_page_of_100_sets_has_more_before_filtering() {
+        let output = serde_json::Value::Array(
+            (1..=100).map(|number| projected_issue(number, true)).collect(),
+        );
+        let (_dir, path) = fake_gh(&output, 0, "");
+        let gh = GhRunner::from_resolved(Some(path)).expect("runner");
+        let page = list_github_issues_with(&gh, "https://github.com/acme/app", "open").expect("list");
+        assert!(page.issues.is_empty());
+        assert!(page.has_more);
+    }
+
+    #[test]
+    fn accepts_only_repo_bound_issue_urls() {
+        let repo = GitHubRepoRef::parse("https://github.com/Acme/App").expect("repo");
+        for (raw, number, expected) in [
+            ("https://github.com/acme/app/issues/42", 42, true),
+            ("https://github.com/ACME/APP/issues/42", 42, true),
+            ("https://github.com/acme/app/issues/43", 42, false),
+            ("https://github.com/acme/other/issues/42", 42, false),
+            ("https://evil.example/acme/app/issues/42", 42, false),
+            ("https://user@github.com/acme/app/issues/42", 42, false),
+            ("https://github.com/acme/app/issues/42?x=1", 42, false),
+            ("https://github.com/acme/app/issues/42#x", 42, false),
+            ("https://github.com/acme/app/issues/42/", 42, false),
+        ] {
+            assert_eq!(is_issue_html_url(&repo, raw, number), expected, "{raw}");
+        }
+    }
+
+    #[test]
+    fn rejects_non_github_clone_url_before_running_gh() {
+        let gh = GhRunner::from_resolved(Some(PathBuf::from("/bin/false"))).expect("runner");
+        let error = list_github_issues_with(
+            &gh,
+            &format!("https://relay.example/git/{}/app", "ab".repeat(32)),
+            "open",
+        )
+        .expect_err("reject Buzz URL");
+        assert_eq!(error_code(&error), "github_issues_failed");
+    }
+
+    #[test]
+    fn rejects_state_all_before_running_gh() {
+        let gh = GhRunner::from_resolved(Some(PathBuf::from("/bin/false"))).expect("runner");
+        let error = list_github_issues_with(&gh, "https://github.com/acme/app", "all")
+            .expect_err("reject all");
+        assert_eq!(error_code(&error), "github_issues_failed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_auth_maps_to_auth_required() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("dir");
+        let path = dir.path().join("gh");
+        std::fs::write(
+            &path,
+            "#!/bin/sh\ncase \"$*\" in *auth*status*) exit 1 ;; *) exit 1 ;; esac\n",
+        )
+        .expect("write fake gh");
+        let mut permissions = std::fs::metadata(&path).expect("stat").permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&path, permissions).expect("chmod");
+        let gh = GhRunner::from_resolved(Some(path)).expect("runner");
+        let error = list_github_issues_with(&gh, "https://github.com/acme/app", "open")
+            .expect_err("auth");
+        assert_eq!(error_code(&error), "github_auth_required");
+    }
+
+    #[test]
+    fn remaps_repository_and_rate_failures_to_issue_codes() {
+        let not_found = ProjectPullRequestMergeError::new("github_merge_failed", "gh: HTTP 404");
+        assert_eq!(error_code(&remap_issues_error(not_found, "Not Found")), "github_repo_unavailable");
+        let forbidden = ProjectPullRequestMergeError::new("github_merge_failed", "gh: HTTP 403");
+        assert_eq!(error_code(&remap_issues_error(forbidden, "Forbidden")), "github_repo_unavailable");
+        let limited = ProjectPullRequestMergeError::new("github_merge_failed", "gh: HTTP 403");
+        assert_eq!(error_code(&remap_issues_error(limited, "API rate limit exceeded")), "github_issues_failed");
+    }
+}
+```
+
+- [ ] **Step 3: Run the focused test and verify RED**
+
+```bash
+. ./bin/activate-hermit && cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib maps_projected_open_issue_fields
+```
+
+Expected: compilation fails because `list_github_issues_with` and the DTOs do not exist.
+Do not change production code until the failure is observed for that reason.
+
+- [ ] **Step 4: Implement the minimal list core and expose only the required repository fields**
+
+Change only the two fields in the existing runner file.
 
 ```rust
 pub(crate) struct GitHubRepoRef {
@@ -166,161 +306,232 @@ pub(crate) struct GitHubRepoRef {
 }
 ```
 
-Do not add methods, tests, or blank sections to `project_github_pull_request.rs`.
-The file is already 998 lines and the desktop ratchet is 1000.
-
-- [ ] **Step 2: Write failing list tests in `project_github_issues.rs`**
-
-Unix `fake_gh` helper copied from `project_github_repository_state.rs`.
-Match comments and `--method POST` **before** the issues list path.
+Add the following shapes and constants in `project_github_issues.rs`.
 
 ```rust
-const ISSUE_42: &str = r#"{"number":42,"title":"Broken login","body":"Steps","state":"open","html_url":"https://github.com/acme/app/issues/42","comments":3,"created_at":"2026-01-02T03:04:05Z","updated_at":"2026-01-03T03:04:05Z","user":{"login":"ada","avatar_url":"https://avatars.githubusercontent.com/u/1"},"labels":[{"name":"bug"}],"assignees":[{"login":"linus","avatar_url":"https://avatars.githubusercontent.com/u/2"}]}"#;
+use crate::commands::project_git_merge_error::ProjectPullRequestMergeError;
+use crate::commands::project_github_pull_request::{redact_diagnostic, GhRunner, GitHubRepoRef};
+use crate::commands::project_github_repository_state::combined_cli_diagnostic;
+use chrono::DateTime;
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use std::ffi::OsString;
+use std::path::Path;
+use url::Url;
 
-#[cfg(unix)]
-fn fake_gh(script: &str) -> (tempfile::TempDir, std::path::PathBuf) {
-    use std::os::unix::fs::PermissionsExt;
-    let dir = tempfile::tempdir().expect("create fake gh directory");
-    let path = dir.path().join("gh");
-    std::fs::write(&path, format!("#!/bin/sh\nset -eu\n{script}\n")).expect("write fake gh");
-    let mut permissions = std::fs::metadata(&path)
-        .expect("stat fake gh")
-        .permissions();
-    permissions.set_mode(0o700);
-    std::fs::set_permissions(&path, permissions).expect("chmod fake gh");
-    (dir, path)
+const GH_ISSUE_STREAM_LIMIT: usize = 32 * 1024 * 1024;
+const ISSUE_LIST_JQ: &str = "[.[] | {number, title, body: (.body // \"\"), state, html_url, comments, created_at, updated_at, user: (if .user == null then null else {login: .user.login, avatar_url: (.user.avatar_url // \"\")} end), labels: [(.labels // [])[] | if type == \"string\" then . else .name end], assignees: [(.assignees // [])[] | {login, avatar_url: (.avatar_url // \"\")}], has_pull_request: has(\"pull_request\")}]";
+
+/// GitHub login identity returned to the desktop issue UI.
+#[derive(Clone, Debug, Serialize)]
+pub struct GitHubIssueUserDto {
+    pub login: String,
+    pub avatar_url: String,
 }
 
-fn error_code(error: &ProjectPullRequestMergeError) -> String {
-    serde_json::to_value(error).expect("json")["code"]
-        .as_str()
-        .unwrap_or_default()
-        .to_string()
+/// Bounded GitHub issue returned to the desktop issue UI.
+#[derive(Clone, Debug, Serialize)]
+pub struct GitHubIssueDto {
+    pub number: u64,
+    pub title: String,
+    pub body: String,
+    pub state: String,
+    pub html_url: String,
+    pub comments: u64,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub user: GitHubIssueUserDto,
+    pub labels: Vec<String>,
+    pub assignees: Vec<GitHubIssueUserDto>,
 }
 
-#[cfg(unix)]
-#[test]
-fn maps_open_issue_and_drops_pull_requests() {
-    let script = format!(
-        r#"
-root=${{0%/gh}}
-printf '%s\n' "$*" >> "$root/calls"
-case "$*" in
-  *auth*status*) exit 0 ;;
-  *"/issues/"*"/comments"*) exit 1 ;;
-  *"--method POST"*) exit 1 ;;
-  *"/repos/acme/app/issues"*)
-    printf '%s' '[{{"number":42,"title":"Broken login","body":"Steps","state":"open","html_url":"https://github.com/acme/app/issues/42","comments":3,"created_at":"2026-01-02T03:04:05Z","updated_at":"2026-01-03T03:04:05Z","user":{{"login":"ada","avatar_url":"https://avatars.githubusercontent.com/u/1"}},"labels":[{{"name":"bug"}}],"assignees":[{{"login":"linus","avatar_url":"https://avatars.githubusercontent.com/u/2"}}]}},{{"number":7,"title":"A PR","state":"open","html_url":"https://github.com/acme/app/pull/7","comments":0,"created_at":"2026-01-02T03:04:05Z","updated_at":"2026-01-02T03:04:05Z","user":{{"login":"ada","avatar_url":"https://example.com/a"}},"labels":[],"assignees":[],"pull_request":{{"url":"https://api.github.com/repos/acme/app/pulls/7"}}}}]'
-    ;;
-  *) exit 1 ;;
-esac
-"#
-    );
-    let (dir, path) = fake_gh(&script);
-    let gh = GhRunner::from_resolved(Some(path)).expect("runner");
-    let page = list_github_issues_with(&gh, "https://github.com/acme/app", "open").expect("list");
-    assert_eq!(page.issues.len(), 1);
-    assert_eq!(page.issues[0].number, 42);
-    assert_eq!(page.issues[0].state, "open");
-    assert_eq!(page.issues[0].user.login, "ada");
-    assert_eq!(page.issues[0].labels, vec!["bug"]);
-    assert_eq!(page.issues[0].assignees[0].login, "linus");
-    assert!(!page.has_more);
-    let calls = std::fs::read_to_string(dir.path().join("calls")).expect("calls");
-    assert!(calls.lines().any(|line| {
-        line.contains("/repos/acme/app/issues?state=open&per_page=100&sort=updated&direction=desc")
-            && line.contains("--jq")
-            && line.contains("has_pull_request")
-    }));
+/// One bounded GitHub issue page plus its first-page truncation signal.
+#[derive(Clone, Debug, Serialize)]
+pub struct GitHubIssueListDto {
+    pub issues: Vec<GitHubIssueDto>,
+    pub has_more: bool,
 }
 
-#[cfg(unix)]
-#[test]
-fn raw_page_of_100_sets_has_more_even_if_prs_are_dropped() {
-    let items = (1..=100)
-        .map(|n| {
-            format!(
-                r#"{{"number":{n},"title":"t{n}","body":"","state":"open","html_url":"https://github.com/acme/app/issues/{n}","comments":0,"created_at":"2026-01-02T03:04:05Z","updated_at":"2026-01-02T03:04:05Z","user":{{"login":"ada","avatar_url":"https://example.com/a"}},"labels":[],"assignees":[],"pull_request":{{"url":"https://example.com"}}}}"#
-            )
+#[derive(Debug, Deserialize)]
+struct GitHubIssueUserWire {
+    login: String,
+    avatar_url: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GitHubIssueWire {
+    number: u64,
+    title: String,
+    body: String,
+    state: String,
+    html_url: String,
+    comments: u64,
+    created_at: String,
+    updated_at: String,
+    user: Option<GitHubIssueUserWire>,
+    labels: Vec<String>,
+    assignees: Vec<GitHubIssueUserWire>,
+    has_pull_request: bool,
+}
+```
+
+Implement the request boundary exactly once so list/create/comments all share the same cap and error conversion.
+
+```rust
+fn github_api_json<T: DeserializeOwned>(
+    gh: &GhRunner,
+    method: &str,
+    path: &str,
+    jq: &str,
+    input: Option<&Path>,
+) -> Result<T, ProjectPullRequestMergeError> {
+    let mut args = vec![
+        OsString::from("api"),
+        OsString::from("--hostname"),
+        OsString::from("github.com"),
+        OsString::from("--method"),
+        OsString::from(method),
+        OsString::from(path),
+        OsString::from("--jq"),
+        OsString::from(jq),
+    ];
+    if let Some(input) = input {
+        args.push(OsString::from("--input"));
+        args.push(input.as_os_str().to_os_string());
+    }
+    let output = gh
+        .run_with_limit(&args, GH_ISSUE_STREAM_LIMIT)
+        .map_err(|error| remap_issues_error(error, ""))?;
+    if !output.status.success() {
+        let diagnostic = combined_cli_diagnostic(&output.stderr, &output.stdout);
+        return Err(remap_issues_error(
+            ProjectPullRequestMergeError::new(
+                "github_merge_failed",
+                redact_diagnostic(&diagnostic),
+            ),
+            &diagnostic,
+        ));
+    }
+    serde_json::from_str(&output.stdout).map_err(|_| {
+        ProjectPullRequestMergeError::new(
+            "github_issues_failed",
+            "GitHub CLI returned an unexpected or truncated issue response. Update gh, then retry.",
+        )
+    })
+}
+```
+
+Implement URL validation with `url::Url`.
+Require HTTPS, host `github.com`, no username/password/query/fragment, no non-default port, exactly four path segments, case-insensitive owner/repo equality, literal `issues`, and a matching positive number.
+
+```rust
+pub(crate) fn is_issue_html_url(repo: &GitHubRepoRef, raw: &str, number: u64) -> bool {
+    if number == 0 || raw != raw.trim() || raw.contains('\\') || raw.contains('%') {
+        return false;
+    }
+    let Ok(url) = Url::parse(raw) else { return false; };
+    if url.scheme() != "https"
+        || url.host_str() != Some("github.com")
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.port().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return false;
+    }
+    let Some(segments) = url.path_segments().map(|segments| segments.collect::<Vec<_>>()) else {
+        return false;
+    };
+    segments.len() == 4
+        && segments[0].eq_ignore_ascii_case(&repo.owner)
+        && segments[1].eq_ignore_ascii_case(&repo.repo)
+        && segments[2] == "issues"
+        && segments[3].parse::<u64>().ok() == Some(number)
+}
+```
+
+Implement `map_issue` as a filter boundary.
+Return `None` for a pull request, number zero, empty login, unsupported state, invalid timestamp, or invalid `html_url`.
+Map RFC3339 timestamps with `DateTime::parse_from_rfc3339(...).ok()?.timestamp()`.
+
+```rust
+fn map_issue(repo: &GitHubRepoRef, item: GitHubIssueWire) -> Option<GitHubIssueDto> {
+    if item.has_pull_request || item.number == 0 || !matches!(item.state.as_str(), "open" | "closed") {
+        return None;
+    }
+    let user = item.user?;
+    if user.login.trim().is_empty() || !is_issue_html_url(repo, &item.html_url, item.number) {
+        return None;
+    }
+    let created_at = DateTime::parse_from_rfc3339(&item.created_at).ok()?.timestamp();
+    let updated_at = DateTime::parse_from_rfc3339(&item.updated_at).ok()?.timestamp();
+    let assignees = item
+        .assignees
+        .into_iter()
+        .filter(|assignee| !assignee.login.trim().is_empty())
+        .map(|assignee| GitHubIssueUserDto {
+            login: assignee.login,
+            avatar_url: assignee.avatar_url,
         })
-        .collect::<Vec<_>>()
-        .join(",");
-    let script = format!(
-        r#"
-case "$*" in
-  *auth*status*) exit 0 ;;
-  *"/repos/acme/app/issues"*) printf '%s' '[{items}]' ;;
-  *) exit 1 ;;
-esac
-"#
-    );
-    let (_dir, path) = fake_gh(&script);
-    let gh = GhRunner::from_resolved(Some(path)).expect("runner");
-    let page = list_github_issues_with(&gh, "https://github.com/acme/app", "open").expect("list");
-    assert!(page.issues.is_empty());
-    assert!(page.has_more);
-}
-
-#[cfg(unix)]
-#[test]
-fn rejects_foreign_or_malformed_html_url() {
-    let script = r#"
-case "$*" in
-  *auth*status*) exit 0 ;;
-  *"/repos/acme/app/issues"*)
-    printf '%s' '[{"number":42,"title":"x","body":"","state":"open","html_url":"https://evil.example/issues/42","comments":0,"created_at":"2026-01-02T03:04:05Z","updated_at":"2026-01-02T03:04:05Z","user":{"login":"ada","avatar_url":"https://example.com/a"},"labels":[],"assignees":[]}]'
-    ;;
-  *) exit 1 ;;
-esac
-"#;
-    let (_dir, path) = fake_gh(script);
-    let gh = GhRunner::from_resolved(Some(path)).expect("runner");
-    let page = list_github_issues_with(&gh, "https://github.com/acme/app", "open").expect("list");
-    assert!(page.issues.is_empty());
-}
-
-#[test]
-fn rejects_non_github_clone_url_before_runner() {
-    let gh = GhRunner::from_resolved(Some(std::path::PathBuf::from("/bin/false")))
-        .expect("dummy runner unused");
-    let err = list_github_issues_with(
-        &gh,
-        &format!("https://relay.example/git/{}/app", "ab".repeat(32)),
-        "open",
-    )
-    .expect_err("buzz git url");
-    assert_eq!(error_code(&err), "github_issues_failed");
-}
-
-#[test]
-fn rejects_state_all_before_runner() {
-    let gh = GhRunner::from_resolved(Some(std::path::PathBuf::from("/bin/false")))
-        .expect("dummy runner unused");
-    let err = list_github_issues_with(&gh, "https://github.com/acme/app", "all").expect_err("all");
-    assert_eq!(error_code(&err), "github_issues_failed");
+        .collect();
+    Some(GitHubIssueDto {
+        number: item.number,
+        title: item.title,
+        body: item.body,
+        state: item.state,
+        html_url: item.html_url,
+        comments: item.comments,
+        created_at,
+        updated_at,
+        user: GitHubIssueUserDto { login: user.login, avatar_url: user.avatar_url },
+        labels: item.labels,
+        assignees,
+    })
 }
 ```
 
-- [ ] **Step 3: Run tests — expect compile fail**
-
-```bash
-. ./bin/activate-hermit && cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib maps_open_issue_and_drops_pull_requests
-```
-
-Expected: `list_github_issues_with` missing.
-
-- [ ] **Step 4: Implement list mapping**
+Implement `remap_issues_error` by serializing the existing structured error, preserving only CLI/auth codes, checking rate/abuse before generic 403, mapping repository absence to `github_repo_unavailable`, and mapping everything else to `github_issues_failed`.
 
 ```rust
-const GH_ISSUE_STREAM_LIMIT: usize = 2 * 1024 * 1024;
-const ISSUE_LIST_JQ: &str = "[.[] | {number, title, body: (.body // \"\"), state, html_url, comments, created_at, updated_at, user: (if .user == null then null else {login: .user.login, avatar_url: .user.avatar_url} end), labels: [(.labels // [])[] | if type == \"string\" then . else .name end], assignees: [(.assignees // [])[] | {login, avatar_url}], has_pull_request: has(\"pull_request\")}]";
+pub(crate) fn remap_issues_error(
+    error: ProjectPullRequestMergeError,
+    diagnostic: &str,
+) -> ProjectPullRequestMergeError {
+    let value = serde_json::to_value(&error).unwrap_or_default();
+    let code = value.get("code").and_then(|value| value.as_str()).unwrap_or("");
+    if matches!(code, "github_cli_missing" | "github_auth_required") {
+        return error;
+    }
+    let original = value.get("message").and_then(|value| value.as_str()).unwrap_or("");
+    let combined = format!("{diagnostic} {original}");
+    let lower = combined.to_ascii_lowercase();
+    let message = if diagnostic.trim().is_empty() {
+        if original.is_empty() { "GitHub issue request failed.".to_string() } else { original.to_string() }
+    } else {
+        redact_diagnostic(diagnostic)
+    };
+    if lower.contains("rate limit") || lower.contains("abuse") {
+        return ProjectPullRequestMergeError::new("github_issues_failed", message);
+    }
+    if lower.contains("404")
+        || lower.contains("not found")
+        || (lower.contains("403") && !lower.contains("rate"))
+    {
+        return ProjectPullRequestMergeError::new("github_repo_unavailable", message);
+    }
+    ProjectPullRequestMergeError::new("github_issues_failed", message)
+}
+```
 
+Implement the list function with validation before any runner call.
+
+```rust
 pub(crate) fn list_github_issues_with(
     gh: &GhRunner,
     clone_url: &str,
     state: &str,
 ) -> Result<GitHubIssueListDto, ProjectPullRequestMergeError> {
-    if state != "open" && state != "closed" {
+    if !matches!(state, "open" | "closed") {
         return Err(ProjectPullRequestMergeError::new(
             "github_issues_failed",
             "GitHub issue list state must be open or closed.",
@@ -328,297 +539,378 @@ pub(crate) fn list_github_issues_with(
     }
     let repo = GitHubRepoRef::parse(clone_url)
         .map_err(|message| ProjectPullRequestMergeError::new("github_issues_failed", message))?;
-    gh.ensure_auth()
-        .map_err(|error| remap_issues_error(error, ""))?;
+    gh.ensure_auth().map_err(|error| remap_issues_error(error, ""))?;
     let path = format!(
         "/repos/{}/issues?state={state}&per_page=100&sort=updated&direction=desc",
-        repo.slug()
+        repo.slug(),
     );
-    let raw: Vec<GitHubIssueWire> = github_api_json(gh, &path, Some(ISSUE_LIST_JQ), "GET", None)?;
+    let raw: Vec<GitHubIssueWire> = github_api_json(gh, "GET", &path, ISSUE_LIST_JQ, None)?;
     let has_more = raw.len() == 100;
-    let issues = raw
-        .into_iter()
-        .filter_map(|item| map_issue(&repo, item))
-        .collect();
+    let issues = raw.into_iter().filter_map(|item| map_issue(&repo, item)).collect();
     Ok(GitHubIssueListDto { issues, has_more })
 }
 ```
 
-`GitHubIssueWire` is the `--jq` shape, including `has_pull_request: bool` and RFC3339 timestamp strings.
-`map_issue` returns `None` when `has_pull_request` is true, `number == 0`, `user.login` is empty, `state` is not `open`/`closed`, timestamps do not parse, or `html_url` fails `is_issue_html_url`.
-Null body becomes `""`.
-
-`is_issue_html_url` accepts only `https://github.com/{owner}/{repo}/issues/{number}` for that parsed repo.
-Owner and repo compare case-insensitively.
-Reject query, fragment, credentials, userinfo, a non-443 port, a different host, or a different path.
-
-Parse RFC3339 with `chrono::DateTime::parse_from_rfc3339` and store `timestamp()`.
-
-`remap_issues_error` is `remap_state_error` with these substitutions:
-- keep `github_cli_missing` and `github_auth_required`
-- rate/abuse → `github_issues_failed`
-- `404` / `not found` / non-rate `403` → `github_repo_unavailable`
-- everything else, including truncated JSON and timeouts → `github_issues_failed`
-
-`github_api_json` must call `gh.run_with_limit(..., GH_ISSUE_STREAM_LIMIT)` and remap through `remap_issues_error`.
-Do not call `remap_state_error`.
-
-- [ ] **Step 5: Run tests**
+- [ ] **Step 5: Run all issue-module tests and verify GREEN**
 
 ```bash
-. ./bin/activate-hermit && cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib github_issues
+. ./bin/activate-hermit && cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib project_github_issues
 ```
 
-Expected: PASS on unix.
-Windows runs the two URL/state tests and skips `fake_gh` tests.
+Expected: all list, URL, validation, and error tests pass on Unix; runner-backed tests are skipped on non-Unix platforms.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 6: Format, inspect scope, and commit**
+
+Run GitNexus `detect_changes({ scope: "staged" })` after staging and verify only the new issue module, module declaration, and two field visibilities are affected.
 
 ```bash
 . ./bin/activate-hermit
+cargo fmt --manifest-path desktop/src-tauri/Cargo.toml
 git add desktop/src-tauri/src/commands/project_github_pull_request.rs \
   desktop/src-tauri/src/commands/project_github_issues.rs \
   desktop/src-tauri/src/commands/mod.rs
-if [ -f .gitnexus/run.cjs ]; then node .gitnexus/run.cjs detect; fi
 git diff --check
 git commit -s -m "feat(projects): map GitHub issues from gh api"
 ```
 
 ---
 
-### Task 2: Create issue and list comments in Rust
+### Task 2: Add GitHub issue creation and read-only comment loading in Rust
 
 **Files:**
-- Modify: `desktop/src-tauri/src/commands/project_github_issues.rs`
+
+- Modify `desktop/src-tauri/src/commands/project_github_issues.rs`.
 
 **Interfaces:**
-- Consumes: `list_github_issues_with` helpers (`github_api_json`, `map_issue`, `remap_issues_error`, `GitHubRepoRef`)
-- Produces:
-  - `pub struct GitHubIssueCommentDto { pub id: u64, pub body: String, pub created_at: i64, pub user: GitHubIssueUserDto }`
-  - `pub(crate) fn create_github_issue_with(gh: &GhRunner, clone_url: &str, title: &str, body: &str) -> Result<GitHubIssueDto, ProjectPullRequestMergeError>`
-  - `pub(crate) fn list_github_issue_comments_with(gh: &GhRunner, clone_url: &str, number: u64) -> Result<Vec<GitHubIssueCommentDto>, ProjectPullRequestMergeError>`
+
+- Consumes `github_api_json`, `map_issue`, `remap_issues_error`, `GitHubRepoRef`, and `GhRunner` from Task 1.
+- Produces `GitHubIssueCommentDto`, `create_github_issue_with`, and `list_github_issue_comments_with`.
 
 - [ ] **Step 1: Write failing create and comment tests**
 
+Keep each boundary in its own test.
+The create fake must copy the `--input` tempfile before the process exits so the test can assert the real JSON body.
+
 ```rust
 #[test]
-fn create_rejects_empty_or_overlong_title_before_runner() {
-    let gh = GhRunner::from_resolved(Some(std::path::PathBuf::from("/bin/false")))
-        .expect("dummy runner unused");
-    let empty = create_github_issue_with(&gh, "https://github.com/acme/app", "   ", "body")
-        .expect_err("empty");
-    assert_eq!(error_code(&empty), "github_issues_failed");
-    let long = create_github_issue_with(&gh, "https://github.com/acme/app", &"x".repeat(257), "")
+fn create_rejects_blank_title_before_running_gh() {
+    let gh = GhRunner::from_resolved(Some(std::path::PathBuf::from("/bin/false"))).expect("runner");
+    let error = create_github_issue_with(&gh, "https://github.com/acme/app", "   ", "body")
+        .expect_err("blank");
+    assert_eq!(error_code(&error), "github_issues_failed");
+}
+
+#[test]
+fn create_rejects_more_than_256_unicode_scalars_before_running_gh() {
+    let gh = GhRunner::from_resolved(Some(std::path::PathBuf::from("/bin/false"))).expect("runner");
+    let title = "é".repeat(257);
+    let error = create_github_issue_with(&gh, "https://github.com/acme/app", &title, "")
         .expect_err("long");
-    assert_eq!(error_code(&long), "github_issues_failed");
+    assert_eq!(error_code(&error), "github_issues_failed");
 }
 
 #[cfg(unix)]
 #[test]
-fn create_posts_title_and_body_and_returns_number() {
-    let script = r#"
-root=${0%/gh}
-printf '%s\n' "$*" >> "$root/calls"
-case "$*" in
-  *auth*status*) exit 0 ;;
-  *"--method POST"*"/repos/acme/app/issues"*)
-    printf '%s' '{"number":43,"title":"New bug","body":"details","state":"open","html_url":"https://github.com/acme/app/issues/43","comments":0,"created_at":"2026-01-02T03:04:05Z","updated_at":"2026-01-02T03:04:05Z","user":{"login":"ada","avatar_url":"https://example.com/a"},"labels":[],"assignees":[]}'
-    ;;
-  *) exit 1 ;;
-esac
-"#;
-    let (dir, path) = fake_gh(script);
+fn create_posts_trimmed_title_and_exact_body() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().expect("dir");
+    let path = dir.path().join("gh");
+    let output = projected_issue(43, false).to_string();
+    let script = format!(
+        "#!/bin/sh\nset -eu\nroot=${{0%/gh}}\nprintf '%s\\n' \"$*\" >> \"$root/calls\"\ncase \"$*\" in\n  *auth*status*) exit 0 ;;\n  *--method*POST*)\n    previous=\"\"\n    for argument in \"$@\"; do\n      if [ \"$previous\" = \"--input\" ]; then cp \"$argument\" \"$root/input.json\"; fi\n      previous=\"$argument\"\n    done\n    printf '%s' '{}'\n    ;;\n  *) exit 1 ;;\nesac\n",
+        output,
+    );
+    std::fs::write(&path, script).expect("write fake gh");
+    let mut permissions = std::fs::metadata(&path).expect("stat").permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&path, permissions).expect("chmod");
     let gh = GhRunner::from_resolved(Some(path)).expect("runner");
-    let issue = create_github_issue_with(&gh, "https://github.com/acme/app", "New bug", "details")
-        .expect("create");
+    let issue = create_github_issue_with(
+        &gh,
+        "https://github.com/acme/app",
+        "  Issue 43  ",
+        " body with surrounding space ",
+    )
+    .expect("create");
     assert_eq!(issue.number, 43);
-    assert_eq!(issue.title, "New bug");
-    let calls = std::fs::read_to_string(dir.path().join("calls")).expect("calls");
-    assert!(calls.lines().any(|line| {
-        line.contains("--method POST")
-            && line.contains("/repos/acme/app/issues")
-            && line.contains("--input")
+    let input: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join("input.json")).expect("input"),
+    )
+    .expect("json");
+    assert_eq!(input, serde_json::json!({
+        "title": "Issue 43",
+        "body": " body with surrounding space ",
     }));
-}
-
-#[test]
-fn comments_reject_number_zero_before_runner() {
-    let gh = GhRunner::from_resolved(Some(std::path::PathBuf::from("/bin/false")))
-        .expect("dummy runner unused");
-    let err = list_github_issue_comments_with(&gh, "https://github.com/acme/app", 0)
-        .expect_err("zero");
-    assert_eq!(error_code(&err), "github_issues_failed");
+    let calls = std::fs::read_to_string(dir.path().join("calls")).expect("calls");
+    assert!(calls.contains("--method POST"));
+    assert!(calls.contains("/repos/acme/app/issues"));
+    assert!(calls.contains("--input"));
+    assert!(calls.contains("--jq"));
 }
 
 #[cfg(unix)]
 #[test]
-fn lists_first_page_of_comments_in_github_order() {
-    let script = r#"
-case "$*" in
-  *auth*status*) exit 0 ;;
-  *"/repos/acme/app/issues/42/comments"*)
-    printf '%s' '[{"id":1,"body":"first","created_at":"2026-01-02T03:04:05Z","user":{"login":"ada","avatar_url":"https://example.com/a"}},{"id":2,"body":"second","created_at":"2026-01-02T04:04:05Z","user":{"login":"linus","avatar_url":"https://example.com/b"}}]'
-    ;;
-  *) exit 1 ;;
-esac
-"#;
-    let (_dir, path) = fake_gh(script);
+fn create_rejects_response_with_foreign_html_url() {
+    let mut output = projected_issue(43, false);
+    output["html_url"] = serde_json::Value::String("https://evil.example/issues/43".to_string());
+    let (_dir, path) = fake_gh(&output, 0, "");
     let gh = GhRunner::from_resolved(Some(path)).expect("runner");
-    let comments =
-        list_github_issue_comments_with(&gh, "https://github.com/acme/app", 42).expect("comments");
-    assert_eq!(comments.len(), 2);
-    assert_eq!(comments[0].body, "first");
+    let error = create_github_issue_with(&gh, "https://github.com/acme/app", "Issue 43", "")
+        .expect_err("foreign URL");
+    assert_eq!(error_code(&error), "github_issues_failed");
+}
+
+#[test]
+fn comments_reject_number_zero_before_running_gh() {
+    let gh = GhRunner::from_resolved(Some(std::path::PathBuf::from("/bin/false"))).expect("runner");
+    let error = list_github_issue_comments_with(&gh, "https://github.com/acme/app", 0)
+        .expect_err("zero");
+    assert_eq!(error_code(&error), "github_issues_failed");
+}
+
+#[cfg(unix)]
+#[test]
+fn comments_keep_projected_github_order() {
+    let output = serde_json::json!([
+        { "id": 1, "body": "first", "created_at": "2026-01-02T03:04:05Z", "user": { "login": "ada", "avatar_url": "https://example.com/a" } },
+        { "id": 2, "body": "second", "created_at": "2026-01-02T04:04:05Z", "user": { "login": "linus", "avatar_url": "https://example.com/b" } }
+    ]);
+    let (dir, path) = fake_gh(&output, 0, "");
+    let gh = GhRunner::from_resolved(Some(path)).expect("runner");
+    let comments = list_github_issue_comments_with(&gh, "https://github.com/acme/app", 42)
+        .expect("comments");
+    assert_eq!(comments.iter().map(|comment| comment.body.as_str()).collect::<Vec<_>>(), vec!["first", "second"]);
     assert_eq!(comments[1].user.login, "linus");
+    let calls = std::fs::read_to_string(dir.path().join("calls")).expect("calls");
+    assert!(calls.contains("/repos/acme/app/issues/42/comments?per_page=100"));
 }
 ```
 
-- [ ] **Step 2: Run — expect compile fail**
+- [ ] **Step 2: Run and verify RED**
 
 ```bash
-. ./bin/activate-hermit && cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib create_posts_title_and_body_and_returns_number
+. ./bin/activate-hermit && cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib create_posts_trimmed_title_and_exact_body
 ```
 
-Expected: `create_github_issue_with` missing.
+Expected: compilation fails because `create_github_issue_with` does not exist.
 
-- [ ] **Step 3: Implement create and comments**
+- [ ] **Step 3: Implement create and comments minimally**
 
-Create validation before `gh`:
-- `title.trim()` empty → `github_issues_failed` (`Issue title is required.`)
-- trimmed length `> 256` → `github_issues_failed` (`Issue title must be 256 characters or fewer.`)
+Add the projected item/comment queries and comment wire/DTO types.
 
-Write JSON `{ "title": trimmed, "body": body }` to a `tempfile` prefix `buzz-gh-` the same way `json_input` does in the merge module.
-Do not call that private helper.
-Map tempfile failures to `github_issues_failed`.
+```rust
+const ISSUE_ITEM_JQ: &str = "{number, title, body: (.body // \"\"), state, html_url, comments, created_at, updated_at, user: (if .user == null then null else {login: .user.login, avatar_url: (.user.avatar_url // \"\")} end), labels: [(.labels // [])[] | if type == \"string\" then . else .name end], assignees: [(.assignees // [])[] | {login, avatar_url: (.avatar_url // \"\")}], has_pull_request: has(\"pull_request\")}";
+const ISSUE_COMMENTS_JQ: &str = "[.[] | {id, body: (.body // \"\"), created_at, user: (if .user == null then null else {login: .user.login, avatar_url: (.user.avatar_url // \"\")} end)}]";
 
-POST:
+/// One read-only GitHub issue comment returned to the desktop UI.
+#[derive(Clone, Debug, Serialize)]
+pub struct GitHubIssueCommentDto {
+    pub id: u64,
+    pub body: String,
+    pub created_at: i64,
+    pub user: GitHubIssueUserDto,
+}
 
-```text
-gh api --hostname github.com --method POST /repos/{slug}/issues --input {tempfile} --jq '{ISSUE_ITEM_JQ}'
+#[derive(Debug, Deserialize)]
+struct GitHubIssueCommentWire {
+    id: u64,
+    body: String,
+    created_at: String,
+    user: Option<GitHubIssueUserWire>,
+}
 ```
 
-`ISSUE_ITEM_JQ` is the object form of `ISSUE_LIST_JQ` (no wrapping array).
-Keep the tempfile alive until `run_with_limit` returns.
-If `map_issue` returns `None` (including invalid `html_url`), return `github_issues_failed`.
+Use a local tempfile helper with no production `unwrap()` or `expect()`.
 
-Comments:
-- `number == 0` fails before `gh`
-- `GET /repos/{slug}/issues/{number}/comments?per_page=100`
-- `--jq '[.[] | {id, body: (.body // ""), created_at, user: (if .user == null then null else {login: .user.login, avatar_url: .user.avatar_url} end)}]'`
-- Keep GitHub order
-- Drop a comment when `id == 0`, login is empty, or `created_at` does not parse
-- Do not fetch page 2
+```rust
+fn issue_json_input(
+    title: &str,
+    body: &str,
+) -> Result<tempfile::NamedTempFile, ProjectPullRequestMergeError> {
+    use std::io::Write;
+    let mut file = tempfile::Builder::new()
+        .prefix("buzz-gh-")
+        .tempfile()
+        .map_err(|error| ProjectPullRequestMergeError::new("github_issues_failed", error.to_string()))?;
+    serde_json::to_writer(&mut file, &serde_json::json!({ "title": title, "body": body }))
+        .map_err(|error| ProjectPullRequestMergeError::new("github_issues_failed", error.to_string()))?;
+    file.flush()
+        .map_err(|error| ProjectPullRequestMergeError::new("github_issues_failed", error.to_string()))?;
+    Ok(file)
+}
+```
 
-- [ ] **Step 4: Run tests**
+Implement create with validation and repository parsing before authentication.
+
+```rust
+pub(crate) fn create_github_issue_with(
+    gh: &GhRunner,
+    clone_url: &str,
+    title: &str,
+    body: &str,
+) -> Result<GitHubIssueDto, ProjectPullRequestMergeError> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err(ProjectPullRequestMergeError::new("github_issues_failed", "Issue title is required."));
+    }
+    if title.chars().count() > 256 {
+        return Err(ProjectPullRequestMergeError::new(
+            "github_issues_failed",
+            "Issue title must be 256 characters or fewer.",
+        ));
+    }
+    let repo = GitHubRepoRef::parse(clone_url)
+        .map_err(|message| ProjectPullRequestMergeError::new("github_issues_failed", message))?;
+    gh.ensure_auth().map_err(|error| remap_issues_error(error, ""))?;
+    let input = issue_json_input(title, body)?;
+    let path = format!("/repos/{}/issues", repo.slug());
+    let raw: GitHubIssueWire = github_api_json(
+        gh,
+        "POST",
+        &path,
+        ISSUE_ITEM_JQ,
+        Some(input.path()),
+    )?;
+    map_issue(&repo, raw).ok_or_else(|| {
+        ProjectPullRequestMergeError::new(
+            "github_issues_failed",
+            "GitHub returned an invalid created issue.",
+        )
+    })
+}
+```
+
+Implement comments with the same authentication/error boundary and no sorting.
+
+```rust
+pub(crate) fn list_github_issue_comments_with(
+    gh: &GhRunner,
+    clone_url: &str,
+    number: u64,
+) -> Result<Vec<GitHubIssueCommentDto>, ProjectPullRequestMergeError> {
+    if number == 0 {
+        return Err(ProjectPullRequestMergeError::new(
+            "github_issues_failed",
+            "GitHub issue number must be greater than zero.",
+        ));
+    }
+    let repo = GitHubRepoRef::parse(clone_url)
+        .map_err(|message| ProjectPullRequestMergeError::new("github_issues_failed", message))?;
+    gh.ensure_auth().map_err(|error| remap_issues_error(error, ""))?;
+    let path = format!("/repos/{}/issues/{number}/comments?per_page=100", repo.slug());
+    let raw: Vec<GitHubIssueCommentWire> = github_api_json(
+        gh,
+        "GET",
+        &path,
+        ISSUE_COMMENTS_JQ,
+        None,
+    )?;
+    Ok(raw
+        .into_iter()
+        .filter_map(|comment| {
+            let user = comment.user?;
+            if comment.id == 0 || user.login.trim().is_empty() {
+                return None;
+            }
+            let created_at = DateTime::parse_from_rfc3339(&comment.created_at).ok()?.timestamp();
+            Some(GitHubIssueCommentDto {
+                id: comment.id,
+                body: comment.body,
+                created_at,
+                user: GitHubIssueUserDto { login: user.login, avatar_url: user.avatar_url },
+            })
+        })
+        .collect())
+}
+```
+
+- [ ] **Step 4: Run all Rust issue tests and verify GREEN**
 
 ```bash
-. ./bin/activate-hermit && cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib github_issues
+. ./bin/activate-hermit && cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib project_github_issues
 ```
 
-Expected: PASS.
+Expected: all list, create, comment, validation, and error tests pass.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Format, inspect scope, and commit**
+
+Run GitNexus `detect_changes({ scope: "staged" })` and confirm only `project_github_issues.rs` changed in this task.
 
 ```bash
 . ./bin/activate-hermit
+cargo fmt --manifest-path desktop/src-tauri/Cargo.toml
 git add desktop/src-tauri/src/commands/project_github_issues.rs
-if [ -f .gitnexus/run.cjs ]; then node .gitnexus/run.cjs detect; fi
 git diff --check
 git commit -s -m "feat(projects): create GitHub issues and list comments"
 ```
 
 ---
 
-### Task 3: Remap errors and register Tauri commands
+### Task 3: Expose and register the three Tauri commands
 
 **Files:**
-- Modify: `desktop/src-tauri/src/commands/project_github_issues.rs`
-- Modify: `desktop/src-tauri/src/commands/mod.rs` (`pub use project_github_issues::*;`)
-- Modify: `desktop/src-tauri/src/lib.rs`
+
+- Modify `desktop/src-tauri/src/commands/project_github_issues.rs`.
+- Modify `desktop/src-tauri/src/commands/mod.rs`.
+- Modify `desktop/src-tauri/src/lib.rs:647-652` and remove the two ratchet-mitigation blank lines near current lines 983 and 988.
 
 **Interfaces:**
-- Consumes: `list_github_issues_with`, `create_github_issue_with`, `list_github_issue_comments_with`, `GhRunner::discover`
-- Produces:
-  - `#[tauri::command] pub async fn list_github_issues(clone_url: String, state: String) -> Result<GitHubIssueListDto, ProjectPullRequestMergeError>`
-  - `#[tauri::command] pub async fn create_github_issue(clone_url: String, title: String, body: String) -> Result<GitHubIssueDto, ProjectPullRequestMergeError>`
-  - `#[tauri::command] pub async fn list_github_issue_comments(clone_url: String, number: u64) -> Result<Vec<GitHubIssueCommentDto>, ProjectPullRequestMergeError>`
 
-- [ ] **Step 1: Write failing wrapper tests**
+- Consumes the three injected-runner functions from Tasks 1 and 2 and `GhRunner::discover`.
+- Produces Tauri commands `list_github_issues`, `create_github_issue`, and `list_github_issue_comments` with the exact parameter names required by the TypeScript invoke layer.
+
+- [ ] **Step 1: Run impact checks**
+
+Run GitNexus upstream impact for `get_github_repository_state`, the `tauri::generate_handler!` registration in `lib.rs`, and `commands` module re-exports.
+Report callers, affected processes, and risk before editing.
+
+- [ ] **Step 2: Write failing discovery-wrapper tests**
 
 ```rust
 #[test]
-fn wrapper_maps_discover_failure() {
-    let err = list_github_issues_with_runner(
-        "https://github.com/acme/app".into(),
-        "open".into(),
+fn list_wrapper_maps_missing_discovered_cli() {
+    let error = list_github_issues_with_runner(
+        "https://github.com/acme/app".to_string(),
+        "open".to_string(),
         GhRunner::from_resolved(None),
     )
     .expect_err("missing");
-    assert_eq!(error_code(&err), "github_cli_missing");
+    assert_eq!(error_code(&error), "github_cli_missing");
 }
 
-#[cfg(unix)]
 #[test]
-fn missing_auth_is_auth_required() {
-    let script = r#"
-case "$*" in
-  *auth*status*) exit 1 ;;
-  *) exit 1 ;;
-esac
-"#;
-    let (_dir, path) = fake_gh(script);
-    let err = list_github_issues_with(
-        &GhRunner::from_resolved(Some(path)).expect("runner"),
-        "https://github.com/acme/app",
-        "open",
+fn create_wrapper_maps_missing_discovered_cli() {
+    let error = create_github_issue_with_runner(
+        "https://github.com/acme/app".to_string(),
+        "title".to_string(),
+        "body".to_string(),
+        GhRunner::from_resolved(None),
     )
-    .expect_err("auth");
-    assert_eq!(error_code(&err), "github_auth_required");
+    .expect_err("missing");
+    assert_eq!(error_code(&error), "github_cli_missing");
 }
 
-#[cfg(unix)]
 #[test]
-fn http_404_is_repo_unavailable_and_rate_limit_is_issues_failed() {
-    let not_found = r#"
-case "$*" in
-  *auth*status*) exit 0 ;;
-  *"/repos/acme/app/issues"*)
-    printf 'gh: HTTP 404\n{"message":"Not Found"}\n' >&2
-    exit 1
-    ;;
-  *) exit 1 ;;
-esac
-"#;
-    let (_dir, path) = fake_gh(not_found);
-    let err = list_github_issues_with(
-        &GhRunner::from_resolved(Some(path)).expect("runner"),
-        "https://github.com/acme/app",
-        "open",
+fn comments_wrapper_maps_missing_discovered_cli() {
+    let error = list_github_issue_comments_with_runner(
+        "https://github.com/acme/app".to_string(),
+        42,
+        GhRunner::from_resolved(None),
     )
-    .expect_err("404");
-    assert_eq!(error_code(&err), "github_repo_unavailable");
-
-    let limited = r#"
-case "$*" in
-  *auth*status*) exit 0 ;;
-  *"/repos/acme/app/issues"*)
-    printf 'gh: HTTP 403\nAPI rate limit exceeded\n' >&2
-    exit 1
-    ;;
-  *) exit 1 ;;
-esac
-"#;
-    let (_dir, path) = fake_gh(limited);
-    let err = list_github_issues_with(
-        &GhRunner::from_resolved(Some(path)).expect("runner"),
-        "https://github.com/acme/app",
-        "open",
-    )
-    .expect_err("rate");
-    assert_eq!(error_code(&err), "github_issues_failed");
+    .expect_err("missing");
+    assert_eq!(error_code(&error), "github_cli_missing");
 }
 ```
 
-- [ ] **Step 2: Implement wrappers and register commands**
+- [ ] **Step 3: Run and verify RED**
+
+```bash
+. ./bin/activate-hermit && cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib list_wrapper_maps_missing_discovered_cli
+```
+
+Expected: compilation fails because `list_github_issues_with_runner` does not exist.
+
+- [ ] **Step 4: Implement all three sync wrappers and async commands**
 
 ```rust
 pub(crate) fn list_github_issues_with_runner(
@@ -630,6 +922,26 @@ pub(crate) fn list_github_issues_with_runner(
     list_github_issues_with(&gh, &clone_url, &state)
 }
 
+pub(crate) fn create_github_issue_with_runner(
+    clone_url: String,
+    title: String,
+    body: String,
+    gh: Result<GhRunner, ProjectPullRequestMergeError>,
+) -> Result<GitHubIssueDto, ProjectPullRequestMergeError> {
+    let gh = gh.map_err(|error| remap_issues_error(error, ""))?;
+    create_github_issue_with(&gh, &clone_url, &title, &body)
+}
+
+pub(crate) fn list_github_issue_comments_with_runner(
+    clone_url: String,
+    number: u64,
+    gh: Result<GhRunner, ProjectPullRequestMergeError>,
+) -> Result<Vec<GitHubIssueCommentDto>, ProjectPullRequestMergeError> {
+    let gh = gh.map_err(|error| remap_issues_error(error, ""))?;
+    list_github_issue_comments_with(&gh, &clone_url, number)
+}
+
+/// List one page of GitHub issues for a github.com clone URL.
 #[tauri::command]
 pub async fn list_github_issues(
     clone_url: String,
@@ -641,80 +953,101 @@ pub async fn list_github_issues(
     .await
     .map_err(|error| ProjectPullRequestMergeError::new("github_issues_failed", error.to_string()))?
 }
+
+/// Create one GitHub issue for a github.com clone URL.
+#[tauri::command]
+pub async fn create_github_issue(
+    clone_url: String,
+    title: String,
+    body: String,
+) -> Result<GitHubIssueDto, ProjectPullRequestMergeError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        create_github_issue_with_runner(clone_url, title, body, GhRunner::discover())
+    })
+    .await
+    .map_err(|error| ProjectPullRequestMergeError::new("github_issues_failed", error.to_string()))?
+}
+
+/// List the first page of comments for one GitHub issue.
+#[tauri::command]
+pub async fn list_github_issue_comments(
+    clone_url: String,
+    number: u64,
+) -> Result<Vec<GitHubIssueCommentDto>, ProjectPullRequestMergeError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        list_github_issue_comments_with_runner(clone_url, number, GhRunner::discover())
+    })
+    .await
+    .map_err(|error| ProjectPullRequestMergeError::new("github_issues_failed", error.to_string()))?
+}
 ```
 
-Mirror that pattern for `create_github_issue` and `list_github_issue_comments`.
-Register all three next to `get_github_repository_state` in `desktop/src-tauri/src/lib.rs`.
-Add `pub use project_github_issues::*;` in `mod.rs`.
+Add `pub use project_github_issues::*;` in `commands/mod.rs`.
+Register the three names immediately after `get_github_repository_state` in `lib.rs`.
+Remove the two blank lines described in Resolved Implementation Decisions before formatting so the file remains at or below 1,000 lines.
 
-Every return path of this module must be one of the four allowed codes.
+```rust
+get_github_repository_state,
+list_github_issues,
+create_github_issue,
+list_github_issue_comments,
+get_github_repository_snapshot,
+```
 
-- [ ] **Step 3: Run**
+- [ ] **Step 5: Run Rust tests and the line-count ratchet**
 
 ```bash
-. ./bin/activate-hermit && cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib github_issues
+. ./bin/activate-hermit && cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib project_github_issues
+. ./bin/activate-hermit && cd desktop && pnpm check:file-sizes
 ```
 
-Expected: PASS.
+Expected: tests pass and `desktop/src-tauri/src/lib.rs` is no more than 1,000 lines.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 6: Format, inspect scope, and commit**
+
+Run GitNexus `detect_changes({ scope: "staged" })` and confirm only the issue command wrappers, module re-export, invoke registrations, and two blank-line removals are present.
 
 ```bash
 . ./bin/activate-hermit
+cargo fmt --manifest-path desktop/src-tauri/Cargo.toml
 git add desktop/src-tauri/src/commands/project_github_issues.rs \
   desktop/src-tauri/src/commands/mod.rs \
   desktop/src-tauri/src/lib.rs
-if [ -f .gitnexus/run.cjs ]; then node .gitnexus/run.cjs detect; fi
 git diff --check
 git commit -s -m "feat(projects): expose GitHub issue Tauri commands"
 ```
 
 ---
 
-### Task 4: TypeScript DTOs, ProjectIssue fields, and share links
+### Task 4: Add TypeScript DTOs, ProjectIssue mapping, and safe share links
 
 **Files:**
-- Modify: `desktop/src/shared/api/projectGit.ts`
-- Modify: `desktop/src/features/projects/projectIssues.mjs`
-- Modify: `desktop/src/features/projects/projectIssues.test.mjs`
-- Create: `desktop/src/features/projects/lib/projectGithubIssues.ts`
-- Create: `desktop/src/features/projects/lib/projectGithubIssues.test.mjs`
-- Modify: `desktop/src/features/projects/lib/projectShareLinks.ts`
-- Modify: `desktop/src/features/projects/lib/projectShareLinks.test.mjs`
+
+- Modify `desktop/src/shared/api/projectGit.ts`.
+- Modify `desktop/src/features/projects/projectIssues.mjs`.
+- Modify `desktop/src/features/projects/projectIssues.d.mts`.
+- Modify `desktop/src/features/projects/projectIssues.test.mjs`.
+- Create `desktop/src/features/projects/lib/projectGithubIssues.ts`.
+- Create `desktop/src/features/projects/lib/projectGithubIssues.test.mjs`.
+- Modify `desktop/src/features/projects/lib/projectShareLinks.ts`.
+- Modify `desktop/src/features/projects/lib/projectShareLinks.test.mjs`.
 
 **Interfaces:**
-- Consumes: `invokeTauri`, `parseProjectPullRequestMergeError`, `isGitHubCloneUrl`
-- Produces:
-  - `export type GithubIssueDto`
-  - `export type GithubIssueListDto = { issues: GithubIssueDto[]; has_more: boolean }`
-  - `export type GithubIssueCommentDto`
-  - `export async function listGithubIssues(input: { cloneUrl: string; state: "open" | "closed" }): Promise<GithubIssueListDto>`
-  - `export async function createGithubIssue(input: { cloneUrl: string; title: string; body: string }): Promise<GithubIssueDto>`
-  - `export async function listGithubIssueComments(input: { cloneUrl: string; number: number }): Promise<GithubIssueCommentDto[]>`
-  - `export function mapGithubIssueToProjectIssue(dto: GithubIssueDto, repoAddress: string | null): ProjectIssue`
-  - `export function mapGithubCommentToProjectIssueComment(dto: GithubIssueCommentDto): ProjectIssue["comments"][number]`
-  - `export function parseGithubIssueNumber(value: string | null | undefined): number | null`
-  - `export function issueDisplayNumber(issueId: string): string`
-  - `export function issueIdentityPubkeys(issues: ProjectIssue[]): string[]`
-  - `export function isSafeGitHubIssueUrl(raw: string): boolean`
-  - `PROJECT_ISSUE_STATUS.OPEN = "Open"`
 
-- [ ] **Step 1: Extend the Nostr mapper and write a failing test**
+- Consumes `invokeTauri`, `parseProjectPullRequestMergeError`, `isGitHubCloneUrl`, `Repository`, and `ProjectIssue`.
+- Produces native DTO wrappers, `{ issues, hasMore }` host routing, GitHub issue/comment mappers, decimal-number display helpers, hex-only identity collection, and safe GitHub issue sharing.
 
-In `PROJECT_ISSUE_STATUS` add `OPEN: "Open"`.
-In `eventToProjectIssue` add:
+- [ ] **Step 1: Run impact checks**
+
+Run GitNexus upstream impact for `eventToProjectIssue`, `PROJECT_ISSUE_STATUS`, `issueShareLink`, and `parseProjectPullRequestMergeError`.
+Report direct callers, processes, and risk before editing.
+
+- [ ] **Step 2: Write all mapper, routing, declaration-default, identity, number, comment, and share tests before production changes**
+
+Add this Nostr regression to `projectIssues.test.mjs`.
 
 ```js
-commentCount: comments.length,
-htmlUrl: null,
-authorAvatarUrl: null,
-assigneeAvatars: {},
-```
-
-Add to `projectIssues.test.mjs`:
-
-```js
-test("nostr issues expose commentCount and a null GitHub htmlUrl", () => {
+test("Nostr issues expose neutral GitHub extension fields", () => {
   const issue = eventToProjectIssue(issueEvent(), [], [
     {
       id: "c".repeat(64),
@@ -725,40 +1058,31 @@ test("nostr issues expose commentCount and a null GitHub htmlUrl", () => {
       tags: [["e", "e".repeat(64)]],
     },
   ]);
-  assert.equal(issue.commentCount, 1);
-  assert.equal(issue.htmlUrl, null);
   assert.equal(issue.status, PROJECT_ISSUE_STATUS.BACKLOG);
   assert.equal(PROJECT_ISSUE_STATUS.OPEN, "Open");
+  assert.equal(issue.commentCount, 1);
+  assert.equal(issue.htmlUrl, null);
+  assert.equal(issue.authorAvatarUrl, null);
+  assert.deepEqual(issue.assigneeAvatars, {});
 });
 ```
 
-- [ ] **Step 2: Run the Nostr test**
-
-```bash
-. ./bin/activate-hermit && cd desktop && pnpm test -- src/features/projects/projectIssues.test.mjs
-```
-
-Expected: FAIL until the new fields exist, then PASS after Step 1's implementation.
-
-- [ ] **Step 3: Write failing mapper, routing, and share-link tests**
-
-`projectGithubIssues.test.mjs`:
+Create `projectGithubIssues.test.mjs` with a complete DTO and independent literal expectations.
 
 ```js
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { isGitHubCloneUrl } from "./projectGitError.ts";
 import {
   fetchProjectIssuesWith,
   issueDisplayNumber,
   issueIdentityPubkeys,
+  mapGithubCommentToProjectIssueComment,
   mapGithubIssueToProjectIssue,
   parseGithubIssueNumber,
 } from "./projectGithubIssues.ts";
 
 const REPO_ADDRESS = `30617:${"a".repeat(64)}:app`;
-
 const dto = {
   number: 42,
   title: "Broken login",
@@ -773,97 +1097,146 @@ const dto = {
   assignees: [{ login: "linus", avatar_url: "https://avatars.githubusercontent.com/u/2" }],
 };
 
-test("mapper builds #42 Open with login identities", () => {
+test("GitHub issue mapper fills the complete ProjectIssue contract", () => {
   const issue = mapGithubIssueToProjectIssue(dto, REPO_ADDRESS);
-  assert.equal(issue.id, "42");
-  assert.equal(issue.status, "Open");
-  assert.equal(issue.author, "ada");
-  assert.equal(issue.authorAvatarUrl, "https://avatars.githubusercontent.com/u/1");
-  assert.deepEqual(issue.assignees, ["linus"]);
-  assert.equal(issue.assigneeAvatars.linus, "https://avatars.githubusercontent.com/u/2");
-  assert.equal(issue.commentCount, 3);
-  assert.deepEqual(issue.comments, []);
-  assert.equal(issue.htmlUrl, "https://github.com/acme/app/issues/42");
-  assert.equal(issueDisplayNumber(issue.id), "42");
+  assert.deepEqual(issue, {
+    id: "42",
+    title: "Broken login",
+    content: "Steps",
+    tags: [],
+    author: "ada",
+    authorAvatarUrl: "https://avatars.githubusercontent.com/u/1",
+    createdAt: 1_704_166_645,
+    repoAddress: REPO_ADDRESS,
+    channelId: null,
+    originAgentName: null,
+    labels: ["bug"],
+    recipients: [],
+    assignees: ["linus"],
+    assigneeAvatars: { linus: "https://avatars.githubusercontent.com/u/2" },
+    assigneeOperationHeads: {},
+    status: "Open",
+    statusEventId: null,
+    updatedAt: 1_704_253_045,
+    comments: [],
+    commentCount: 3,
+    htmlUrl: "https://github.com/acme/app/issues/42",
+  });
 });
 
-test("fetchProjectIssuesWith uses GitHub only for github.com clone URLs", async () => {
+test("GitHub comment mapper keeps login and avatar without pubkey conversion", () => {
+  assert.deepEqual(
+    mapGithubCommentToProjectIssueComment({
+      id: 9,
+      body: "I can reproduce this.",
+      created_at: 1_704_253_100,
+      user: { login: "grace", avatar_url: "https://avatars.githubusercontent.com/u/3" },
+    }),
+    {
+      id: "9",
+      content: "I can reproduce this.",
+      tags: [],
+      author: "grace",
+      authorAvatarUrl: "https://avatars.githubusercontent.com/u/3",
+      createdAt: 1_704_253_100,
+    },
+  );
+});
+
+test("host routing invokes only GitHub for github.com", async () => {
   const calls = { github: 0, buzz: 0 };
-  const githubProject = { id: "p1", repoAddress: REPO_ADDRESS, cloneUrls: ["https://github.com/acme/app"] };
-  const buzzProject = {
-    id: "p2",
-    repoAddress: REPO_ADDRESS,
-    cloneUrls: [`https://relay.example/git/${"ab".repeat(32)}/app`],
-  };
-  const github = await fetchProjectIssuesWith(githubProject, {
-    loadGithub: async () => {
-      calls.github += 1;
-      return { issues: [dto], has_more: true };
+  const result = await fetchProjectIssuesWith(
+    { id: "p1", repoAddress: REPO_ADDRESS, cloneUrls: ["https://github.com/acme/app"] },
+    {
+      loadGithub: async (input) => {
+        calls.github += 1;
+        assert.deepEqual(input, { cloneUrl: "https://github.com/acme/app", state: "open" });
+        return { issues: [dto], has_more: true };
+      },
+      loadBuzz: async () => {
+        calls.buzz += 1;
+        return [];
+      },
     },
-    loadBuzz: async () => {
-      calls.buzz += 1;
-      return { issues: [], hasMore: false };
-    },
-  });
+  );
   assert.equal(calls.github, 1);
   assert.equal(calls.buzz, 0);
-  assert.equal(github.issues[0].id, "42");
-  assert.equal(github.hasMore, true);
+  assert.equal(result.issues[0].id, "42");
+  assert.equal(result.hasMore, true);
+});
 
-  calls.github = 0;
-  await fetchProjectIssuesWith(buzzProject, {
-    loadGithub: async () => {
-      calls.github += 1;
-      return { issues: [dto], has_more: false };
+test("host routing invokes only Nostr for a Buzz clone URL", async () => {
+  const calls = { github: 0, buzz: 0 };
+  const result = await fetchProjectIssuesWith(
+    {
+      id: "p2",
+      repoAddress: REPO_ADDRESS,
+      cloneUrls: [`https://relay.example/git/${"ab".repeat(32)}/app`],
     },
-    loadBuzz: async () => {
-      calls.buzz += 1;
-      return { issues: [], hasMore: false };
+    {
+      loadGithub: async () => {
+        calls.github += 1;
+        return { issues: [dto], has_more: false };
+      },
+      loadBuzz: async () => {
+        calls.buzz += 1;
+        return [{ id: "e".repeat(64) }];
+      },
     },
-  });
+  );
   assert.equal(calls.github, 0);
   assert.equal(calls.buzz, 1);
+  assert.equal(result.issues[0].id, "e".repeat(64));
+  assert.equal(result.hasMore, false);
 });
 
-test("isGitHubCloneUrl accepts https and ssh github hosts", () => {
-  assert.equal(isGitHubCloneUrl("https://github.com/acme/app"), true);
-  assert.equal(isGitHubCloneUrl("git@github.com:acme/app.git"), true);
-  assert.equal(isGitHubCloneUrl(`https://relay.example/git/${"ab".repeat(32)}/app`), false);
-});
-
-test("parseGithubIssueNumber accepts only positive decimal ids", () => {
+test("GitHub issue number parser accepts only positive safe decimal integers", () => {
   assert.equal(parseGithubIssueNumber("42"), 42);
   assert.equal(parseGithubIssueNumber("0"), null);
+  assert.equal(parseGithubIssueNumber("01"), null);
   assert.equal(parseGithubIssueNumber("0x2"), null);
+  assert.equal(parseGithubIssueNumber("9007199254740992"), null);
   assert.equal(parseGithubIssueNumber("e".repeat(64)), null);
+  assert.equal(issueDisplayNumber("42"), "42");
+  assert.equal(issueDisplayNumber("e".repeat(64)), "eeeeeeee");
 });
 
-test("issueIdentityPubkeys drops GitHub logins", () => {
+test("identity collection drops GitHub logins and keeps lowercase Nostr pubkeys", () => {
   const github = mapGithubIssueToProjectIssue(dto, REPO_ADDRESS);
+  const nostr = {
+    ...github,
+    id: "f".repeat(64),
+    author: "A".repeat(64),
+    recipients: ["B".repeat(64)],
+    assignees: ["C".repeat(64)],
+    comments: [{ ...mapGithubCommentToProjectIssueComment({ id: 1, body: "x", created_at: 1, user: { login: "x", avatar_url: "" } }), author: "D".repeat(64) }],
+  };
   assert.deepEqual(issueIdentityPubkeys([github]), []);
+  assert.deepEqual(issueIdentityPubkeys([nostr]), ["a".repeat(64), "b".repeat(64), "c".repeat(64), "d".repeat(64)]);
 });
 ```
 
-Add to `projectShareLinks.test.mjs`:
+Add these share-link cases to `projectShareLinks.test.mjs`.
 
 ```js
-test("issueShareLink prefers a validated GitHub htmlUrl", () => {
+test("issueShareLink accepts only a canonical GitHub issue URL", () => {
+  const base = { id: "42", repoAddress: REPO_ADDRESS };
   assert.equal(
-    issueShareLink({
-      id: "42",
-      repoAddress: REPO_ADDRESS,
-      htmlUrl: "https://github.com/acme/app/issues/42",
-    }),
+    issueShareLink({ ...base, htmlUrl: "https://github.com/acme/app/issues/42" }),
     "https://github.com/acme/app/issues/42",
   );
-  assert.equal(
-    issueShareLink({
-      id: "42",
-      repoAddress: REPO_ADDRESS,
-      htmlUrl: "https://evil.example/issues/42",
-    }),
-    null,
-  );
+  for (const htmlUrl of [
+    "https://evil.example/acme/app/issues/42",
+    "https://github.com/acme/app/issues/42?x=1",
+    "https://github.com/acme/app/issues/42#x",
+    "https://github.com/acme/app/issues/42/",
+    "https://github.com/acme/app/pull/42",
+  ]) {
+    assert.equal(issueShareLink({ ...base, htmlUrl }), null, htmlUrl);
+  }
+});
+
+test("issueShareLink preserves the existing Buzz deep link", () => {
   assert.equal(
     issueShareLink({ id: EVENT_ID, repoAddress: REPO_ADDRESS, htmlUrl: null }),
     `buzz://issue?id=${EVENT_ID}&owner=${OWNER}&d=flappy-bee`,
@@ -871,128 +1244,395 @@ test("issueShareLink prefers a validated GitHub htmlUrl", () => {
 });
 ```
 
-- [ ] **Step 4: Implement wrappers and mappers**
-
-`listGithubIssues` invokes `"list_github_issues"` with `{ cloneUrl, state }` and rethrows `parseProjectPullRequestMergeError`.
-`createGithubIssue` invokes `"create_github_issue"` with `{ cloneUrl, title, body }`.
-`listGithubIssueComments` invokes `"list_github_issue_comments"` with `{ cloneUrl, number }`.
-
-`mapGithubIssueToProjectIssue`:
-- `id = String(dto.number)`
-- `content = dto.body ?? ""`
-- `tags = []`
-- `author = dto.user.login`
-- `authorAvatarUrl = dto.user.avatar_url`
-- `assignees = dto.assignees.map((a) => a.login)`
-- `assigneeAvatars = Object.fromEntries(dto.assignees.map((a) => [a.login, a.avatar_url]))`
-- `status = dto.state === "closed" ? "Closed" : "Open"`
-- `comments = []`
-- `commentCount = dto.comments`
-- `htmlUrl = dto.html_url`
-- `repoAddress` from the announcement coordinate
-- `channelId`, `originAgentName`, `recipients` empty
-- `assigneeOperationHeads = {}`
-- `statusEventId = null`
-
-`fetchProjectIssuesWith` gates on `isGitHubCloneUrl(project.cloneUrls[0])`, not `projectRepoHost`.
-GitHub path maps DTOs and sets `hasMore = Boolean(page.has_more)`.
-Buzz path returns the loader result unchanged.
-
-`isSafeGitHubIssueUrl` mirrors `isSafeGitHubRecoveryUrl` but requires exactly `/{owner}/{repo}/issues/{n}` with `n` matching `/^[1-9][0-9]*$/`.
-`issueShareLink` returns `issue.htmlUrl` when that check passes; otherwise keep the hex `buzz://issue` path.
-
-`parseGithubIssueNumber` matches `/^[1-9][0-9]*$/` and rejects values above `Number.MAX_SAFE_INTEGER`.
-`issueDisplayNumber` returns the full id when that pattern matches, otherwise `issueId.slice(0, 8)`.
-`issueIdentityPubkeys` keeps only `/^[a-fA-F0-9]{64}$/` values from author, recipients, assignees, and comment authors.
-
-- [ ] **Step 5: Run**
+- [ ] **Step 3: Run and verify RED**
 
 ```bash
-. ./bin/activate-hermit
-cd desktop && pnpm test -- src/features/projects/lib/projectGithubIssues.test.mjs src/features/projects/lib/projectShareLinks.test.mjs src/features/projects/projectIssues.test.mjs && pnpm typecheck
+. ./bin/activate-hermit && cd desktop && pnpm test -- src/features/projects/projectIssues.test.mjs src/features/projects/lib/projectGithubIssues.test.mjs src/features/projects/lib/projectShareLinks.test.mjs
 ```
 
-Expected: PASS.
+Expected: the new module import or `PROJECT_ISSUE_STATUS.OPEN` is missing.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 4: Add exact DTOs and invoke wrappers**
+
+Add these types and documented functions to `projectGit.ts`.
+
+```ts
+/** GitHub login identity returned by the native issue commands. */
+export type GithubIssueUserDto = { login: string; avatar_url: string };
+
+/** Bounded GitHub issue returned by the native issue commands. */
+export type GithubIssueDto = {
+  number: number;
+  title: string;
+  body: string;
+  state: "open" | "closed";
+  html_url: string;
+  comments: number;
+  created_at: number;
+  updated_at: number;
+  user: GithubIssueUserDto;
+  labels: string[];
+  assignees: GithubIssueUserDto[];
+};
+
+/** One bounded GitHub issue page. */
+export type GithubIssueListDto = { issues: GithubIssueDto[]; has_more: boolean };
+
+/** One read-only GitHub issue comment. */
+export type GithubIssueCommentDto = {
+  id: number;
+  body: string;
+  created_at: number;
+  user: GithubIssueUserDto;
+};
+
+/** List the first GitHub issue page for a github.com clone URL. */
+export async function listGithubIssues(input: {
+  cloneUrl: string;
+  state: "open" | "closed";
+}): Promise<GithubIssueListDto> {
+  try {
+    return await invokeTauri<GithubIssueListDto>("list_github_issues", input);
+  } catch (error) {
+    throw parseProjectPullRequestMergeError(error) ?? error;
+  }
+}
+
+/** Create one GitHub issue for a github.com clone URL. */
+export async function createGithubIssue(input: {
+  cloneUrl: string;
+  title: string;
+  body: string;
+}): Promise<GithubIssueDto> {
+  try {
+    return await invokeTauri<GithubIssueDto>("create_github_issue", input);
+  } catch (error) {
+    throw parseProjectPullRequestMergeError(error) ?? error;
+  }
+}
+
+/** List the first read-only comment page for one GitHub issue. */
+export async function listGithubIssueComments(input: {
+  cloneUrl: string;
+  number: number;
+}): Promise<GithubIssueCommentDto[]> {
+  try {
+    return await invokeTauri<GithubIssueCommentDto[]>(
+      "list_github_issue_comments",
+      input,
+    );
+  } catch (error) {
+    throw parseProjectPullRequestMergeError(error) ?? error;
+  }
+}
+```
+
+- [ ] **Step 5: Align the runtime object and its declaration file**
+
+Add `OPEN: "Open"` to `PROJECT_ISSUE_STATUS` in both `.mjs` and `.d.mts`.
+Add `"Open"` to the `ProjectIssueStatus` union.
+Add these fields to `ProjectIssue` in `projectIssues.d.mts`.
+
+```ts
+authorAvatarUrl: string | null;
+assigneeAvatars: Record<string, string>;
+commentCount: number;
+htmlUrl: string | null;
+```
+
+Add `authorAvatarUrl?: string | null` to `ProjectIssueComment` because only GitHub comments carry it.
+Populate neutral values in `eventToProjectIssue`.
+
+```js
+return {
+  // existing fields stay unchanged
+  authorAvatarUrl: null,
+  assigneeAvatars: {},
+  commentCount: comments.length,
+  htmlUrl: null,
+};
+```
+
+- [ ] **Step 6: Implement host routing and DTO mapping in the new helper**
+
+Use these exact public functions and result shape.
+
+```ts
+import type { Repository } from "@/features/projects/projectModels";
+import type { ProjectIssue } from "@/features/projects/projectIssues.mjs";
+import {
+  type GithubIssueCommentDto,
+  type GithubIssueDto,
+  type GithubIssueListDto,
+} from "@/shared/api/projectGit";
+import { isGitHubCloneUrl } from "./projectGitError";
+
+/** Host-routed issue list consumed by the repository Issues tab. */
+export type ProjectIssuesResult = { issues: ProjectIssue[]; hasMore: boolean };
+
+/** Map a bounded native GitHub issue onto the shared Projects issue model. */
+export function mapGithubIssueToProjectIssue(
+  dto: GithubIssueDto,
+  repoAddress: string,
+): ProjectIssue {
+  return {
+    id: String(dto.number),
+    title: dto.title,
+    content: dto.body ?? "",
+    tags: [],
+    author: dto.user.login,
+    authorAvatarUrl: dto.user.avatar_url,
+    createdAt: dto.created_at,
+    repoAddress,
+    channelId: null,
+    originAgentName: null,
+    labels: [...dto.labels],
+    recipients: [],
+    assignees: dto.assignees.map((assignee) => assignee.login),
+    assigneeAvatars: Object.fromEntries(
+      dto.assignees.map((assignee) => [assignee.login, assignee.avatar_url]),
+    ),
+    assigneeOperationHeads: {},
+    status: dto.state === "closed" ? "Closed" : "Open",
+    statusEventId: null,
+    updatedAt: dto.updated_at,
+    comments: [],
+    commentCount: dto.comments,
+    htmlUrl: dto.html_url,
+  };
+}
+
+/** Map a bounded native GitHub comment without interpreting its login as a pubkey. */
+export function mapGithubCommentToProjectIssueComment(
+  dto: GithubIssueCommentDto,
+): ProjectIssue["comments"][number] {
+  return {
+    id: String(dto.id),
+    content: dto.body ?? "",
+    tags: [],
+    author: dto.user.login,
+    authorAvatarUrl: dto.user.avatar_url,
+    createdAt: dto.created_at,
+  };
+}
+
+/** Route one repository to exactly one issue backend. */
+export async function fetchProjectIssuesWith(
+  project: Pick<Repository, "id" | "repoAddress" | "cloneUrls">,
+  loaders: {
+    loadGithub: (input: {
+      cloneUrl: string;
+      state: "open";
+    }) => Promise<GithubIssueListDto>;
+    loadBuzz: () => Promise<ProjectIssue[]>;
+  },
+): Promise<ProjectIssuesResult> {
+  const cloneUrl = project.cloneUrls[0] ?? "";
+  if (isGitHubCloneUrl(cloneUrl)) {
+    const page = await loaders.loadGithub({ cloneUrl, state: "open" });
+    return {
+      issues: page.issues.map((issue) =>
+        mapGithubIssueToProjectIssue(issue, project.repoAddress),
+      ),
+      hasMore: page.has_more === true,
+    };
+  }
+  return { issues: await loaders.loadBuzz(), hasMore: false };
+}
+
+/** Parse a positive GitHub issue number that is safe in JavaScript. */
+export function parseGithubIssueNumber(value: string | null | undefined): number | null {
+  if (!value || !/^[1-9][0-9]*$/.test(value)) return null;
+  const number = Number(value);
+  return Number.isSafeInteger(number) ? number : null;
+}
+
+/** Display a full GitHub number or the existing eight-character Nostr prefix. */
+export function issueDisplayNumber(issueId: string): string {
+  return parseGithubIssueNumber(issueId) === null ? issueId.slice(0, 8) : issueId;
+}
+
+/** Collect only valid Nostr identities for profile batch lookup. */
+export function issueIdentityPubkeys(issues: ProjectIssue[]): string[] {
+  const values = issues.flatMap((issue) => [
+    issue.author,
+    ...issue.recipients,
+    ...issue.assignees,
+    ...issue.comments.map((comment) => comment.author),
+  ]);
+  return [...new Set(values.filter((value) => /^[a-fA-F0-9]{64}$/.test(value)).map((value) => value.toLowerCase()))];
+}
+```
+
+Task 5 adds the comment request helper and hook to this same file after their tests fail.
+
+- [ ] **Step 7: Implement strict GitHub URL sharing without exporting the validator**
+
+Add a private validator to `projectShareLinks.ts`.
+
+```ts
+function isSafeGitHubIssueUrl(raw: string): boolean {
+  try {
+    if (
+      raw !== raw.trim() ||
+      !raw.startsWith("https://github.com/") ||
+      raw.endsWith("/") ||
+      raw.includes("\\")
+    ) {
+      return false;
+    }
+    const url = new URL(raw);
+    if (
+      url.protocol !== "https:" ||
+      url.hostname !== "github.com" ||
+      url.port !== "" ||
+      url.username !== "" ||
+      url.password !== "" ||
+      url.search !== "" ||
+      url.hash !== "" ||
+      url.pathname.includes("%") ||
+      url.pathname.includes("//")
+    ) {
+      return false;
+    }
+    const [owner, repo, segment, number, ...rest] = url.pathname.split("/").filter(Boolean);
+    return (
+      rest.length === 0 &&
+      segment === "issues" &&
+      /^[A-Za-z0-9-]+$/.test(owner ?? "") &&
+      /^[A-Za-z0-9._-]+$/.test(repo ?? "") &&
+      /^[1-9][0-9]*$/.test(number ?? "") &&
+      raw === `https://github.com/${owner}/${repo}/issues/${number}`
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function issueShareLink(issue: ProjectIssue): string | null {
+  if (issue.htmlUrl && isSafeGitHubIssueUrl(issue.htmlUrl)) {
+    return issue.htmlUrl;
+  }
+  const coordinate = repositoryCoordinate(issue.repoAddress);
+  return coordinate &&
+    HEX64_RE.test(issue.id) &&
+    isLinkableCoordinate(coordinate.owner, coordinate.dtag)
+    ? buildIssueLink({ ...coordinate, id: issue.id })
+    : null;
+}
+```
+
+- [ ] **Step 8: Run tests, typecheck, and verify GREEN**
+
+```bash
+. ./bin/activate-hermit && cd desktop && pnpm test -- src/features/projects/projectIssues.test.mjs src/features/projects/lib/projectGithubIssues.test.mjs src/features/projects/lib/projectShareLinks.test.mjs && pnpm typecheck
+```
+
+Expected: all tests pass and TypeScript accepts the `.mjs` declaration changes.
+
+- [ ] **Step 9: Format, inspect scope, and commit**
+
+Run GitNexus `detect_changes({ scope: "staged" })` and confirm only DTO, model, helper, declaration, share-link, and test symbols are affected.
 
 ```bash
 . ./bin/activate-hermit
-git add desktop/src/shared/api/projectGit.ts \
-  desktop/src/features/projects/projectIssues.mjs \
-  desktop/src/features/projects/projectIssues.test.mjs \
-  desktop/src/features/projects/lib/projectGithubIssues.ts \
-  desktop/src/features/projects/lib/projectGithubIssues.test.mjs \
-  desktop/src/features/projects/lib/projectShareLinks.ts \
-  desktop/src/features/projects/lib/projectShareLinks.test.mjs
-if [ -f .gitnexus/run.cjs ]; then node .gitnexus/run.cjs detect; fi
+cd desktop && pnpm exec biome check --write \
+  src/shared/api/projectGit.ts \
+  src/features/projects/projectIssues.mjs \
+  src/features/projects/projectIssues.d.mts \
+  src/features/projects/projectIssues.test.mjs \
+  src/features/projects/lib/projectGithubIssues.ts \
+  src/features/projects/lib/projectGithubIssues.test.mjs \
+  src/features/projects/lib/projectShareLinks.ts \
+  src/features/projects/lib/projectShareLinks.test.mjs
+git add src/shared/api/projectGit.ts \
+  src/features/projects/projectIssues.mjs \
+  src/features/projects/projectIssues.d.mts \
+  src/features/projects/projectIssues.test.mjs \
+  src/features/projects/lib/projectGithubIssues.ts \
+  src/features/projects/lib/projectGithubIssues.test.mjs \
+  src/features/projects/lib/projectShareLinks.ts \
+  src/features/projects/lib/projectShareLinks.test.mjs
 git diff --check
-git commit -s -m "feat(projects): map GitHub issue DTOs onto ProjectIssue"
+git commit -s -m "feat(projects): map GitHub issues onto ProjectIssue"
 ```
 
 ---
 
-### Task 5: Host-aware fetch and create mutations
+### Task 5: Route the query, create mutation, invalidations, comments, and profile lookup
 
 **Files:**
-- Modify: `desktop/src/features/projects/hooks.ts`
-- Modify: `desktop/src/features/projects/issueMutations.ts`
-- Create: `desktop/src/features/projects/issueMutations.test.mjs`
-- Modify: `desktop/src/features/projects/ui/ProjectDetailScreen.tsx`
-- Modify: `desktop/src/features/projects/ui/ProjectIssuesPanel.tsx` (read `data.issues` only)
-- Modify: `desktop/src/features/projects/lib/projectGithubIssues.ts` (comments hook)
+
+- Modify `desktop/src/features/projects/hooks.ts`.
+- Modify `desktop/src/features/projects/issueMutations.ts`.
+- Create `desktop/src/features/projects/issueMutations.test.mjs`.
+- Modify `desktop/src/features/projects/lib/projectGithubIssues.ts`.
+- Modify `desktop/src/features/projects/lib/projectGithubIssues.test.mjs`.
+- Modify `desktop/src/features/projects/ui/ProjectDetailScreen.tsx`.
+- Modify `desktop/src/features/projects/ui/ProjectIssuesPanel.tsx` only for the new query result shape.
 
 **Interfaces:**
-- Consumes: `fetchProjectIssuesWith`, `listGithubIssues`, `createGithubIssue`, `listGithubIssueComments`, `parseGithubIssueNumber`, `issueIdentityPubkeys`
-- Produces:
-  - `useProjectIssuesQuery` data type `{ issues: ProjectIssue[]; hasMore: boolean }`
-  - `useCreateProjectIssueMutation` returns `string` (GitHub number or event id)
-  - `export function useGithubIssueCommentsQuery(project, selectedIssueId)`
-  - `export async function createProjectIssueWith(...)`
 
-- [ ] **Step 1: Write the failing create-routing test**
+- Consumes `fetchProjectIssuesWith`, native list/create/comments wrappers, number parsing, comment mapping, and identity filtering.
+- Produces `useProjectIssuesQuery` returning `{ issues, hasMore }`, `createProjectIssueWith`, `projectIssueInvalidationKeys`, `githubIssueCommentsRequest`, and `useGithubIssueCommentsQuery`.
+
+- [ ] **Step 1: Run impact checks**
+
+Run GitNexus upstream impact for `fetchProjectIssues`, `useProjectIssuesQuery`, `publishProjectIssue`, `useCreateProjectIssueMutation`, `ProjectDetailScreen`, and `ProjectIssuesPanel`.
+Report direct callers, processes, and risk before editing.
+
+- [ ] **Step 2: Write failing create-routing and invalidation tests**
+
+Create `issueMutations.test.mjs`.
 
 ```js
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { createProjectIssueWith } from "./issueMutations.ts";
+import {
+  createProjectIssueWith,
+  projectIssueInvalidationKeys,
+} from "./issueMutations.ts";
 
-test("GitHub create does not sign or publish kind 1621", async () => {
-  const calls = { sign: 0, publish: 0, github: 0 };
+const REPO_ADDRESS = `30617:${"a".repeat(64)}:app`;
+
+test("GitHub create never calls the Buzz issue publisher", async () => {
+  const calls = { github: 0, buzz: 0 };
   const id = await createProjectIssueWith(
     {
       id: "p1",
       owner: "a".repeat(64),
-      repoAddress: `30617:${"a".repeat(64)}:app`,
+      repoAddress: REPO_ADDRESS,
       cloneUrls: ["https://github.com/acme/app"],
     },
     { title: "Broken login", body: "steps" },
     {
-      createGithub: async () => {
+      createGithub: async (input) => {
         calls.github += 1;
+        assert.deepEqual(input, {
+          cloneUrl: "https://github.com/acme/app",
+          title: "Broken login",
+          body: "steps",
+        });
         return { number: 43 };
       },
       publishBuzz: async () => {
-        calls.sign += 1;
-        calls.publish += 1;
+        calls.buzz += 1;
         return "e".repeat(64);
       },
     },
   );
   assert.equal(id, "43");
-  assert.equal(calls.github, 1);
-  assert.equal(calls.sign, 0);
-  assert.equal(calls.publish, 0);
+  assert.deepEqual(calls, { github: 1, buzz: 0 });
 });
 
-test("Buzz create still publishes kind 1621", async () => {
+test("Buzz create never calls the GitHub creator", async () => {
   const calls = { github: 0, buzz: 0 };
   const id = await createProjectIssueWith(
     {
       id: "p2",
       owner: "a".repeat(64),
-      repoAddress: `30617:${"a".repeat(64)}:app`,
+      repoAddress: REPO_ADDRESS,
       cloneUrls: [`https://relay.example/git/${"ab".repeat(32)}/app`],
     },
     { title: "Buzz bug", body: "" },
@@ -1008,24 +1648,111 @@ test("Buzz create still publishes kind 1621", async () => {
     },
   );
   assert.equal(id, "e".repeat(64));
-  assert.equal(calls.github, 0);
-  assert.equal(calls.buzz, 1);
+  assert.deepEqual(calls, { github: 0, buzz: 1 });
+});
+
+test("GitHub create invalidates only its repository issue query", () => {
+  assert.deepEqual(
+    projectIssueInvalidationKeys({
+      id: "p1",
+      cloneUrls: ["https://github.com/acme/app"],
+    }),
+    [["project", "p1", "issues"]],
+  );
+});
+
+test("Buzz create preserves all existing invalidations", () => {
+  assert.deepEqual(
+    projectIssueInvalidationKeys({
+      id: "p2",
+      cloneUrls: [`https://relay.example/git/${"ab".repeat(32)}/app`],
+    }),
+    [
+      ["project", "p2", "issues"],
+      ["projects", "work-items"],
+      ["projects", "activity-summaries"],
+    ],
+  );
 });
 ```
 
-- [ ] **Step 2: Run — expect fail**
+- [ ] **Step 3: Add failing comment-request tests**
 
-```bash
-. ./bin/activate-hermit && cd desktop && pnpm test -- src/features/projects/issueMutations.test.mjs
+Append to `projectGithubIssues.test.mjs`.
+
+```js
+test("GitHub comment request validates host, number, and exact query key", () => {
+  assert.deepEqual(
+    githubIssueCommentsRequest(
+      { id: "p1", cloneUrls: ["https://github.com/acme/app"] },
+      "42",
+    ),
+    {
+      cloneUrl: "https://github.com/acme/app",
+      number: 42,
+      queryKey: ["project", "p1", "issues", 42, "comments"],
+    },
+  );
+  assert.equal(
+    githubIssueCommentsRequest(
+      { id: "p1", cloneUrls: ["https://github.com/acme/app"] },
+      "0",
+    ),
+    null,
+  );
+  assert.equal(
+    githubIssueCommentsRequest(
+      { id: "p2", cloneUrls: [`https://relay.example/git/${"ab".repeat(32)}/app`] },
+      "42",
+    ),
+    null,
+  );
+});
 ```
 
-Expected: `createProjectIssueWith` missing.
+Import `githubIssueCommentsRequest` in that test file.
 
-- [ ] **Step 3: Implement routing**
+- [ ] **Step 4: Run and verify RED**
 
-In `issueMutations.ts`:
+```bash
+. ./bin/activate-hermit && cd desktop && pnpm test -- src/features/projects/issueMutations.test.mjs src/features/projects/lib/projectGithubIssues.test.mjs
+```
+
+Expected: `createProjectIssueWith` or `githubIssueCommentsRequest` is missing.
+
+- [ ] **Step 5: Implement host-aware query routing**
+
+Rename the current private `fetchProjectIssues` to `fetchBuzzProjectIssues` without changing its Nostr filters or assignment-history behavior.
+Keep it returning `Promise<ProjectIssue[]>`.
+Change only the query function and return shape at the hook boundary.
 
 ```ts
+export function useProjectIssuesQuery(project: Repository | null | undefined) {
+  return useQuery({
+    enabled: Boolean(project),
+    queryKey: ["project", project?.id ?? "none", "issues"],
+    queryFn: () => {
+      if (!project) throw new Error("No project selected.");
+      return fetchProjectIssuesWith(project, {
+        loadGithub: listGithubIssues,
+        loadBuzz: () => fetchBuzzProjectIssues(project),
+      });
+    },
+    staleTime: 30_000,
+  });
+}
+```
+
+Add imports for `fetchProjectIssuesWith` and `listGithubIssues`.
+Do not modify `fetchProjectsWorkItems`.
+
+- [ ] **Step 6: Implement create routing and invalidation selection**
+
+Keep `publishProjectIssue` unchanged.
+Add documented helpers and make the hook use them.
+
+```ts
+/** Create an issue through exactly one repository-native backend. */
 export async function createProjectIssueWith(
   project: Project,
   input: CreateProjectIssueInput,
@@ -1037,17 +1764,28 @@ export async function createProjectIssueWith(
     }) => Promise<{ number: number }>;
     publishBuzz: typeof publishProjectIssue;
   },
-) {
-  const cloneUrl = project.cloneUrls[0];
+): Promise<string> {
+  const cloneUrl = project.cloneUrls[0] ?? "";
   if (isGitHubCloneUrl(cloneUrl)) {
-    const created = await loaders.createGithub({
+    const issue = await loaders.createGithub({
       cloneUrl,
       title: input.title,
       body: input.body,
     });
-    return String(created.number);
+    return String(issue.number);
   }
   return loaders.publishBuzz(project, input);
+}
+
+/** Query keys invalidated after a repository-native issue create. */
+export function projectIssueInvalidationKeys(
+  project: Pick<Project, "id" | "cloneUrls">,
+): unknown[][] {
+  const keys: unknown[][] = [["project", project.id, "issues"]];
+  if (!isGitHubCloneUrl(project.cloneUrls[0])) {
+    keys.push(["projects", "work-items"], ["projects", "activity-summaries"]);
+  }
+  return keys;
 }
 
 export function useCreateProjectIssueMutation(
@@ -1063,197 +1801,166 @@ export function useCreateProjectIssueMutation(
       });
     },
     onSuccess: async () => {
-      const tasks = [
-        queryClient.invalidateQueries({
-          queryKey: ["project", project?.id ?? "none", "issues"],
-        }),
-      ];
-      if (!isGitHubCloneUrl(project?.cloneUrls[0])) {
-        tasks.push(
-          queryClient.invalidateQueries({ queryKey: ["projects", "work-items"] }),
-          queryClient.invalidateQueries({
-            queryKey: ["projects", "activity-summaries"],
-          }),
-        );
-      }
-      await Promise.all(tasks);
+      if (!project) return;
+      await Promise.all(
+        projectIssueInvalidationKeys(project).map((queryKey) =>
+          queryClient.invalidateQueries({ queryKey }),
+        ),
+      );
     },
   });
 }
 ```
 
-In `hooks.ts` keep the current kind:1621 fetch as `fetchBuzzProjectIssues` and make it return `{ issues, hasMore: false }`.
-`useProjectIssuesQuery` calls `fetchProjectIssuesWith` with `loadGithub: ({ cloneUrl }) => listGithubIssues({ cloneUrl, state: "open" })`.
-Do not add `state` to the query key in this slice.
+- [ ] **Step 7: Implement validated comment request construction and the query hook**
 
-Add `useGithubIssueCommentsQuery` in `projectGithubIssues.ts`:
-- enabled when `isGitHubCloneUrl(project.cloneUrls[0])` and `parseGithubIssueNumber(selectedIssueId)` is a number
-- key `["project", project.id, "issues", number, "comments"]`
-- invoke `listGithubIssueComments`
-- `staleTime` 30s
+Append this to `projectGithubIssues.ts`.
+Add `useQuery` from `@tanstack/react-query` and `listGithubIssueComments` from `@/shared/api/projectGit` to the imports in the same edit.
 
-In `ProjectDetailScreen.tsx` only:
-- `issuesQuery.data?.issues.find(...)` for `selectedIssue`
-- `issueIdentityPubkeys(issuesQuery.data?.issues ?? [])` instead of flattening GitHub logins into `useUsersBatchQuery`
+```ts
+/** Resolve a valid GitHub comment request and its cache key. */
+export function githubIssueCommentsRequest(
+  project: Pick<Repository, "id" | "cloneUrls"> | null | undefined,
+  selectedIssueId: string | null | undefined,
+): {
+  cloneUrl: string;
+  number: number;
+  queryKey: readonly ["project", string, "issues", number, "comments"];
+} | null {
+  const cloneUrl = project?.cloneUrls[0] ?? "";
+  const number = parseGithubIssueNumber(selectedIssueId);
+  if (!project || !isGitHubCloneUrl(cloneUrl) || number === null) return null;
+  return {
+    cloneUrl,
+    number,
+    queryKey: ["project", project.id, "issues", number, "comments"],
+  };
+}
 
-Do not add other logic to that 953-line file.
+/** Load the first read-only GitHub comment page for the selected numeric issue. */
+export function useGithubIssueCommentsQuery(
+  project: Pick<Repository, "id" | "cloneUrls"> | null | undefined,
+  selectedIssueId: string | null | undefined,
+) {
+  const request = githubIssueCommentsRequest(project, selectedIssueId);
+  return useQuery({
+    enabled: request !== null,
+    queryKey:
+      request?.queryKey ??
+      ["project", project?.id ?? "none", "issues", "none", "comments"],
+    queryFn: async () => {
+      if (!request) throw new Error("No GitHub issue selected.");
+      const comments = await listGithubIssueComments({
+        cloneUrl: request.cloneUrl,
+        number: request.number,
+      });
+      return comments.map(mapGithubCommentToProjectIssueComment);
+    },
+    staleTime: 30_000,
+  });
+}
+```
 
-In `ProjectIssuesPanel.tsx` change only the data read so typecheck passes:
+- [ ] **Step 8: Update the two query-data consumers and profile lookup**
+
+In `ProjectDetailScreen.tsx`, replace both array reads.
+
+```ts
+const issuePubkeys = issueIdentityPubkeys(issuesQuery.data?.issues ?? []);
+
+const selectedIssue =
+  issuesQuery.data?.issues.find((item) => item.id === selectedIssueId) ?? null;
+```
+
+Keep the existing project and pull-request identity collection around `issuePubkeys` unchanged.
+In `ProjectIssuesPanel.tsx`, change only the local data read in this task.
 
 ```ts
 const issues = issuesQuery.data?.issues ?? [];
 ```
 
-Leave GitHub chrome, recovery, and composer hiding for Task 6.
-
-- [ ] **Step 4: Run**
+- [ ] **Step 9: Run tests and typecheck and verify GREEN**
 
 ```bash
-. ./bin/activate-hermit
-cd desktop && pnpm test -- src/features/projects/issueMutations.test.mjs src/features/projects/lib/projectGithubIssues.test.mjs && pnpm typecheck
+. ./bin/activate-hermit && cd desktop && pnpm test -- src/features/projects/issueMutations.test.mjs src/features/projects/lib/projectGithubIssues.test.mjs src/features/projects/projectIssues.test.mjs && pnpm typecheck
 ```
 
-Expected: PASS.
+Expected: host routing, invalidations, comment request construction, old Nostr mapping, and all TypeScript consumers pass.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 10: Format, inspect scope, and commit**
+
+Run GitNexus `detect_changes({ scope: "staged" })` and confirm only repository issue query/create/comment flows and their two consumers changed.
 
 ```bash
 . ./bin/activate-hermit
-git add desktop/src/features/projects/hooks.ts \
-  desktop/src/features/projects/issueMutations.ts \
-  desktop/src/features/projects/issueMutations.test.mjs \
-  desktop/src/features/projects/lib/projectGithubIssues.ts \
-  desktop/src/features/projects/ui/ProjectDetailScreen.tsx \
-  desktop/src/features/projects/ui/ProjectIssuesPanel.tsx
-if [ -f .gitnexus/run.cjs ]; then node .gitnexus/run.cjs detect; fi
+cd desktop && pnpm exec biome check --write \
+  src/features/projects/hooks.ts \
+  src/features/projects/issueMutations.ts \
+  src/features/projects/issueMutations.test.mjs \
+  src/features/projects/lib/projectGithubIssues.ts \
+  src/features/projects/lib/projectGithubIssues.test.mjs \
+  src/features/projects/ui/ProjectDetailScreen.tsx \
+  src/features/projects/ui/ProjectIssuesPanel.tsx
+git add src/features/projects/hooks.ts \
+  src/features/projects/issueMutations.ts \
+  src/features/projects/issueMutations.test.mjs \
+  src/features/projects/lib/projectGithubIssues.ts \
+  src/features/projects/lib/projectGithubIssues.test.mjs \
+  src/features/projects/ui/ProjectDetailScreen.tsx \
+  src/features/projects/ui/ProjectIssuesPanel.tsx
 git diff --check
-git commit -s -m "feat(projects): route GitHub issue list and create by clone URL"
+git commit -s -m "feat(projects): route GitHub issue reads and creates"
 ```
 
 ---
 
-### Task 6: Issues tab UI for GitHub rows
+### Task 6: Add GitHub-only issue UI and exercise it through the mock bridge
 
 **Files:**
-- Modify: `desktop/src/features/projects/ui/GitHubRepoStateRecovery.tsx`
-- Create: `desktop/src/features/projects/ui/GitHubIssueIdentity.tsx`
-- Modify: `desktop/src/features/projects/ui/ProjectIssuesPanel.tsx`
-- Modify: `desktop/src/features/projects/ui/ProjectIssueCommentTimeline.tsx`
+
+- Modify `desktop/src/testing/e2eBridge.ts`.
+- Create `desktop/tests/e2e/github-issues.spec.ts`.
+- Modify `desktop/playwright.config.ts`.
+- Modify `desktop/src/features/projects/ui/GitHubRepoStateRecovery.tsx`.
+- Create `desktop/src/features/projects/ui/GitHubProjectIssues.tsx`.
+- Modify `desktop/src/features/projects/ui/ProjectIssuesPanel.tsx`.
+- Modify `desktop/src/features/projects/ui/ProjectIssueCommentTimeline.tsx`.
 
 **Interfaces:**
-- Consumes: `useProjectIssuesQuery` `{ issues, hasMore }`, `useGithubIssueCommentsQuery`, `isGitHubCloneUrl`, `issueDisplayNumber`, `issueShareLink`, `GitHubRepoStateRecovery`
-- Produces: GitHub list rows with `#N` and Open, read-only login chrome, hidden composer, comment load/retry
 
-- [ ] **Step 1: Extend recovery without breaking branch recovery**
+- Consumes `{ issues, hasMore }`, `useGithubIssueCommentsQuery`, `issueDisplayNumber`, `issueShareLink`, `GitHubRepoStateRecovery`, `ProjectFeedRow`, and `ProjectRichContent`.
+- Produces a host-gated GitHub list/detail flow that never executes Buzz pubkey, assignment, discussed-channel, or comment-composer code.
 
-Add optional props `unavailableTitle` (default `Could not load GitHub branches`) and `titleId` (default `github-repo-state-recovery-title`).
-Use `unavailableTitle` for `github_repo_unavailable`, `github_state_failed`, `github_issues_failed`, and the default title.
-Keep `GitHub CLI is required` and `GitHub authentication required`.
-Use `titleId` for `aria-labelledby` / heading `id` so an issues recovery and a branch recovery can exist on the same page.
+- [ ] **Step 1: Run impact checks**
 
-- [ ] **Step 2: Add GitHub identity chrome**
+Run GitNexus upstream impact for `ProjectIssuesPanel`, `ProjectIssueDetail`, `IssueRow`, `ProjectIssueCommentTimeline`, `GitHubRepoStateRecovery`, the E2E invoke switch, and the Playwright smoke `testMatch` list.
+Report direct callers, processes, and risk before editing.
 
-`GitHubIssueIdentity.tsx` exports:
-- `GitHubLoginIdentity({ login, avatarUrl, showLabel?: boolean })` using `UserAvatar` + a `text-xs` login span
-- `GitHubAssigneeFacepile({ logins, avatars })` overlapping up to three avatars from `assigneeAvatars`
+- [ ] **Step 2: Add E2E state and native-command stubs before changing the UI**
 
-Do not call `normalizePubkey` or `ProfileIdentityButton`.
-
-- [ ] **Step 3: Host-gate the panel**
-
-`const issues = issuesQuery.data?.issues ?? [];`
-`const githubHosted = isGitHubCloneUrl(project.cloneUrls[0]);`
-
-Render order:
-1. Loading → `Loading issues…`
-2. `githubHosted && issuesQuery.isError` → `<GitHubRepoStateRecovery unavailableTitle="Could not load GitHub issues" titleId="github-issues-recovery-title" error={issuesQuery.error} onRetry={() => void issuesQuery.refetch()} />`
-3. `issuesQuery.isError` → `Could not load issues for this repository.`
-4. `issues.length === 0` → `githubHosted ? "No open issues." : "No issues yet."`
-   If `githubHosted && issuesQuery.data?.hasMore`, still show the muted more line under that empty copy.
-
-List rows when `githubHosted`:
-- status icon stays the green `CircleDot` for `"Open"`
-- status text is `Open`
-- `#` uses `issueDisplayNumber(issue.id)` so GitHub shows `#42`, not eight hex chars
-- author is `GitHubLoginIdentity`
-- assignees are `GitHubAssigneeFacepile`
-- comment badge uses `issue.commentCount ?? issue.comments.length`
-
-When `githubHosted && hasMore`, one muted `text-xs` line: `More open issues exist on GitHub.`
-
-Detail when `githubHosted`:
-- title + `#${issueDisplayNumber(issue.id)}`
-- body via `ProjectRichContent` with `tags={[]}`
-- hide `DiscussedInChannels`
-- hide `ForumComposer` and do not render `data-testid="project-issue-comment-composer"`
-- hide `IssueAssigneesRow`
-- author and assignees in the rail use GitHub identity chrome
-- `useGithubIssueCommentsQuery(project, issue.id)`
-- while comments load: `Loading comments…`
-- if comments fail: keep the body and render `GitHubRepoStateRecovery` with `unavailableTitle="Could not load GitHub comments"` and retry that query only
-- if comments succeed: pass mapped comments to `ProjectIssueCommentTimeline` with `githubMode`
-
-`ProjectIssueCommentTimeline` gains `githubMode?: boolean`.
-When true, render `comment.author` as a login, use `comment.authorAvatarUrl`, and do not call `normalizePubkey` or `ProfileAuthorName`.
-
-Buzz rows keep today's `ProfileIdentityButton`, facepile, composer, and discussed-in-channels.
-
-- [ ] **Step 4: Typecheck and unit tests**
-
-```bash
-. ./bin/activate-hermit
-cd desktop && pnpm typecheck && pnpm check:px-text && pnpm check:file-sizes && pnpm test -- src/features/projects/lib/projectGithubIssues.test.mjs src/features/projects/issueMutations.test.mjs src/features/projects/lib/projectShareLinks.test.mjs src/features/projects/projectIssues.test.mjs
-```
-
-Expected: PASS.
-`ProjectIssuesPanel.tsx` must stay under 1000 lines.
-If it crosses the ratchet, move GitHub detail chrome into `GitHubIssueIdentity.tsx` instead of raising the limit.
-
-- [ ] **Step 5: Commit**
-
-```bash
-. ./bin/activate-hermit
-git add desktop/src/features/projects/ui/GitHubRepoStateRecovery.tsx \
-  desktop/src/features/projects/ui/GitHubIssueIdentity.tsx \
-  desktop/src/features/projects/ui/ProjectIssuesPanel.tsx \
-  desktop/src/features/projects/ui/ProjectIssueCommentTimeline.tsx
-if [ -f .gitnexus/run.cjs ]; then node .gitnexus/run.cjs detect; fi
-git diff --check
-git commit -s -m "feat(projects): show GitHub issues as #N with read-only metadata"
-```
-
----
-
-### Task 7: e2e mock + smoke
-
-**Files:**
-- Modify: `desktop/src/testing/e2eBridge.ts`
-- Create: `desktop/tests/e2e/github-issues.spec.ts`
-- Modify: `desktop/playwright.config.ts` (`smoke` `testMatch` adds `**/github-issues.spec.ts`)
-
-**Interfaces:**
-- Stub `list_github_issues` returns open `#42` plus any created issues
-- Stub `create_github_issue` returns `#43` from the submitted title
-- Stub `list_github_issue_comments` returns one login comment
-- `window.__BUZZ_E2E_GITHUB_ISSUES_ERROR__` throws `{ code, message }`
-
-- [ ] **Step 1: Stub commands**
-
-Add to the Window type next to the other GitHub flags:
+Add these `Window` fields beside the existing GitHub E2E flags.
 
 ```ts
+/** Structured error returned by GitHub issue mock commands. */
 __BUZZ_E2E_GITHUB_ISSUES_ERROR__?: { code: string; message: string };
+/** Structured error returned only by the GitHub comment mock command. */
+__BUZZ_E2E_GITHUB_ISSUE_COMMENTS_ERROR__?: { code: string; message: string };
+/** Created GitHub issue DTOs retained for later list calls. */
 __BUZZ_E2E_GITHUB_CREATED_ISSUES__?: Array<Record<string, unknown>>;
 ```
 
-In the invoke switch, **before** any default that would miss them:
+Set `window.__BUZZ_E2E_GITHUB_CREATED_ISSUES__ = [];` beside the existing mock command-log resets in `maybeInstallE2eTauriMocks` so repeated bridge installs start deterministically.
+
+Add these switch cases beside `get_github_repository_state` and before the switch default.
+The list stub rejects any state other than `open`, which protects this slice's fixed filter.
 
 ```ts
 case "list_github_issues": {
   if (window.__BUZZ_E2E_GITHUB_ISSUES_ERROR__) {
     throw window.__BUZZ_E2E_GITHUB_ISSUES_ERROR__;
   }
-  const created = window.__BUZZ_E2E_GITHUB_CREATED_ISSUES__ ?? [];
+  const input = payload as { state?: string };
+  if (input.state !== "open") throw new Error("Expected GitHub state=open");
   return {
     issues: [
       {
@@ -1262,14 +1969,14 @@ case "list_github_issues": {
         body: "Repro steps",
         state: "open",
         html_url: "https://github.com/acme/app/issues/42",
-        comments: 1,
-        created_at: Math.floor(Date.now() / 1000) - 3600,
-        updated_at: Math.floor(Date.now() / 1000) - 60,
+        comments: 2,
+        created_at: 1_704_166_645,
+        updated_at: 1_704_253_045,
         user: { login: "ada", avatar_url: "" },
         labels: ["bug"],
         assignees: [{ login: "linus", avatar_url: "" }],
       },
-      ...created,
+      ...(window.__BUZZ_E2E_GITHUB_CREATED_ISSUES__ ?? []),
     ],
     has_more: false,
   };
@@ -1286,8 +1993,8 @@ case "create_github_issue": {
     state: "open",
     html_url: "https://github.com/acme/app/issues/43",
     comments: 0,
-    created_at: Math.floor(Date.now() / 1000),
-    updated_at: Math.floor(Date.now() / 1000),
+    created_at: 1_704_253_100,
+    updated_at: 1_704_253_100,
     user: { login: "ada", avatar_url: "" },
     labels: [],
     assignees: [],
@@ -1299,29 +2006,35 @@ case "create_github_issue": {
   return created;
 }
 case "list_github_issue_comments": {
-  if (window.__BUZZ_E2E_GITHUB_ISSUES_ERROR__) {
-    throw window.__BUZZ_E2E_GITHUB_ISSUES_ERROR__;
+  if (window.__BUZZ_E2E_GITHUB_ISSUE_COMMENTS_ERROR__) {
+    throw window.__BUZZ_E2E_GITHUB_ISSUE_COMMENTS_ERROR__;
   }
   return [
     {
-      id: 1,
-      body: "I can reproduce this.",
-      created_at: Math.floor(Date.now() / 1000) - 30,
-      user: { login: "ada", avatar_url: "" },
+      id: 2,
+      body: "API-order first comment.",
+      created_at: 1_704_253_100,
+      user: { login: "grace", avatar_url: "" },
+    },
+    {
+      id: 10,
+      body: "API-order second comment.",
+      created_at: 1_704_253_100,
+      user: { login: "linus", avatar_url: "" },
     },
   ];
 }
 ```
 
-Follow `installMockBridge` + `addInitScript` **before** the bridge (AGENTS.md).
-Build with `pnpm build:e2e`, never `pnpm run build`.
+- [ ] **Step 3: Write and register the failing Playwright contract**
 
-- [ ] **Step 2: Write the smoke spec**
+Create `github-issues.spec.ts`.
+Call `page.addInitScript` before `installMockBridge(page)`.
+Do not call `waitForAnimations` because this spec does not capture screenshots.
 
 ```ts
 import { expect, test } from "@playwright/test";
 
-import { waitForAnimations } from "../helpers/animations";
 import { installMockBridge } from "../helpers/bridge";
 
 async function enableProjectsFeature(page: import("@playwright/test").Page) {
@@ -1338,147 +2051,606 @@ async function openBuzzProject(page: import("@playwright/test").Page) {
   await page.getByTestId("open-projects-view").click();
   await page.getByTestId("projects-section-projects").click();
   const projectEntry = page
-    .locator(
-      '[data-testid="project-card-buzz"], [data-testid="project-row-buzz"]',
-    )
+    .locator('[data-testid="project-card-buzz"], [data-testid="project-row-buzz"]')
     .first();
   await expect(projectEntry).toBeVisible({ timeout: 10_000 });
   await projectEntry.click();
 }
 
-test("GitHub-hosted Issues tab lists #N and creates without a comment composer", async ({
-  page,
-}) => {
+async function openGithubIssues(page: import("@playwright/test").Page) {
   await enableProjectsFeature(page);
   await page.addInitScript(() => {
-    window.__BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__ =
-      "https://github.com/acme/app";
+    window.__BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__ = "https://github.com/acme/app";
   });
   await installMockBridge(page);
   await openBuzzProject(page);
   await page.getByRole("tab", { name: "Issues", exact: true }).click();
+}
 
-  const issueRow = page.getByTestId("project-issue-row").first();
-  await expect(issueRow).toBeVisible({ timeout: 10_000 });
-  await expect(issueRow).toContainText("#42");
-  await expect(issueRow).toContainText("Open");
-  await waitForAnimations(page);
+test("GitHub Issues lists metadata, loads read-only detail, and creates #N", async ({ page }) => {
+  await openGithubIssues(page);
+  const row = page.getByTestId("project-github-issue-row").first();
+  await expect(row).toContainText("#42");
+  await expect(row).toContainText("Open");
+  await expect(row).toContainText("ada");
+  await expect(row).toContainText("bug");
+  await expect(row.getByLabel("Assigned to linus")).toBeVisible();
+
+  await row.getByRole("button", { name: "#42", exact: true }).click();
+  await expect(page.getByText("Repro steps", { exact: true })).toBeVisible();
+  const comments = page.getByTestId("project-issue-comment-timeline-row");
+  await expect(comments).toHaveCount(2);
+  await expect(comments.nth(0)).toContainText("API-order first comment.");
+  await expect(comments.nth(1)).toContainText("API-order second comment.");
+  await expect(page.getByText("grace", { exact: true })).toBeVisible();
+  await expect(page.getByTestId("project-issue-comment-composer")).toHaveCount(0);
+  await expect(page.getByTestId("issue-discussed-in")).toHaveCount(0);
+  await expect(page.getByTestId("project-issue-assign")).toHaveCount(0);
 
   await page.getByRole("button", { name: "New issue" }).click();
-  await page
-    .getByTestId("create-issue-dialog")
-    .getByPlaceholder("Describe the issue")
-    .fill("New GitHub bug");
+  await page.getByTestId("create-issue-title").fill("New GitHub bug");
+  await page.getByTestId("create-issue-body").fill("Created from Buzz");
   await page.getByTestId("create-issue-submit").click();
-  await expect(page.getByText("#43")).toBeVisible({ timeout: 10_000 });
-  await expect(page.getByText("New GitHub bug")).toBeVisible();
-  await expect(page.getByTestId("project-issue-comment-composer")).toHaveCount(0);
-  const commands = await page.evaluate(
-    () => window.__BUZZ_E2E_COMMANDS__ ?? [],
-  );
+  await expect(page.getByText("New GitHub bug", { exact: true })).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("#43", { exact: true })).toBeVisible();
+
+  const commands = await page.evaluate(() => window.__BUZZ_E2E_COMMANDS__ ?? []);
   expect(commands).toContain("list_github_issues");
+  expect(commands).toContain("list_github_issue_comments");
   expect(commands).toContain("create_github_issue");
 });
 
-test("GitHub issues auth recovery is not an empty Buzz list", async ({
-  page,
-}) => {
+test("GitHub issue auth failure renders recovery before empty state", async ({ page }) => {
   await enableProjectsFeature(page);
   await page.addInitScript(() => {
-    window.__BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__ =
-      "https://github.com/acme/app";
+    window.__BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__ = "https://github.com/acme/app";
     window.__BUZZ_E2E_GITHUB_ISSUES_ERROR__ = {
       code: "github_auth_required",
-      message:
-        "Authenticate GitHub CLI with: gh auth login --hostname github.com",
+      message: "Authenticate GitHub CLI with: gh auth login --hostname github.com",
     };
   });
   await installMockBridge(page);
   await openBuzzProject(page);
   await page.getByRole("tab", { name: "Issues", exact: true }).click();
-  await expect(page.getByText("GitHub authentication required")).toBeVisible({
-    timeout: 10_000,
-  });
-  await expect(page.getByText("No issues yet")).toHaveCount(0);
+  await expect(page.getByText("GitHub authentication required")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("No issues yet.")).toHaveCount(0);
   await expect(page.getByText("No open issues.")).toHaveCount(0);
-  await expect(page.getByTestId("project-issue-row")).toHaveCount(0);
+  await expect(page.getByTestId("project-github-issue-row")).toHaveCount(0);
+});
+
+test("GitHub comment failure keeps the issue body and retries only comments", async ({ page }) => {
+  await enableProjectsFeature(page);
+  await page.addInitScript(() => {
+    window.__BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__ = "https://github.com/acme/app";
+    window.__BUZZ_E2E_GITHUB_ISSUE_COMMENTS_ERROR__ = {
+      code: "github_issues_failed",
+      message: "Comment request failed.",
+    };
+  });
+  await installMockBridge(page);
+  await openBuzzProject(page);
+  await page.getByRole("tab", { name: "Issues", exact: true }).click();
+  const row = page.getByTestId("project-github-issue-row").first();
+  await row.getByRole("button", { name: "#42", exact: true }).click();
+  await expect(page.getByText("Repro steps", { exact: true })).toBeVisible();
+  await expect(page.getByText("Could not load GitHub comments", { exact: true })).toBeVisible();
+  await expect(page.getByText("Could not load GitHub issues", { exact: true })).toHaveCount(0);
+  await expect(page.getByTestId("project-issue-comment-composer")).toHaveCount(0);
+  const before = await page.evaluate(() => window.__BUZZ_E2E_COMMANDS__ ?? []);
+  const listCallsBefore = before.filter((command) => command === "list_github_issues").length;
+  const commentCallsBefore = before.filter(
+    (command) => command === "list_github_issue_comments",
+  ).length;
+  await page.getByRole("button", { name: "Retry", exact: true }).click();
+  await expect(page.getByText("Could not load GitHub comments", { exact: true })).toBeVisible();
+  const after = await page.evaluate(() => window.__BUZZ_E2E_COMMANDS__ ?? []);
+  expect(after.filter((command) => command === "list_github_issues").length).toBe(
+    listCallsBefore,
+  );
+  expect(
+    after.filter((command) => command === "list_github_issue_comments").length,
+  ).toBe(commentCallsBefore + 1);
 });
 ```
 
-Register `**/github-issues.spec.ts` in `desktop/playwright.config.ts` smoke `testMatch` next to `github-repo-state.spec.ts`.
+Add `"**/github-issues.spec.ts"` next to `github-repo-state.spec.ts` in the smoke `testMatch` list.
 
-- [ ] **Step 3: Run smoke**
+- [ ] **Step 4: Run the new smoke spec and verify RED**
 
 ```bash
-. ./bin/activate-hermit
-cd desktop && pnpm test:e2e:smoke -- github-issues
+. ./bin/activate-hermit && cd desktop && pnpm test:e2e:smoke -- github-issues.spec.ts
 ```
 
-Expected: PASS.
-If `test:e2e:smoke` does not accept a file filter, run `pnpm build:e2e && pnpm exec playwright test --project=smoke github-issues`.
+Expected: the app still renders the Buzz issue path, so the GitHub row or recovery assertion fails.
 
-Also run the existing Buzz issue spec so host gating did not break kind:1621:
+- [ ] **Step 5: Generalize recovery titles without changing CLI/auth titles**
 
-```bash
-. ./bin/activate-hermit
-cd desktop && pnpm exec playwright test --project=smoke project-issue-comments
+Implement optional `unavailableTitle` and `titleId` props with branch-compatible defaults.
+
+```tsx
+function githubStateErrorTitle(
+  code: string | undefined,
+  unavailableTitle: string,
+): string {
+  switch (code) {
+    case "github_cli_missing":
+      return "GitHub CLI is required";
+    case "github_auth_required":
+      return "GitHub authentication required";
+    default:
+      return unavailableTitle;
+  }
+}
+
+export function GitHubRepoStateRecovery({
+  error,
+  onRetry,
+  titleId = "github-repo-state-recovery-title",
+  unavailableTitle = "Could not load GitHub branches",
+}: {
+  error?: unknown;
+  onRetry?: () => void;
+  titleId?: string;
+  unavailableTitle?: string;
+}) {
+  const parsed = parseProjectPullRequestMergeError(error);
+  const code = parsed?.code;
+  const message =
+    parsed?.message ??
+    (error instanceof Error ? error.message : unavailableTitle);
+  const title = githubStateErrorTitle(code, unavailableTitle);
+  // Keep the existing install, auth-copy, and Retry JSX unchanged.
+  // Replace both hard-coded heading IDs with titleId.
+}
 ```
 
-Expected: PASS.
+The implementation must treat `github_repo_unavailable`, `github_state_failed`, `github_issues_failed`, and unknown errors as `unavailableTitle`.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 6: Add the focused GitHub list/detail component**
+
+Create `GitHubProjectIssues.tsx` and keep all login-only rendering in this file.
+Use `UserAvatar` directly and never import a pubkey helper or Nostr write hook.
+
+```tsx
+import { CircleDot, MessageSquare } from "lucide-react";
+
+import type { ProjectIssue, Repository } from "@/features/projects/hooks";
+import {
+  issueDisplayNumber,
+  useGithubIssueCommentsQuery,
+} from "@/features/projects/lib/projectGithubIssues";
+import { issueShareLink } from "@/features/projects/lib/projectShareLinks";
+import { relativeTime } from "@/features/projects/lib/projectsViewHelpers";
+import { UserAvatar } from "@/shared/ui/UserAvatar";
+import { GitHubRepoStateRecovery } from "./GitHubRepoStateRecovery";
+import {
+  ProjectFeedRow,
+  ProjectFeedRowCluster,
+  ProjectFeedRowMonoCell,
+} from "./ProjectFeedRow";
+import { ProjectIssueCommentTimeline } from "./ProjectIssueCommentTimeline";
+import { OverviewRailSection } from "./ProjectOverviewPanel";
+import { ProjectRichContent } from "./ProjectRichContent";
+import { ShareLinkButton } from "./ShareLinkButton";
+
+function GitHubLoginIdentity({
+  avatarUrl,
+  login,
+  showLabel = true,
+}: {
+  avatarUrl?: string | null;
+  login: string;
+  showLabel?: boolean;
+}) {
+  return (
+    <span className="inline-flex min-w-0 items-center gap-1.5">
+      <UserAvatar avatarUrl={avatarUrl || null} displayName={login} size="xs" />
+      {showLabel ? <span className="truncate text-xs">{login}</span> : null}
+    </span>
+  );
+}
+
+function GitHubAssigneeFacepile({ issue }: { issue: ProjectIssue }) {
+  if (issue.assignees.length === 0) return null;
+  return (
+    <div
+      aria-label={`Assigned to ${issue.assignees.join(", ")}`}
+      className="flex -space-x-1.5"
+    >
+      {issue.assignees.slice(0, 3).map((login) => (
+        <UserAvatar
+          avatarUrl={issue.assigneeAvatars[login] || null}
+          className="ring-2 ring-background"
+          displayName={login}
+          key={login}
+          size="xs"
+        />
+      ))}
+    </div>
+  );
+}
+```
+
+Export a row whose observable contract matches the E2E selectors.
+
+```tsx
+/** One GitHub issue list row with numeric identity and login metadata. */
+export function GitHubIssueRow({
+  issue,
+  onOpen,
+}: {
+  issue: ProjectIssue;
+  onOpen: () => void;
+}) {
+  const number = issueDisplayNumber(issue.id);
+  return (
+    <ProjectFeedRow
+      eventId={issue.id}
+      meta={
+        <>
+          <GitHubLoginIdentity
+            avatarUrl={issue.authorAvatarUrl}
+            login={issue.author}
+          />
+          <span>·</span>
+          <span>Open</span>
+          {issue.labels.map((label) => (
+            <span className="rounded-full border border-border/60 px-1.5 py-0.5 text-2xs" key={label}>
+              {label}
+            </span>
+          ))}
+        </>
+      }
+      onOpen={onOpen}
+      statusIcon={<CircleDot className="h-3.5 w-3.5 shrink-0 text-green-500" />}
+      testId="project-github-issue-row"
+      title={issue.title}
+      trailing={
+        <>
+          <GitHubAssigneeFacepile issue={issue} />
+          {issue.commentCount > 0 ? (
+            <span className="flex items-center gap-1 text-xs text-muted-foreground">
+              <MessageSquare className="h-3.5 w-3.5" />
+              {issue.commentCount}
+            </span>
+          ) : null}
+          <ProjectFeedRowCluster>
+            <ProjectFeedRowMonoCell
+              label={`#${number}`}
+              onClick={onOpen}
+              title={`View GitHub issue #${number}`}
+            />
+          </ProjectFeedRowCluster>
+          <span className="hidden w-20 shrink-0 text-right text-xs text-muted-foreground sm:block">
+            {relativeTime(issue.createdAt)}
+          </span>
+        </>
+      }
+    />
+  );
+}
+```
+
+Export a detail component that calls only the GitHub comment query.
+Render the existing body immediately, then render comment loading, comment recovery, or the mapped timeline beneath it.
+
+```tsx
+/** Read-only GitHub issue detail with an independently retryable comment query. */
+export function GitHubIssueDetail({
+  issue,
+  project,
+}: {
+  issue: ProjectIssue;
+  project: Repository;
+}) {
+  const commentsQuery = useGithubIssueCommentsQuery(project, issue.id);
+  const number = issueDisplayNumber(issue.id);
+  return (
+    <div className="grid xl:grid-cols-[minmax(0,1fr)_18rem]">
+      <div className="min-w-0">
+        <header className="space-y-3 p-4">
+          <p className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+            <CircleDot className="h-3.5 w-3.5 text-green-500" />
+            Issue from {issue.author}
+          </p>
+          <h3 className="mt-1 line-clamp-2 text-base font-semibold text-foreground">
+            {issue.title}{" "}
+            <span className="font-normal text-muted-foreground">#{number}</span>
+            <ShareLinkButton
+              className="ml-1 inline-flex h-6 w-6 align-text-bottom"
+              label="Copy issue link"
+              link={issueShareLink(issue)}
+              testId="project-issue-copy-link"
+            />
+          </h3>
+          {issue.content ? <ProjectRichContent content={issue.content} tags={[]} /> : null}
+        </header>
+        <section className="space-y-3 p-4">
+          {commentsQuery.isLoading ? (
+            <p className="text-sm text-muted-foreground">Loading comments…</p>
+          ) : commentsQuery.isError ? (
+            <GitHubRepoStateRecovery
+              error={commentsQuery.error}
+              onRetry={() => void commentsQuery.refetch()}
+              titleId="github-issue-comments-recovery-title"
+              unavailableTitle="Could not load GitHub comments"
+            />
+          ) : (
+            <ProjectIssueCommentTimeline
+              comments={commentsQuery.data ?? []}
+              githubMode
+              key={issue.id}
+            />
+          )}
+        </section>
+      </div>
+      <aside className="space-y-6 border-t border-border/60 p-4 xl:border-l xl:border-t-0">
+        <OverviewRailSection title="Status">
+          <span className="inline-flex items-center gap-1.5 text-xs font-medium text-green-500">
+            <CircleDot className="h-3.5 w-3.5" /> Open
+          </span>
+        </OverviewRailSection>
+        {issue.assignees.length > 0 ? (
+          <OverviewRailSection title="Assignees">
+            <div className="space-y-2">
+              {issue.assignees.map((login) => (
+                <GitHubLoginIdentity
+                  avatarUrl={issue.assigneeAvatars[login]}
+                  key={login}
+                  login={login}
+                />
+              ))}
+            </div>
+          </OverviewRailSection>
+        ) : null}
+        <OverviewRailSection title="Author">
+          <GitHubLoginIdentity avatarUrl={issue.authorAvatarUrl} login={issue.author} />
+        </OverviewRailSection>
+        {issue.labels.length > 0 ? (
+          <OverviewRailSection title="Labels">
+            <div className="flex flex-wrap gap-1.5">
+              {issue.labels.map((label) => (
+                <span className="rounded-full border border-border/60 px-1.5 py-0.5 text-2xs text-muted-foreground" key={label}>
+                  {label}
+                </span>
+              ))}
+            </div>
+          </OverviewRailSection>
+        ) : null}
+        <OverviewRailSection title="Activity">
+          <dl className="space-y-1.5 text-xs text-muted-foreground">
+            <div className="flex items-center justify-between gap-3">
+              <dt>Created</dt>
+              <dd className="font-medium text-foreground">{relativeTime(issue.createdAt)}</dd>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <dt>Updated</dt>
+              <dd className="font-medium text-foreground">{relativeTime(issue.updatedAt)}</dd>
+            </div>
+          </dl>
+        </OverviewRailSection>
+      </aside>
+    </div>
+  );
+}
+```
+
+Do not import or render `DiscussedInChannels`, `ForumComposer`, `IssueAssigneesRow`, or `useCreateProjectIssueCommentMutation` in this file.
+
+- [ ] **Step 7: Branch once in ProjectIssuesPanel before Buzz identity/detail code executes**
+
+Import `isGitHubCloneUrl`, `GitHubRepoStateRecovery`, `GitHubIssueRow`, and `GitHubIssueDetail`.
+Use this render order.
+
+```tsx
+const issuesQuery = useProjectIssuesQuery(project);
+const issues = issuesQuery.data?.issues ?? [];
+const githubHosted = isGitHubCloneUrl(project.cloneUrls[0]);
+const selectedIssue = issues.find((issue) => issue.id === selectedIssueId) ?? null;
+
+if (issuesQuery.isLoading) {
+  return <p className="p-4 text-sm text-muted-foreground">Loading issues…</p>;
+}
+
+if (githubHosted && issuesQuery.isError) {
+  return (
+    <div className="p-4">
+      <GitHubRepoStateRecovery
+        error={issuesQuery.error}
+        onRetry={() => void issuesQuery.refetch()}
+        titleId="github-issues-recovery-title"
+        unavailableTitle="Could not load GitHub issues"
+      />
+    </div>
+  );
+}
+
+if (issuesQuery.isError) {
+  return <p className="p-4 text-sm text-muted-foreground">Could not load issues for this repository.</p>;
+}
+
+if (issues.length === 0) {
+  return (
+    <div className="space-y-2 p-4 text-sm text-muted-foreground">
+      <p>{githubHosted ? "No open issues." : "No issues yet."}</p>
+      {githubHosted && issuesQuery.data?.hasMore ? <p>More open issues exist on GitHub.</p> : null}
+    </div>
+  );
+}
+
+if (selectedIssue) {
+  return githubHosted ? (
+    <GitHubIssueDetail issue={selectedIssue} project={project} />
+  ) : (
+    <ProjectIssueDetail issue={selectedIssue} profiles={profiles} project={project} />
+  );
+}
+
+if (githubHosted) {
+  return (
+    <div>
+      <div className="divide-y divide-border/50">
+        {issues.map((issue) => (
+          <GitHubIssueRow
+            issue={issue}
+            key={issue.id}
+            onOpen={() => onSelectedIssueIdChange(issue.id)}
+          />
+        ))}
+      </div>
+      {issuesQuery.data?.hasMore ? (
+        <p className="border-t border-border/50 p-4 text-xs text-muted-foreground">
+          More open issues exist on GitHub.
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+// Keep the existing Buzz issue row mapping unchanged below this branch.
+```
+
+Because the existing `IssueRow`, `ProjectIssueDetail`, `IssueMetaRail`, and `issueMembers` now execute only for Buzz issues, their pubkey normalization and Nostr mutations remain unchanged and never see a login.
+
+- [ ] **Step 8: Add login mode to the shared comment timeline**
+
+Add `githubMode = false` to the props.
+Preserve the supplied API order in GitHub mode so equal-second comments do not get reordered by their IDs.
+Make both label and avatar selection lazy conditional expressions so the GitHub branch never calls `resolveUserLabel` or `normalizePubkey`.
+
+```tsx
+export function ProjectIssueCommentTimeline({
+  comments,
+  githubMode = false,
+  profiles,
+}: {
+  comments: ProjectIssue["comments"];
+  githubMode?: boolean;
+  profiles?: UserProfileLookup;
+}) {
+  const orderedComments = React.useMemo(
+    () =>
+      githubMode
+        ? [...comments]
+        : [...comments].sort(
+            (left, right) =>
+              left.createdAt - right.createdAt || left.id.localeCompare(right.id),
+          ),
+    [comments, githubMode],
+  );
+  // Keep the existing collapse behavior below this order selection.
+}
+
+const authorLabel = githubMode
+  ? comment.author
+  : resolveUserLabel({ profiles, pubkey: comment.author });
+const avatarUrl = githubMode
+  ? comment.authorAvatarUrl ?? null
+  : profiles?.[normalizePubkey(comment.author)]?.avatarUrl ?? null;
+```
+
+Use `avatarUrl` in `UserAvatar`.
+Render the author with this branch.
+
+```tsx
+{githubMode ? (
+  <span>{authorLabel}</span>
+) : (
+  <ProfileAuthorName pubkey={comment.author}>{authorLabel}</ProfileAuthorName>
+)}
+```
+
+Keep collapsing, timestamps, and `ProjectRichContent` unchanged.
+
+- [ ] **Step 9: Run the new smoke spec and existing Buzz issue spec and verify GREEN**
+
+If a stale server is listening on port 4173, stop that specific process before rebuilding as directed by `AGENTS.md`.
+
+```bash
+. ./bin/activate-hermit && cd desktop && pnpm test:e2e:smoke -- github-issues.spec.ts
+. ./bin/activate-hermit && cd desktop && pnpm test:e2e:smoke -- project-issue-comments.spec.ts
+```
+
+Expected: the GitHub list/detail/create/auth cases pass and the existing Buzz comment/assignee cases remain green.
+
+- [ ] **Step 10: Run focused unit/static checks**
+
+```bash
+. ./bin/activate-hermit && cd desktop && pnpm test -- src/features/projects/projectIssues.test.mjs src/features/projects/lib/projectGithubIssues.test.mjs src/features/projects/lib/projectShareLinks.test.mjs src/features/projects/issueMutations.test.mjs && pnpm typecheck && pnpm check:px-text && pnpm check:file-sizes
+```
+
+Expected: all commands pass with no warnings or file-size violations.
+
+- [ ] **Step 11: Format, inspect scope, and commit**
+
+Run GitNexus `detect_changes({ scope: "staged" })` and confirm only the GitHub issue presentation, recovery generalization, mock commands, smoke registration, and comment identity branch changed.
 
 ```bash
 . ./bin/activate-hermit
-git add desktop/src/testing/e2eBridge.ts \
-  desktop/tests/e2e/github-issues.spec.ts \
-  desktop/playwright.config.ts
-if [ -f .gitnexus/run.cjs ]; then node .gitnexus/run.cjs detect; fi
+cd desktop && pnpm exec biome check --write \
+  src/testing/e2eBridge.ts \
+  tests/e2e/github-issues.spec.ts \
+  playwright.config.ts \
+  src/features/projects/ui/GitHubRepoStateRecovery.tsx \
+  src/features/projects/ui/GitHubProjectIssues.tsx \
+  src/features/projects/ui/ProjectIssuesPanel.tsx \
+  src/features/projects/ui/ProjectIssueCommentTimeline.tsx
+git add src/testing/e2eBridge.ts \
+  tests/e2e/github-issues.spec.ts \
+  playwright.config.ts \
+  src/features/projects/ui/GitHubRepoStateRecovery.tsx \
+  src/features/projects/ui/GitHubProjectIssues.tsx \
+  src/features/projects/ui/ProjectIssuesPanel.tsx \
+  src/features/projects/ui/ProjectIssueCommentTimeline.tsx
 git diff --check
-git commit -s -m "test(e2e): cover GitHub issue list, create, and auth recovery"
+git commit -s -m "feat(projects): render GitHub issues as read-only native work items"
 ```
 
 ---
 
-## Spec coverage
+## Final Verification
 
-| Spec requirement | Task |
-|------------------|------|
-| Host split via `isGitHubCloneUrl` / `GitHubRepoRef::parse`; no 1621 union | 1, 5 |
-| `gh api` list with required `state`, 100 items, `sort=updated`, drop PRs | 1 |
-| `has_more` from raw page length 100 | 1 |
-| Validated repo-bound `html_url` | 1, 4 |
-| Create title+body via `--input`; empty/overlong title before `gh` | 2 |
-| Comments first 100, oldest first, no prefetch of the whole list | 2, 6 |
-| Error codes + remap; no empty list on auth/CLI failure | 3, 6, 7 |
-| `ProjectIssue` `#N`, `"Open"`, logins, `commentCount`, `htmlUrl` | 4, 6 |
-| `issueShareLink` uses GitHub URL; hex Nostr still `buzz://issue` | 4 |
-| GitHub create does not sign/publish; invalidates issues only | 5 |
-| Query key stays `["project", id, "issues"]`; UI sends `open` | 5 |
-| Global work-items list unchanged | 5 (no edits) |
-| List `#N` + Open + login + read-only facepile + more note | 6 |
-| Hide composer, discussed-in, assign row; comment load/retry | 6 |
-| Empty `No open issues.`; recovery titles | 6, 7 |
-| e2e `#N`, create, no composer, auth recovery | 7 |
-| Existing kind:1621 tests stay green | 4, 7 |
-
-## Acceptance criteria
-
-On a GitHub-hosted project (`harness-service` or the mock `https://github.com/acme/app`) with `gh` installed and authenticated, or with the e2e stubs:
-
-- The Issues tab shows GitHub open issues as `#N` with status **Open**.
-- Creating an issue creates a GitHub issue and does not publish kind:1621.
-- Copy link copies `https://github.com/<owner>/<repo>/issues/<N>`.
-- Opening `#N` shows the list body and fetched comments, with no comment composer.
-- Without `gh` or without auth, the tab shows merge-style recovery, not an empty Buzz list.
-
-Buzz-hosted repositories still list and create kind:1621 only.
-
-## Validation commands
+- [ ] Run focused Rust tests.
 
 ```bash
-. ./bin/activate-hermit && cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib github_issues
-. ./bin/activate-hermit && cd desktop && pnpm test -- src/features/projects/lib/projectGithubIssues.test.mjs src/features/projects/lib/projectShareLinks.test.mjs src/features/projects/issueMutations.test.mjs src/features/projects/projectIssues.test.mjs && pnpm typecheck && pnpm check:px-text && pnpm check:file-sizes
-. ./bin/activate-hermit && cd desktop && pnpm test:e2e:smoke -- github-issues
-. ./bin/activate-hermit && cd desktop && pnpm exec playwright test --project=smoke project-issue-comments
+. ./bin/activate-hermit && cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib project_github_issues
 ```
+
+- [ ] Run all focused desktop unit and static checks.
+
+```bash
+. ./bin/activate-hermit && cd desktop && pnpm test -- src/features/projects/projectIssues.test.mjs src/features/projects/lib/projectGithubIssues.test.mjs src/features/projects/lib/projectShareLinks.test.mjs src/features/projects/issueMutations.test.mjs && pnpm typecheck && pnpm check:px-text && pnpm check:file-sizes
+```
+
+- [ ] Rebuild and run both GitHub and Buzz issue smoke specs.
+
+```bash
+. ./bin/activate-hermit && cd desktop && pnpm test:e2e:smoke -- github-issues.spec.ts
+. ./bin/activate-hermit && cd desktop && pnpm test:e2e:smoke -- project-issue-comments.spec.ts
+```
+
+- [ ] Run the repository-wide gate required before PR handoff.
+
+```bash
+. ./bin/activate-hermit && just ci
+```
+
+- [ ] Run final GitNexus scope validation.
+
+Use `detect_changes({ scope: "compare", base_ref: "main" })` and verify the affected flows are limited to GitHub issue native commands, repository issue query/create, Projects issue presentation, and their tests.
+If the tool is unavailable, capture `git diff --stat main...HEAD`, `git diff --name-only main...HEAD`, and `git diff --check` in the handoff.
+
+## Acceptance Criteria
+
+- A GitHub-hosted repository calls `list_github_issues` with `state=open` and never fetches kind `1621` for the per-repository tab.
+- The list renders numeric `#N`, `Open`, GitHub author login/avatar, labels, read-only assignee avatars, comment count, and the first-page-more note when applicable.
+- Opening a GitHub issue renders its list payload body immediately and then the first 100 comments in GitHub order.
+- GitHub detail renders no discussed-channel block, comment composer, assignment mutation UI, pubkey profile button, or pubkey author component.
+- Creating on a GitHub repository sends only title/body to `create_github_issue`, selects the returned numeric issue, and never signs or publishes kind `1621`.
+- GitHub create invalidates only `["project", project.id, "issues"]`.
+- Copy link returns only a canonical `https://github.com/<owner>/<repo>/issues/<N>` URL for GitHub rows.
+- `github_cli_missing`, `github_auth_required`, `github_repo_unavailable`, and `github_issues_failed` render recovery before any empty state.
+- A GitHub comment failure leaves the issue body visible and retries only the comment query.
+- A successful empty GitHub page says `No open issues.`.
+- Buzz-hosted repositories retain their existing kind `1621` list/create/comments/assignment behavior, deep links, invalidations, and copy.
+- Rust tests, focused desktop tests, both smoke specs, file-size guards, typecheck, and `just ci` pass.
