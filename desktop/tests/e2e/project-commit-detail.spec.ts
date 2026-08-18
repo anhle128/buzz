@@ -17,6 +17,37 @@ async function enableProjectsFeature(page: import("@playwright/test").Page) {
   });
 }
 
+test("empty projects keeps project creation available", async ({ page }) => {
+  await enableProjectsFeature(page);
+  await page.addInitScript(() => {
+    window.localStorage.setItem(
+      "buzz.projects.hidden-cards.v1",
+      JSON.stringify([
+        `30621:${"deadbeef".repeat(8)}:buzz`,
+        `30617:${"deadbeef".repeat(8)}:buzz`,
+        "30617:953d3363262e86b770419834c53d2446409db6d918a57f8f339d495d54ab001f:relay-tools",
+        "30617:bb22a5299220cad76ffd46190ccbeede8ab5dc260faa28b6e5a2cb31b9aff260:design-system",
+      ]),
+    );
+  });
+  await installMockBridge(page);
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByTestId("open-projects-view").click();
+  await page.getByTestId("projects-section-projects").click();
+
+  await expect(
+    page.getByText("No projects yet", { exact: true }),
+  ).toBeVisible();
+  await waitForAnimations(page);
+  await page.screenshot({ path: `${SHOTS}/00-empty-projects.png` });
+
+  const createMenu = page.getByTestId("projects-create-menu");
+  await expect(createMenu).toBeVisible();
+  await createMenu.click();
+  await page.getByRole("menuitem", { name: "Project" }).click();
+  await expect(page.getByTestId("create-project-dialog")).toBeVisible();
+});
+
 test("top-level project lists align dates and overflow actions", async ({
   page,
 }) => {
