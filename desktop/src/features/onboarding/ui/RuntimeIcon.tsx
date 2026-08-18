@@ -7,11 +7,13 @@ import { BuzzMark } from "@/shared/ui/buzz-logo/BuzzMark";
 import claudeLogoUrl from "../assets/harness-logos/claude.png?inline";
 import { RUNTIME_MARKS } from "./HarnessMarks";
 
-// Bundled logos for compiled-in runtimes (inline base64, no network fetch).
+// Trusted bundled logos for compiled-in runtimes.
+// Assets can be inline data or application-owned public paths, with no remote fetch.
 // Monochrome marks live in RUNTIME_MARKS instead — inline SVGs that follow
 // `currentColor`, so they adapt to dark/light without bitmap filters.
-const RUNTIME_LOGOS: Record<string, string> = {
+export const RUNTIME_LOGOS: Record<string, string> = {
   claude: claudeLogoUrl,
+  hermes: "/harness-logos/hermes.png",
 };
 
 // Public-path logos for bundled presets. Served from /harness-logos/ at runtime.
@@ -23,7 +25,6 @@ export const PRESET_LOGOS: Record<string, string> = {
   opencode: "/harness-logos/opencode.svg",
   kimi: "/harness-logos/kimi.png",
   amp: "/harness-logos/amp.png",
-  hermes: "/harness-logos/hermes.png",
   openclaw: "/harness-logos/openclaw.svg",
 };
 

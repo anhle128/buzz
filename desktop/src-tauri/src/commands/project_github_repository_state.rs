@@ -80,9 +80,7 @@ pub async fn get_github_repository_state(
         get_github_repository_state_with_runner(clone_url, GhRunner::discover())
     })
     .await
-    .map_err(|error| {
-        ProjectPullRequestMergeError::new("github_state_failed", error.to_string())
-    })?
+    .map_err(|error| ProjectPullRequestMergeError::new("github_state_failed", error.to_string()))?
 }
 
 fn get_json<T: serde::de::DeserializeOwned>(

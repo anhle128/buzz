@@ -47,10 +47,15 @@ export type CreateProjectDeps = {
   signRelayEvent: typeof signRelayEvent;
 };
 
+type CreateProjectResume = {
+  repositoryAddress: string;
+  repositoryEventId: string;
+};
+
 /** Publishes a project announcement and its initial NIP-34 repository. */
 export async function createProject(
   input: CreateProjectInput,
-  resumableProjectIds: Set<string>,
+  resumableProjects: Map<string, CreateProjectResume>,
   deps: Partial<CreateProjectDeps> = {},
 ): Promise<CreateProjectResult> {
   const {
@@ -74,7 +79,8 @@ export async function createProject(
       project.dtag === templates.dtag,
   );
   const projectId = `${ownerPubkey}:${templates.dtag}`;
-  const canResume = resumableProjectIds.has(projectId);
+  const resume = resumableProjects.get(projectId);
+  const canResume = resume?.repositoryAddress === templates.repositoryAddress;
   if (existingProject && !canResume) {
     throw new Error(`You already have a project named "${templates.dtag}".`);
   }
@@ -84,7 +90,7 @@ export async function createProject(
         (repository) => repository.repoAddress === templates.repositoryAddress,
       )
     ) {
-      resumableProjectIds.delete(projectId);
+      resumableProjects.delete(projectId);
       return { project: existingProject };
     }
     throw new Error(`You already have a project named "${templates.dtag}".`);
@@ -99,7 +105,10 @@ export async function createProject(
       limit: 1,
     });
     if (existingRepoHeads.length > 0) {
-      if (!canResume) {
+      if (
+        !canResume ||
+        existingRepoHeads[0]?.id !== resume?.repositoryEventId
+      ) {
         throw new Error(
           `A repository named "${templates.repositoryDtag}" already exists (as a standalone repository or in another project). Choose a different name to avoid overwriting it.`,
         );
@@ -108,11 +117,14 @@ export async function createProject(
     }
   }
 
-  resumableProjectIds.add(projectId);
   const projectEvent = await signRelayEventFn(templates.project);
 
   if (!existingProject && !repositoryEvent) {
     repositoryEvent = await signRelayEventFn(templates.repository);
+    resumableProjects.set(projectId, {
+      repositoryAddress: templates.repositoryAddress,
+      repositoryEventId: repositoryEvent.id,
+    });
     await publishEvent(
       repositoryEvent,
       "Timed out creating the initial repository.",
@@ -138,7 +150,7 @@ export async function createProject(
         });
     if (!legacyProject) throw error;
 
-    resumableProjectIds.delete(projectId);
+    resumableProjects.delete(projectId);
     return {
       project: legacyProject,
       compatibilityWarning:
@@ -161,18 +173,20 @@ export async function createProject(
   if (!project) {
     throw new Error("The project was created but could not be read.");
   }
-  resumableProjectIds.delete(projectId);
+  resumableProjects.delete(projectId);
   return { project };
 }
 
 /** Mutation that creates a project and inserts it into the projects cache. */
 export function useCreateProjectMutation() {
   const queryClient = useQueryClient();
-  const resumableProjectIdsRef = React.useRef(new Set<string>());
+  const resumableProjectsRef = React.useRef(
+    new Map<string, CreateProjectResume>(),
+  );
 
   return useMutation({
     mutationFn: (input: CreateProjectInput) =>
-      createProject(input, resumableProjectIdsRef.current),
+      createProject(input, resumableProjectsRef.current),
     onSuccess: ({ project }) => {
       queryClient.setQueryData<Project[]>(projectsQueryKey, (current = []) => [
         project,

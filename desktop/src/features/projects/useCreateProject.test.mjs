@@ -52,7 +52,7 @@ test("distinct repo slug with an existing 30617 head throws and publishes nothin
         name: "Bee Garden",
         repositoryName: "anhle128/buzz",
       },
-      new Set(),
+      new Map(),
       {
         getIdentity: async () => ({ pubkey: OWNER }),
         fetchProjects: async () => [],
@@ -86,7 +86,7 @@ test("same project and repo slugs do not query kind 30617", async () => {
         accessChannelId: CHANNEL,
         name: "Sprout",
       },
-      new Set(),
+      new Map(),
       {
         getIdentity: async () => ({ pubkey: OWNER }),
         fetchProjects: async () => [],
@@ -115,7 +115,7 @@ test("filled repositoryName that slugs to the project dtag does not query kind 3
         name: "Bee Garden",
         repositoryName: "bee-garden",
       },
-      new Set(),
+      new Map(),
       {
         getIdentity: async () => ({ pubkey: OWNER }),
         fetchProjects: async () => [],
@@ -145,7 +145,7 @@ test("distinct repo slug with no existing 30617 head proceeds to sign", async ()
         name: "Bee Garden",
         repositoryName: "anhle128/buzz",
       },
-      new Set(),
+      new Map(),
       {
         getIdentity: async () => ({ pubkey: OWNER }),
         fetchProjects: async () => [],
@@ -168,9 +168,10 @@ test("distinct repo slug with no existing 30617 head proceeds to sign", async ()
 });
 
 test("distinct repo slug retry reuses the published 30617 head and publishes only the project", async () => {
-  const resumableProjectIds = new Set();
+  const resumableProjects = new Map();
   const publishedKinds = [];
   let firstProjectPublish = true;
+  let returnMatchingHead = false;
   const input = {
     accessChannelId: CHANNEL,
     name: "Bee Garden",
@@ -185,9 +186,13 @@ test("distinct repo slug retry reuses the published 30617 head and publishes onl
       assert.deepEqual(filter.authors, [OWNER]);
       assert.deepEqual(filter["#d"], ["anhle128-buzz"]);
       assert.equal(filter.limit, 1);
-      return firstProjectPublish
-        ? []
-        : [makeRepoHeadWithName("anhle128-buzz", "anhle128/buzz")];
+      if (firstProjectPublish) return [];
+      return [
+        {
+          ...makeRepoHeadWithName("anhle128-buzz", "anhle128/buzz"),
+          id: (returnMatchingHead ? "d" : "b").repeat(64),
+        },
+      ];
     },
     signRelayEvent: async (template) => signEvent(template),
     publishEvent: async (event) => {
@@ -200,15 +205,73 @@ test("distinct repo slug retry reuses the published 30617 head and publishes onl
   };
 
   await assert.rejects(
-    createProject(input, resumableProjectIds, deps),
+    createProject(input, resumableProjects, deps),
     /mock project event rejection/,
   );
   assert.deepEqual(publishedKinds, [30617, 30621]);
-  assert.ok(resumableProjectIds.has(`${OWNER}:bee-garden`));
+  assert.deepEqual(resumableProjects.get(`${OWNER}:bee-garden`), {
+    repositoryAddress: `30617:${OWNER}:anhle128-buzz`,
+    repositoryEventId: "d".repeat(64),
+  });
 
-  const result = await createProject(input, resumableProjectIds, deps);
+  await assert.rejects(
+    createProject(input, resumableProjects, deps),
+    /A repository named "anhle128-buzz" already exists/,
+  );
+  assert.deepEqual(publishedKinds, [30617, 30621]);
+
+  returnMatchingHead = true;
+  const result = await createProject(input, resumableProjects, deps);
   assert.deepEqual(publishedKinds, [30617, 30621, 30621]);
   assert.equal(result.project.dtag, "bee-garden");
   assert.equal(result.project.repositories[0]?.dtag, "anhle128-buzz");
   assert.equal(result.project.repositories[0]?.name, "anhle128/buzz");
+});
+
+test("retry with a changed repository name cannot reuse a different existing head", async () => {
+  const resumableProjects = new Map();
+  const publishedKinds = [];
+  let firstProjectPublish = true;
+  const deps = {
+    getIdentity: async () => ({ pubkey: OWNER }),
+    fetchProjects: async () => [],
+    fetchEvents: async (filter) =>
+      filter["#d"]?.[0] === "first-repository"
+        ? []
+        : [makeRepoHead("existing-repository")],
+    signRelayEvent: async (template) => signEvent(template),
+    publishEvent: async (event) => {
+      publishedKinds.push(event.kind);
+      if (event.kind === 30621 && firstProjectPublish) {
+        firstProjectPublish = false;
+        throw new Error("mock project event rejection");
+      }
+    },
+  };
+
+  await assert.rejects(
+    createProject(
+      {
+        accessChannelId: CHANNEL,
+        name: "Bee Garden",
+        repositoryName: "first/repository",
+      },
+      resumableProjects,
+      deps,
+    ),
+    /mock project event rejection/,
+  );
+  await assert.rejects(
+    createProject(
+      {
+        accessChannelId: CHANNEL,
+        name: "Bee Garden",
+        repositoryName: "existing/repository",
+      },
+      resumableProjects,
+      deps,
+    ),
+    /A repository named "existing-repository" already exists/,
+  );
+  assert.deepEqual(publishedKinds, [30617, 30621]);
 });

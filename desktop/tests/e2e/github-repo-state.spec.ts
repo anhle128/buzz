@@ -45,7 +45,9 @@ test("GitHub-hosted project selects develop from repository state", async ({
   await waitForAnimations(page);
 
   await branchTrigger.click();
-  await expect(page.getByRole("menuitemradio", { name: /develop/ })).toBeVisible();
+  await expect(
+    page.getByRole("menuitemradio", { name: /develop/ }),
+  ).toBeVisible();
   await expect(page.getByRole("menuitemradio", { name: /main/ })).toBeVisible();
 });
 
