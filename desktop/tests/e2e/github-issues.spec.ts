@@ -65,7 +65,10 @@ test("GitHub Issues lists metadata, loads read-only detail, and creates #N", asy
   await expect(comments.nth(0)).toContainText("API-order first comment.");
   await expect(comments.nth(1)).toContainText("API-order second comment.");
   await expect(page.getByText("grace", { exact: true })).toBeVisible();
-  await expect(page.getByTestId("project-issue-comment-composer")).toHaveCount(
+  const composer = page.getByTestId("project-issue-comment-composer");
+  await expect(composer).toBeVisible();
+  await expect(page.getByTestId("message-insert-mention")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Attach file" })).toHaveCount(
     0,
   );
   await expect(page.getByTestId("issue-discussed-in")).toHaveCount(0);
@@ -144,9 +147,9 @@ test("GitHub comment failure keeps the issue body and retries only comments", as
   await expect(
     page.getByText("Could not load GitHub issues", { exact: true }),
   ).toHaveCount(0);
-  await expect(page.getByTestId("project-issue-comment-composer")).toHaveCount(
-    0,
-  );
+  await expect(
+    page.getByTestId("project-issue-comment-composer"),
+  ).toBeVisible();
   const before = await page.evaluate(() => window.__BUZZ_E2E_COMMANDS__ ?? []);
   const listCallsBefore = before.filter(
     (command) => command === "list_github_issues",
@@ -154,7 +157,10 @@ test("GitHub comment failure keeps the issue body and retries only comments", as
   const commentCallsBefore = before.filter(
     (command) => command === "list_github_issue_comments",
   ).length;
-  await page.getByRole("button", { name: "Retry", exact: true }).click();
+  await page
+    .locator('[aria-labelledby="github-issue-comments-recovery-title"]')
+    .getByRole("button", { name: "Retry", exact: true })
+    .click();
   await expect(
     page.getByText("Could not load GitHub comments", { exact: true }),
   ).toBeVisible();

@@ -461,7 +461,12 @@ export function ProjectIssuesPanel({
     );
   } else if (selectedIssue) {
     body = githubHosted ? (
-      <GitHubIssueDetail issue={selectedIssue} project={project} />
+      <GitHubIssueDetail
+        issue={selectedIssue}
+        onListStateChange={onGithubIssueListStateChange}
+        onSelectedIssueIdChange={onSelectedIssueIdChange}
+        project={project}
+      />
     ) : (
       <ProjectIssueDetail
         issue={selectedIssue}
