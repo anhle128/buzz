@@ -9,8 +9,9 @@ use url::Url;
 
 const GH_ISSUE_STREAM_LIMIT: usize = 32 * 1024 * 1024;
 const ISSUE_LIST_JQ: &str = "[.[] | {number, title, body: (.body // \"\"), state, html_url, comments, created_at, updated_at, user: (if .user == null then null else {login: .user.login, avatar_url: (.user.avatar_url // \"\")} end), labels: [(.labels // [])[] | if type == \"string\" then . else .name end], assignees: [(.assignees // [])[] | {login, avatar_url: (.avatar_url // \"\")}], has_pull_request: has(\"pull_request\")}]";
-const ISSUE_ITEM_JQ: &str = "{number, title, body: (.body // \"\"), state, html_url, comments, created_at, updated_at, user: (if .user == null then null else {login: .user.login, avatar_url: (.user.avatar_url // \"\")} end), labels: [(.labels // [])[] | if type == \"string\" then . else .name end], assignees: [(.assignees // [])[] | {login, avatar_url: (.avatar_url // \"\")}], has_pull_request: has(\"pull_request\")}";
-const ISSUE_COMMENTS_JQ: &str = "[.[] | {id, body: (.body // \"\"), created_at, user: (if .user == null then null else {login: .user.login, avatar_url: (.user.avatar_url // \"\")} end)}]";
+/// jq projection for a single GitHub issue API object.
+pub(crate) const ISSUE_ITEM_JQ: &str = "{number, title, body: (.body // \"\"), state, html_url, comments, created_at, updated_at, user: (if .user == null then null else {login: .user.login, avatar_url: (.user.avatar_url // \"\")} end), labels: [(.labels // [])[] | if type == \"string\" then . else .name end], assignees: [(.assignees // [])[] | {login, avatar_url: (.avatar_url // \"\")}], has_pull_request: has(\"pull_request\")}";
+const ISSUE_COMMENTS_JQ: &str = "[.[] | {id, body: (.body // \"\"), html_url, created_at, user: (if .user == null then null else {login: .user.login, avatar_url: (.user.avatar_url // \"\")} end)}]";
 
 /// GitHub login identity returned to the desktop issue UI.
 #[derive(Clone, Debug, Serialize)]
@@ -47,6 +48,7 @@ pub struct GitHubIssueListDto {
 pub struct GitHubIssueCommentDto {
     pub id: u64,
     pub body: String,
+    pub html_url: String,
     pub created_at: i64,
     pub user: GitHubIssueUserDto,
 }
@@ -57,8 +59,9 @@ struct GitHubIssueUserWire {
     avatar_url: String,
 }
 
+/// Deserialized GitHub issue fields after jq projection.
 #[derive(Debug, Deserialize)]
-struct GitHubIssueWire {
+pub(crate) struct GitHubIssueWire {
     number: u64,
     title: String,
     body: String,
@@ -73,15 +76,18 @@ struct GitHubIssueWire {
     has_pull_request: bool,
 }
 
+/// Deserialized GitHub issue comment fields after jq projection.
 #[derive(Debug, Deserialize)]
-struct GitHubIssueCommentWire {
+pub(crate) struct GitHubIssueCommentWire {
     id: u64,
     body: String,
+    html_url: String,
     created_at: String,
     user: Option<GitHubIssueUserWire>,
 }
 
-fn github_api_json<T: DeserializeOwned>(
+/// Run `gh api` with optional JSON input and deserialize the jq-projected stdout.
+pub(crate) fn github_api_json<T: DeserializeOwned>(
     gh: &GhRunner,
     method: &str,
     path: &str,
@@ -153,7 +159,50 @@ pub(crate) fn is_issue_html_url(repo: &GitHubRepoRef, raw: &str, number: u64) ->
         && segments[3].parse::<u64>().ok() == Some(number)
 }
 
-fn map_issue(repo: &GitHubRepoRef, item: GitHubIssueWire) -> Option<GitHubIssueDto> {
+/// True when `raw` is a repo-bound GitHub issue comment URL for `number`/`comment_id`.
+pub(crate) fn is_issue_comment_html_url(
+    repo: &GitHubRepoRef,
+    raw: &str,
+    number: u64,
+    comment_id: u64,
+) -> bool {
+    if number == 0
+        || comment_id == 0
+        || raw != raw.trim()
+        || raw.contains('\\')
+        || raw.contains('%')
+    {
+        return false;
+    }
+    let Ok(url) = Url::parse(raw) else {
+        return false;
+    };
+    let expected_fragment = format!("issuecomment-{comment_id}");
+    if url.scheme() != "https"
+        || url.host_str() != Some("github.com")
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.port().is_some()
+        || url.query().is_some()
+        || url.fragment() != Some(expected_fragment.as_str())
+    {
+        return false;
+    }
+    let Some(segments) = url
+        .path_segments()
+        .map(|segments| segments.collect::<Vec<_>>())
+    else {
+        return false;
+    };
+    segments.len() == 4
+        && segments[0].eq_ignore_ascii_case(&repo.owner)
+        && segments[1].eq_ignore_ascii_case(&repo.repo)
+        && segments[2] == "issues"
+        && segments[3].parse::<u64>().ok() == Some(number)
+}
+
+/// Map a projected GitHub issue into the desktop DTO, dropping invalid items.
+pub(crate) fn map_issue(repo: &GitHubRepoRef, item: GitHubIssueWire) -> Option<GitHubIssueDto> {
     if item.has_pull_request
         || item.number == 0
         || !matches!(item.state.as_str(), "open" | "closed")
@@ -194,6 +243,34 @@ fn map_issue(repo: &GitHubRepoRef, item: GitHubIssueWire) -> Option<GitHubIssueD
         },
         labels: item.labels,
         assignees,
+    })
+}
+
+/// Map a projected GitHub issue comment into the desktop DTO, dropping invalid items.
+pub(crate) fn map_issue_comment(
+    repo: &GitHubRepoRef,
+    number: u64,
+    comment: GitHubIssueCommentWire,
+) -> Option<GitHubIssueCommentDto> {
+    let user = comment.user?;
+    if comment.id == 0
+        || user.login.trim().is_empty()
+        || !is_issue_comment_html_url(repo, &comment.html_url, number, comment.id)
+    {
+        return None;
+    }
+    let created_at = DateTime::parse_from_rfc3339(&comment.created_at)
+        .ok()?
+        .timestamp();
+    Some(GitHubIssueCommentDto {
+        id: comment.id,
+        body: comment.body,
+        html_url: comment.html_url,
+        created_at,
+        user: GitHubIssueUserDto {
+            login: user.login,
+            avatar_url: user.avatar_url,
+        },
     })
 }
 
@@ -264,9 +341,9 @@ pub(crate) fn list_github_issues_with(
     Ok(GitHubIssueListDto { issues, has_more })
 }
 
-fn issue_json_input(
-    title: &str,
-    body: &str,
+/// Write a JSON request body to a tempfile for `gh api --input`.
+pub(crate) fn github_json_input(
+    value: &serde_json::Value,
 ) -> Result<tempfile::NamedTempFile, ProjectPullRequestMergeError> {
     use std::io::Write;
     let mut file = tempfile::Builder::new()
@@ -275,11 +352,7 @@ fn issue_json_input(
         .map_err(|error| {
             ProjectPullRequestMergeError::new("github_issues_failed", error.to_string())
         })?;
-    serde_json::to_writer(
-        &mut file,
-        &serde_json::json!({ "title": title, "body": body }),
-    )
-    .map_err(|error| {
+    serde_json::to_writer(&mut file, value).map_err(|error| {
         ProjectPullRequestMergeError::new("github_issues_failed", error.to_string())
     })?;
     file.flush().map_err(|error| {
@@ -311,7 +384,7 @@ pub(crate) fn create_github_issue_with(
         .map_err(|message| ProjectPullRequestMergeError::new("github_issues_failed", message))?;
     gh.ensure_auth()
         .map_err(|error| remap_issues_error(error, ""))?;
-    let input = issue_json_input(title, body)?;
+    let input = github_json_input(&serde_json::json!({ "title": title, "body": body }))?;
     let path = format!("/repos/{}/issues", repo.slug());
     let raw: GitHubIssueWire =
         github_api_json(gh, "POST", &path, ISSUE_ITEM_JQ, Some(input.path()))?;
@@ -346,24 +419,7 @@ pub(crate) fn list_github_issue_comments_with(
         github_api_json(gh, "GET", &path, ISSUE_COMMENTS_JQ, None)?;
     Ok(raw
         .into_iter()
-        .filter_map(|comment| {
-            let user = comment.user?;
-            if comment.id == 0 || user.login.trim().is_empty() {
-                return None;
-            }
-            let created_at = DateTime::parse_from_rfc3339(&comment.created_at)
-                .ok()?
-                .timestamp();
-            Some(GitHubIssueCommentDto {
-                id: comment.id,
-                body: comment.body,
-                created_at,
-                user: GitHubIssueUserDto {
-                    login: user.login,
-                    avatar_url: user.avatar_url,
-                },
-            })
-        })
+        .filter_map(|comment| map_issue_comment(&repo, number, comment))
         .collect())
 }
 
@@ -711,8 +767,8 @@ mod tests {
     #[test]
     fn comments_keep_projected_github_order() {
         let output = serde_json::json!([
-            { "id": 1, "body": "first", "created_at": "2026-01-02T03:04:05Z", "user": { "login": "ada", "avatar_url": "https://example.com/a" } },
-            { "id": 2, "body": "second", "created_at": "2026-01-02T04:04:05Z", "user": { "login": "linus", "avatar_url": "https://example.com/b" } }
+            { "id": 1, "body": "first", "html_url": "https://github.com/acme/app/issues/42#issuecomment-1", "created_at": "2026-01-02T03:04:05Z", "user": { "login": "ada", "avatar_url": "https://example.com/a" } },
+            { "id": 2, "body": "second", "html_url": "https://github.com/acme/app/issues/42#issuecomment-2", "created_at": "2026-01-02T04:04:05Z", "user": { "login": "linus", "avatar_url": "https://example.com/b" } }
         ]);
         let (dir, path) = fake_gh(&output, 0, "");
         let gh = GhRunner::from_resolved(Some(path)).expect("runner");
@@ -728,6 +784,88 @@ mod tests {
         assert_eq!(comments[1].user.login, "linus");
         let calls = std::fs::read_to_string(dir.path().join("calls")).expect("calls");
         assert!(calls.contains("/repos/acme/app/issues/42/comments?per_page=100"));
+    }
+
+    #[test]
+    fn accepts_only_repo_bound_comment_urls() {
+        let repo = GitHubRepoRef::parse("https://github.com/Acme/App").expect("repo");
+        for (raw, number, comment_id, expected) in [
+            (
+                "https://github.com/acme/app/issues/42#issuecomment-9",
+                42,
+                9,
+                true,
+            ),
+            (
+                "https://github.com/ACME/APP/issues/42#issuecomment-9",
+                42,
+                9,
+                true,
+            ),
+            (
+                "https://github.com/acme/app/issues/42#issuecomment-8",
+                42,
+                9,
+                false,
+            ),
+            (
+                "https://github.com/acme/app/issues/43#issuecomment-9",
+                42,
+                9,
+                false,
+            ),
+            ("https://github.com/acme/app/issues/42", 42, 9, false),
+            (
+                "https://evil.example/acme/app/issues/42#issuecomment-9",
+                42,
+                9,
+                false,
+            ),
+            (
+                "https://github.com/acme/app/issues/42?x=1#issuecomment-9",
+                42,
+                9,
+                false,
+            ),
+        ] {
+            assert_eq!(
+                is_issue_comment_html_url(&repo, raw, number, comment_id),
+                expected,
+                "{raw}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn comments_drop_foreign_html_url() {
+        let output = json!([{
+            "id": 1,
+            "body": "first",
+            "html_url": "https://evil.example/issues/42#issuecomment-1",
+            "created_at": "2026-01-02T03:04:05Z",
+            "user": { "login": "ada", "avatar_url": "https://example.com/a" }
+        }]);
+        let (_dir, path) = fake_gh(&output, 0, "");
+        let gh = GhRunner::from_resolved(Some(path)).expect("runner");
+        let comments = list_github_issue_comments_with(&gh, "https://github.com/acme/app", 42)
+            .expect("comments");
+        assert!(comments.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn list_sends_state_closed() {
+        let output = json!([projected_issue(7, false)]);
+        let (dir, path) = fake_gh(&output, 0, "");
+        let gh = GhRunner::from_resolved(Some(path)).expect("runner");
+        let page =
+            list_github_issues_with(&gh, "https://github.com/acme/app", "closed").expect("list");
+        assert_eq!(page.issues[0].number, 7);
+        let calls = std::fs::read_to_string(dir.path().join("calls")).expect("calls");
+        assert!(calls.contains(
+            "/repos/acme/app/issues?state=closed&per_page=100&sort=updated&direction=desc"
+        ));
     }
 
     #[test]
