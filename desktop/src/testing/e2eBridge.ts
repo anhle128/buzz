@@ -1257,6 +1257,11 @@ declare global {
           }
         | null;
     };
+    /** Structured error returned by the mock GitHub repository-state command. */
+    __BUZZ_E2E_GITHUB_REPO_STATE_ERROR__?: {
+      code: string;
+      message: string;
+    };
     /** Overrides the first mock repository owner for delegated-owner tests. */
     __BUZZ_E2E_PROJECT_OWNER_OVERRIDE__?: string;
     __BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__?: string;
@@ -5475,6 +5480,11 @@ function buildMockProjectEvents(): RelayEvent[] {
       projectIndex === 0
         ? (window.__BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__ ?? seed.cloneUrl)
         : seed.cloneUrl;
+    // GitHub override: announce a branch that is not in the GitHub stub so the
+    // picker can reset to published HEAD (`develop`) once state loads.
+    const githubCloneOverride =
+      projectIndex === 0 &&
+      Boolean(window.__BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__);
     const repoAddress = `${KIND_REPO_ANNOUNCEMENT}:${owner}:${seed.dtag}`;
     const authors = [seed.owner, ...seed.contributors];
     const random = mulberry32(projectIndex + 1);
@@ -5489,6 +5499,9 @@ function buildMockProjectEvents(): RelayEvent[] {
           ["description", seed.description],
           ["buzz-channel", "9a1657ac-f7aa-5db0-b632-d8bbeb6dfb50"],
           ["clone", cloneUrl],
+          ...(githubCloneOverride
+            ? [["default-branch", "announced"]]
+            : []),
           ...seed.contributors.map((pubkey) => ["p", pubkey]),
         ],
         owner,
@@ -11546,6 +11559,20 @@ export function maybeInstallE2eTauriMocks() {
         // Matches the "Thomas P" author on a mock snapshot commit so the
         // viewer-identity avatar attribution is exercised in e2e.
         return { name: "Thomas P", email: "thomasp@example.com" };
+      case "get_github_repository_state": {
+        if (window.__BUZZ_E2E_GITHUB_REPO_STATE_ERROR__) {
+          throw window.__BUZZ_E2E_GITHUB_REPO_STATE_ERROR__;
+        }
+        return {
+          head: "develop",
+          branches: [
+            { name: "develop", commit: "d".repeat(40) },
+            { name: "main", commit: "m".repeat(40) },
+          ],
+          tags: [],
+          updated_at: Math.floor(Date.now() / 1000),
+        };
+      }
       case "get_project_repo_snapshot":
         return {
           latest_commit: {
