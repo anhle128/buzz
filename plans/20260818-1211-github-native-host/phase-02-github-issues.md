@@ -48,3 +48,9 @@ The Issues tab is NIP-34 `kind:1621` on the relay, keyed by repo address. It is 
 ## Success
 
 Issues tab on `harness-service` shows GitHub `#N`. Creating an issue creates a GitHub issue. Buzz-hosted issue flow unchanged.
+
+## Suggested Superpowers slice
+
+Start **I1 + I2** only (list + create). Status, labels, assignees, and comments are read-only. I3–I6 writes are later.
+
+**I1+I2 spec:** [docs/superpowers/specs/2026-08-18-github-issues-design.md](../../docs/superpowers/specs/2026-08-18-github-issues-design.md)
