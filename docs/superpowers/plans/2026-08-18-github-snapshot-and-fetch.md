@@ -18,7 +18,7 @@ Fetch refetches GitHub queries only and does not run `git fetch`.
 
 ## Global Constraints
 
-- G3 + G4 only: no Pull/Push (G5), no create/delete branch (G6), no G7 copy fix, no overview snapshots, no file-body fetch except README, no contributors, no `git fetch` / `ls-remote`, no GitHub tags or `refs/nostr/…`, no kind:30617 `default-branch` persist, no GitHub Enterprise / GitLab / stored OAuth tokens.
+- G3 + G4 only: no Pull/Push (G5), no create/delete branch (G6), no G7 copy fix, no overview snapshots, no file-body fetch except README, no contributors, no `git fetch` / `ls-remote`, no GitHub tags, no GitHub pull request refs, no `refs/nostr/…`, no kind:30617 `default-branch` persist, no GitHub Enterprise / GitLab / stored OAuth tokens.
 - Auth: `GhRunner::discover` then `ensure_auth`.
 - Never store a GitHub token.
 - Error codes from the two new commands: only `github_cli_missing`, `github_auth_required`, `github_repo_unavailable`, `github_state_failed`.
@@ -35,11 +35,25 @@ Fetch refetches GitHub queries only and does not run `git fetch`.
 - CWD does not persist across tool calls.
 - Commits use `git commit -s`.
 - Before each commit run `node .gitnexus/run.cjs detect` if that file exists.
+- Use `if [ -f .gitnexus/run.cjs ]; then node .gitnexus/run.cjs detect; fi` in every commit step.
 - Before editing a symbol, run GitNexus `impact({target, direction: "upstream"})` when the MCP tools are available.
 - No `unsafe`.
 - No new `unwrap()` / `expect()` on production paths.
 - New public Rust/TS APIs get doc comments.
 - Desktop text uses rem tokens (`text-2xs` for the ahead/behind label), never `text-[Npx]`.
+
+## Required Impact Checks
+
+Run these before the task's first edit when the GitNexus MCP tools are available.
+Report direct callers, affected processes, and risk level before editing.
+
+- Task 1: `GhRunner::run`, `remap_state_error`, and `combined_cli_diagnostic`.
+- Task 2: new module only, plus `ProjectRepoSnapshotInfo` for serialization consumers.
+- Task 3: `get_github_repository_state` as the neighboring command registration context, plus `lib.rs` invoke handler registration.
+- Task 4: new module only, plus `lib.rs` invoke handler registration.
+- Task 5: `fetchProjectRepoSnapshot`, `useProjectRepoSnapshotQuery`, and `getGithubRepositoryState`.
+- Task 6: `ProjectDetailScreen`, `RepoSyncActionButton`, `RepoSourceDropdown`, `WorkspaceTabs`, `findReadmeFile`, and `useProjectRepoSyncStatusQuery`.
+- Task 7: `maybeInstallE2eTauriMocks`, the mock invoke handler in `desktop/src/testing/e2eBridge.ts`, and the Playwright smoke project in `desktop/playwright.config.ts`.
 
 ## Open Questions
 
@@ -78,7 +92,7 @@ Fetch refetches GitHub queries only and does not run `git fetch`.
 | Create: `desktop/src/features/projects/lib/projectGithubRemoteView.test.mjs` | `github.com` never splashes |
 | `desktop/src/features/projects/hooks.ts` | Use GitHub snapshot fetch; query key includes clone URL |
 | `desktop/src/features/projects/repoSyncHooks.ts` | `useGithubAheadBehindQuery`; leave Buzz sync query Buzz-only |
-| `desktop/src/features/projects/ui/ProjectDetailScreen.tsx` | Enable G3 after G1 success; wire Fetch; hide Pull/Push; pass GitHub counts |
+| `desktop/src/features/projects/ui/ProjectDetailScreen.tsx` | Enable G3 after G1 success; wire Fetch; hide Pull/Push/Create/Delete; pass GitHub counts |
 | `desktop/src/features/projects/ui/ProjectRepositorySource.tsx` | GitHub Fetch + ahead/behind; Open moves to the source dropdown |
 | `desktop/src/features/projects/ui/ProjectWorkspaceTabs.tsx` | Stop treating GitHub as the host-empty splash |
 | `desktop/src/features/projects/ui/ProjectReadmePanel.tsx` | README fallback to the file that carries `previewContent` |
@@ -101,8 +115,8 @@ Do not modify `get_project_repo_snapshot` or `get_project_repo_sync_status` beyo
 **Interfaces:**
 - Consumes: existing `GhRunner::run`, `GH_STREAM_LIMIT`, `remap_state_error`, `combined_cli_diagnostic`
 - Produces:
-  - `pub(crate) fn GhRunner::run_with_limit(&self, args: &[OsString], stdout_limit: usize) -> Result<GhOutput, ProjectPullRequestMergeError>`
-  - `pub(crate) fn GhRunner::run(&self, args: &[OsString])` calls `run_with_limit(args, GH_STREAM_LIMIT)`
+  - In `impl GhRunner`, `pub(crate) fn run_with_limit(&self, args: &[OsString], stdout_limit: usize) -> Result<GhOutput, ProjectPullRequestMergeError>`
+  - In `impl GhRunner`, `pub(crate) fn run(&self, args: &[OsString])` calls `run_with_limit(args, GH_STREAM_LIMIT)`
   - `pub(crate) fn remap_state_error(...)` and `pub(crate) fn combined_cli_diagnostic(...)` in `project_github_repository_state.rs`
 
 - [ ] **Step 1: Write the failing larger-limit test**
@@ -143,9 +157,9 @@ Expected: FAIL with `no method named run_with_limit`.
 
 In `impl GhRunner`, keep `run` as a one-line wrapper.
 
-Move the current `run` body into `run_with_limit`.
-The stdout reader uses `stdout_limit`.
-The stderr reader stays on `GH_STREAM_LIMIT`.
+Move the complete current `run` body, from `let mut command = Command::new(&self.binary);` through the final `Ok(GhOutput { status, stdout, stderr })`, into `run_with_limit`.
+Change only the stdout reader to use `stdout_limit`.
+Keep the stderr reader on `GH_STREAM_LIMIT`.
 
 ```rust
 pub(crate) fn run(&self, args: &[OsString]) -> Result<GhOutput, ProjectPullRequestMergeError> {
@@ -157,9 +171,9 @@ pub(crate) fn run_with_limit(
     args: &[OsString],
     stdout_limit: usize,
 ) -> Result<GhOutput, ProjectPullRequestMergeError> {
-    // existing run() body, except:
-    // let stdout_thread = std::thread::spawn(move || read_pipe_bounded(stdout, stdout_limit));
-    // let stderr_thread = std::thread::spawn(move || read_pipe_bounded(stderr, GH_STREAM_LIMIT));
+    let stdout_thread = std::thread::spawn(move || read_pipe_bounded(stdout, stdout_limit));
+    let stderr_thread = std::thread::spawn(move || read_pipe_bounded(stderr, GH_STREAM_LIMIT));
+    // Keep the rest of the moved body unchanged.
 }
 ```
 
@@ -179,6 +193,7 @@ Expected: PASS on unix.
 
 ```bash
 . ./bin/activate-hermit
+if [ -f .gitnexus/run.cjs ]; then node .gitnexus/run.cjs detect; fi
 git add desktop/src-tauri/src/commands/project_github_pull_request.rs \
   desktop/src-tauri/src/commands/project_github_pull_request/runner_tests.rs \
   desktop/src-tauri/src/commands/project_github_repository_state.rs
@@ -209,7 +224,7 @@ Copy the unix `fake_gh` helper from `project_github_repository_state.rs`.
 
 ```rust
 #[cfg(unix)]
-fn fake_gh(script: &str) -> (tempfile::TempDir, PathBuf) {
+fn fake_gh(script: &str) -> (tempfile::TempDir, std::path::PathBuf) {
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().expect("create fake gh directory");
     let path = dir.path().join("gh");
@@ -272,6 +287,90 @@ esac
         .find(|file| file.path == "src/lib.rs")
         .and_then(|file| file.preview_content.as_ref())
         .is_none());
+}
+
+#[cfg(unix)]
+#[test]
+fn uses_jq_for_commits_and_tree_calls() {
+    let sha = "a".repeat(40);
+    let tree = "b".repeat(40);
+    let script = format!(
+        r#"
+root=${{0%/gh}}
+printf '%s\n' "$*" >> "$root/calls"
+case "$*" in
+  *auth*status*) exit 0 ;;
+  *"/repos/acme/app/commits"*)
+    printf '%s' '[{{"sha":"{sha}","tree":"{tree}","name":"Ada","email":"ada@example.com","date":"2026-01-02T03:04:05Z","subject":"Seed"}}]'
+    ;;
+  *"/repos/acme/app/git/trees/"*)
+    printf '%s' '{{"tree":[]}}'
+    ;;
+  *"/repos/acme/app/readme"*)
+    printf 'gh: HTTP 404\n' >&2
+    exit 1
+    ;;
+  *) exit 1 ;;
+esac
+"#
+    );
+    let (dir, path) = fake_gh(&script);
+    let gh = GhRunner::from_resolved(Some(path)).expect("runner");
+    let _snapshot = github_repository_snapshot_with(&gh, "https://github.com/acme/app", "develop")
+        .expect("snapshot");
+    let calls = std::fs::read_to_string(dir.path().join("calls")).expect("read calls");
+    assert!(calls
+        .lines()
+        .any(|line| line.contains("/repos/acme/app/commits") && line.contains("--jq")));
+    assert!(calls
+        .lines()
+        .any(|line| line.contains("/repos/acme/app/git/trees/") && line.contains("--jq")));
+}
+
+#[cfg(unix)]
+#[test]
+fn caps_tree_entries_and_readme_preview() {
+    let sha = "a".repeat(40);
+    let tree = "b".repeat(40);
+    let tree_entries = (0..=MAX_TREE_ENTRIES)
+        .map(|index| serde_json::json!({"path": format!("src/file{index}.rs"), "type": "blob", "size": 1}))
+        .collect::<Vec<_>>();
+    let tree_json = serde_json::json!({ "tree": tree_entries }).to_string();
+    let readme_content = vec![b'x'; MAX_PREVIEW_BYTES + 10];
+    let readme_b64 = base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        readme_content,
+    );
+    let script = format!(
+        r#"
+case "$*" in
+  *auth*status*) exit 0 ;;
+  *"/repos/acme/app/commits"*)
+    printf '%s' '[{{"sha":"{sha}","tree":"{tree}","name":"Ada","email":"ada@example.com","date":"2026-01-02T03:04:05Z","subject":"Seed"}}]'
+    ;;
+  *"/repos/acme/app/git/trees/"*)
+    printf '%s' '{tree_json}'
+    ;;
+  *"/repos/acme/app/readme"*)
+    printf '%s' '{{"path":"README.md","content":"{readme_b64}","encoding":"base64","size":70000}}'
+    ;;
+  *) exit 1 ;;
+esac
+"#
+    );
+    let (_dir, path) = fake_gh(&script);
+    let gh = GhRunner::from_resolved(Some(path)).expect("runner");
+    let snapshot = github_repository_snapshot_with(&gh, "https://github.com/acme/app", "develop")
+        .expect("snapshot");
+    assert_eq!(snapshot.files.len(), MAX_TREE_ENTRIES + 1);
+    let readme = snapshot
+        .files
+        .iter()
+        .find(|file| file.path == "README.md")
+        .expect("inserted readme");
+    let preview = readme.preview_content.as_deref().expect("preview");
+    assert_eq!(preview.len(), MAX_PREVIEW_BYTES);
+    assert!(preview.bytes().all(|byte| byte == b'x'));
 }
 
 #[cfg(unix)]
@@ -356,11 +455,41 @@ fn rejects_nostr_and_tag_refs() {
     assert_eq!(error_code(&tag), "github_state_failed");
 }
 
+#[test]
+fn rejects_non_branch_refs() {
+    let gh = GhRunner::from_resolved(Some(std::path::PathBuf::from("/bin/false")))
+        .expect("dummy runner unused");
+    let err = github_repository_snapshot_with(
+        &gh,
+        "https://github.com/acme/app",
+        "refs/pull/1/head",
+    )
+    .expect_err("pull ref");
+    assert_eq!(error_code(&err), "github_state_failed");
+}
+
 #[cfg(unix)]
 #[test]
 fn missing_gh_binary_is_cli_missing() {
     let err = GhRunner::from_resolved(None).expect_err("missing");
     assert_eq!(error_code(&err), "github_cli_missing");
+}
+
+#[cfg(unix)]
+#[test]
+fn failed_auth_is_auth_required() {
+    let (_dir, path) = fake_gh(
+        r#"
+case "$*" in
+  *auth*status*) exit 1 ;;
+  *) exit 1 ;;
+esac
+"#,
+    );
+    let gh = GhRunner::from_resolved(Some(path)).expect("runner");
+    let err = github_repository_snapshot_with(&gh, "https://github.com/acme/app", "develop")
+        .expect_err("auth");
+    assert_eq!(error_code(&err), "github_auth_required");
 }
 
 #[cfg(unix)]
@@ -404,7 +533,7 @@ esac
 . ./bin/activate-hermit && cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib maps_commits_tree_and_readme_preview
 ```
 
-Expected: FAIL with `github_repository_snapshot_with` missing.
+Expected: FAIL because the mapper and its constants are missing.
 
 - [ ] **Step 3: Implement the mapper**
 
@@ -423,11 +552,11 @@ use crate::commands::project_github_repository_state::{
 use base64::Engine as _;
 use serde::Deserialize;
 use std::ffi::OsString;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 const GH_README_STREAM_LIMIT: usize = 256 * 1024;
 const MAX_PREVIEW_BYTES: usize = 64 * 1024;
 const MAX_TREE_ENTRIES: usize = 250;
+const MAX_COMMITS: usize = 50;
 const COMMITS_JQ: &str = "[.[] | {sha, tree: .commit.tree.sha, name: .commit.author.name, email: .commit.author.email, date: .commit.author.date, subject: (.commit.message | split(\"\\n\")[0])}]";
 const TREE_JQ: &str = "{tree: [.tree[:250][] | {path, type, size}]}";
 
@@ -473,11 +602,17 @@ pub(crate) fn github_repository_snapshot_with(
     gh.ensure_auth()
         .map_err(|error| remap_state_error(error, ""))?;
 
-    let commits = list_commits(gh, &repo.slug(), &branch)?;
-    let Some(head) = commits.first() else {
+    let commit_rows = list_commit_rows(gh, &repo.slug(), &branch)?;
+    let Some(head) = commit_rows.first() else {
         return Ok(empty_snapshot());
     };
-    let files = list_tree(gh, &repo.slug(), &head.tree)?;
+    let tree_sha = head.tree.clone();
+    let commits = commit_rows
+        .into_iter()
+        .take(MAX_COMMITS)
+        .map(map_commit)
+        .collect();
+    let files = list_tree(gh, &repo.slug(), &tree_sha)?;
     let readme = fetch_readme(gh, &repo.slug(), &branch)?;
     Ok(ProjectRepoSnapshotInfo {
         latest_commit: commits.first().cloned(),
@@ -489,10 +624,12 @@ pub(crate) fn github_repository_snapshot_with(
 
 fn clean_github_branch(git_ref: &str) -> Result<String, ProjectPullRequestMergeError> {
     let trimmed = git_ref.trim();
-    if trimmed.starts_with("refs/nostr/") || trimmed.starts_with("refs/tags/") {
+    if trimmed.starts_with("refs/")
+        && !trimmed.starts_with("refs/heads/")
+    {
         return Err(ProjectPullRequestMergeError::new(
             "github_state_failed",
-            "GitHub snapshot accepts a branch name, not a tag or nostr ref.",
+            "GitHub snapshot accepts a branch name, not a non-branch ref.",
         ));
     }
     clean_branch(Some(trimmed.to_string())).ok_or_else(|| {
@@ -503,18 +640,17 @@ fn clean_github_branch(git_ref: &str) -> Result<String, ProjectPullRequestMergeE
     })
 }
 
-fn list_commits(
+fn list_commit_rows(
     gh: &GhRunner,
     slug: &str,
     branch: &str,
-) -> Result<Vec<ProjectRepoCommitInfo>, ProjectPullRequestMergeError> {
-    let query = url::form_urlencoded::Serializer::new(String::new())
-        .append_pair("sha", branch)
-        .append_pair("per_page", "50")
-        .finish();
+) -> Result<Vec<GithubCommitRow>, ProjectPullRequestMergeError> {
+    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+    serializer.append_pair("sha", branch);
+    serializer.append_pair("per_page", &MAX_COMMITS.to_string());
+    let query = serializer.finish();
     let path = format!("/repos/{slug}/commits?{query}");
-    let rows: Vec<GithubCommitRow> = github_api_json(gh, &path, Some(COMMITS_JQ), 64 * 1024)?;
-    Ok(rows.into_iter().take(50).map(map_commit).collect())
+    github_api_json(gh, &path, Some(COMMITS_JQ), 64 * 1024)
 }
 
 fn list_tree(
@@ -544,9 +680,9 @@ fn fetch_readme(
     slug: &str,
     branch: &str,
 ) -> Result<Option<GithubReadmePayload>, ProjectPullRequestMergeError> {
-    let query = url::form_urlencoded::Serializer::new(String::new())
-        .append_pair("ref", branch)
-        .finish();
+    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+    serializer.append_pair("ref", branch);
+    let query = serializer.finish();
     let path = format!("/repos/{slug}/readme?{query}");
     let output = github_api_output(gh, &path, None, GH_README_STREAM_LIMIT)?;
     if !output.status.success() {
@@ -711,6 +847,7 @@ Windows: keep the gitlab/ref tests; keep fake-gh tests `#[cfg(unix)]`.
 
 ```bash
 . ./bin/activate-hermit
+if [ -f .gitnexus/run.cjs ]; then node .gitnexus/run.cjs detect; fi
 git add desktop/src-tauri/src/commands/project_github_repository_snapshot.rs \
   desktop/src-tauri/src/commands/mod.rs
 git commit -s -m "feat(projects): map GitHub snapshot from gh api"
@@ -727,39 +864,34 @@ git commit -s -m "feat(projects): map GitHub snapshot from gh api"
 
 **Interfaces:**
 - Consumes: `github_repository_snapshot_with`, `GhRunner::discover`
-- Produces: `#[tauri::command] pub async fn get_github_repository_snapshot(clone_url: String, git_ref: String) -> Result<ProjectRepoSnapshotInfo, ProjectPullRequestMergeError>`
+- Produces: `#[tauri::command] pub async fn get_github_repository_snapshot(clone_url: String, ref_name: String) -> Result<ProjectRepoSnapshotInfo, ProjectPullRequestMergeError>`
 
-Tauri invoke args from TypeScript: `{ cloneUrl, ref }`.
-Name the Rust parameter `git_ref` and add `#[serde(rename = "ref")]` **or** name it `r#ref` if the crate already uses that style.
-If the existing Tauri rename is camelCase-only, use `ref_name: String` in Rust and invoke as `{ cloneUrl, refName }`.
-**Provisional default:** Rust parameter `git_ref: String`, TypeScript invoke key `ref` via `#[serde(rename = "ref")]` on a request struct if the command cannot take a raw `ref` identifier.
+Tauri invoke args from TypeScript: `{ cloneUrl, refName }`.
+The public TypeScript wrapper still accepts `{ cloneUrl, ref }`, but it sends `refName` to Tauri.
+Do not use a raw Rust parameter named after the reserved word or a serde rename to make a command argument named `ref`.
 
-Prefer this command signature so the TS wrapper stays `{ cloneUrl, ref }`:
+Use this command signature:
 
 ```rust
-#[derive(Deserialize)]
-pub struct GithubRepositorySnapshotInput {
-    pub clone_url: String,
-    #[serde(rename = "ref")]
-    pub git_ref: String,
-}
-
 pub(crate) fn get_github_repository_snapshot_with_runner(
-    input: GithubRepositorySnapshotInput,
+    clone_url: String,
+    ref_name: String,
     gh: Result<GhRunner, ProjectPullRequestMergeError>,
 ) -> Result<ProjectRepoSnapshotInfo, ProjectPullRequestMergeError> {
     let gh = gh.map_err(|error| remap_state_error(error, ""))?;
-    github_repository_snapshot_with(&gh, &input.clone_url, &input.git_ref)
+    github_repository_snapshot_with(&gh, &clone_url, &ref_name)
 }
 
+/// Load README, file tree, and recent commits for a github.com clone URL.
 #[tauri::command]
 pub async fn get_github_repository_snapshot(
     clone_url: String,
-    #[serde(rename = "ref")] git_ref: String,
+    ref_name: String,
 ) -> Result<ProjectRepoSnapshotInfo, ProjectPullRequestMergeError> {
     tauri::async_runtime::spawn_blocking(move || {
         get_github_repository_snapshot_with_runner(
-            GithubRepositorySnapshotInput { clone_url, git_ref },
+            clone_url,
+            ref_name,
             GhRunner::discover(),
         )
     })
@@ -770,9 +902,6 @@ pub async fn get_github_repository_snapshot(
 }
 ```
 
-If `#[serde(rename = "ref")]` on a command argument fails to compile, switch the TypeScript invoke key to `gitRef` and keep the Rust name `git_ref`.
-Document the chosen invoke key in the TS wrapper in Task 5 and do not mix both.
-
 Register `get_github_repository_snapshot` in `lib.rs` immediately after `get_github_repository_state`.
 
 - [ ] **Step 1: Write the wrapper test**
@@ -781,10 +910,8 @@ Register `get_github_repository_snapshot` in `lib.rs` immediately after `get_git
 #[test]
 fn wrapper_maps_discover_failure() {
     let err = get_github_repository_snapshot_with_runner(
-        GithubRepositorySnapshotInput {
-            clone_url: "https://github.com/acme/app".into(),
-            git_ref: "develop".into(),
-        },
+        "https://github.com/acme/app".into(),
+        "develop".into(),
         GhRunner::from_resolved(None),
     )
     .expect_err("missing");
@@ -807,6 +934,7 @@ Expected: PASS.
 
 ```bash
 . ./bin/activate-hermit
+if [ -f .gitnexus/run.cjs ]; then node .gitnexus/run.cjs detect; fi
 git add desktop/src-tauri/src/commands/project_github_repository_snapshot.rs \
   desktop/src-tauri/src/commands/mod.rs \
   desktop/src-tauri/src/lib.rs
@@ -827,13 +955,13 @@ git commit -s -m "feat(projects): expose get_github_repository_snapshot command"
 - Produces:
   - `pub struct GithubAheadBehind { pub status: String, pub ahead: Option<u32>, pub behind: Option<u32> }`
   - `pub(crate) fn github_ahead_behind_with(gh: &GhRunner, clone_url: &str, branch: &str, local_sha: &str, remote_sha: &str) -> Result<GithubAheadBehind, ProjectPullRequestMergeError>`
-  - `#[tauri::command] pub async fn get_github_ahead_behind(clone_url: String, branch: String, local_sha: String, remote_sha: String)`
+  - `#[tauri::command] pub async fn get_github_ahead_behind(clone_url: String, branch: String, local_sha: String, remote_sha: String) -> Result<GithubAheadBehind, ProjectPullRequestMergeError>`
 
 - [ ] **Step 1: Write failing tests**
 
 ```rust
 #[cfg(unix)]
-fn fake_gh(script: &str) -> (tempfile::TempDir, PathBuf) {
+fn fake_gh(script: &str) -> (tempfile::TempDir, std::path::PathBuf) {
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().expect("create fake gh directory");
     let path = dir.path().join("gh");
@@ -953,6 +1081,69 @@ fn rejects_non_github_clone_url_before_runner() {
 }
 
 #[test]
+fn rejects_nostr_and_tag_refs_before_runner() {
+    let gh = GhRunner::from_resolved(Some(std::path::PathBuf::from("/bin/false")))
+        .expect("dummy runner unused");
+    let local = "a".repeat(40);
+    let remote = "b".repeat(40);
+    let nostr = github_ahead_behind_with(
+        &gh,
+        "https://github.com/acme/app",
+        "refs/nostr/abc",
+        &local,
+        &remote,
+    )
+    .expect_err("nostr");
+    let tag = github_ahead_behind_with(
+        &gh,
+        "https://github.com/acme/app",
+        "refs/tags/v1",
+        &local,
+        &remote,
+    )
+    .expect_err("tag");
+    assert_eq!(error_code(&nostr), "github_state_failed");
+    assert_eq!(error_code(&tag), "github_state_failed");
+}
+
+#[test]
+fn rejects_non_branch_refs_before_runner() {
+    let gh = GhRunner::from_resolved(Some(std::path::PathBuf::from("/bin/false")))
+        .expect("dummy runner unused");
+    let err = github_ahead_behind_with(
+        &gh,
+        "https://github.com/acme/app",
+        "refs/pull/1/head",
+        &"a".repeat(40),
+        &"b".repeat(40),
+    )
+    .expect_err("pull ref");
+    assert_eq!(error_code(&err), "github_state_failed");
+}
+
+#[cfg(unix)]
+#[test]
+fn failed_auth_is_auth_required() {
+    let script = r#"
+case "$*" in
+  *auth*status*) exit 1 ;;
+  *) exit 1 ;;
+esac
+"#;
+    let (_dir, path) = fake_gh(script);
+    let gh = GhRunner::from_resolved(Some(path)).expect("runner");
+    let err = github_ahead_behind_with(
+        &gh,
+        "https://github.com/acme/app",
+        "develop",
+        &"a".repeat(40),
+        &"b".repeat(40),
+    )
+    .expect_err("auth");
+    assert_eq!(error_code(&err), "github_auth_required");
+}
+
+#[test]
 fn wrapper_maps_discover_failure() {
     let err = get_github_ahead_behind_with_runner(
         "https://github.com/acme/app".into(),
@@ -979,11 +1170,24 @@ Expected: FAIL with `github_ahead_behind_with` missing.
 ```rust
 //! Compare a local HEAD to a GitHub branch tip without git fetch.
 
+use crate::commands::project_git_exec::clean_branch;
+use crate::commands::project_git_merge_error::ProjectPullRequestMergeError;
+use crate::commands::project_github_pull_request::{GhOutput, GhRunner, GitHubRepoRef};
+use crate::commands::project_github_repository_state::{
+    combined_cli_diagnostic, remap_state_error,
+};
+use serde::{Deserialize, Serialize};
+use std::ffi::OsString;
+
+/// GitHub comparison result for a local HEAD against a remote branch tip.
 #[derive(Clone, Debug, Serialize)]
 pub struct GithubAheadBehind {
+    /// `compared` when counts are available, or `unpushed` when GitHub does not know the local SHA.
     pub status: String,
+    /// Commits the local checkout is ahead of the GitHub branch.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ahead: Option<u32>,
+    /// Commits the local checkout is behind the GitHub branch.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub behind: Option<u32>,
 }
@@ -1003,11 +1207,11 @@ pub(crate) fn github_ahead_behind_with(
 ) -> Result<GithubAheadBehind, ProjectPullRequestMergeError> {
     let repo = GitHubRepoRef::parse(clone_url)
         .map_err(|message| ProjectPullRequestMergeError::new("github_state_failed", message))?;
-    let branch = clean_branch(Some(branch.to_string())).ok_or_else(|| {
-        ProjectPullRequestMergeError::new("github_state_failed", "Invalid GitHub branch name.")
-    })?;
+    clean_github_compare_branch(branch)?;
     let local_sha = parse_oid(local_sha)?;
     let remote_sha = parse_oid(remote_sha)?;
+    gh.ensure_auth()
+        .map_err(|error| remap_state_error(error, ""))?;
     if local_sha.eq_ignore_ascii_case(&remote_sha) {
         return Ok(GithubAheadBehind {
             status: "compared".into(),
@@ -1015,8 +1219,6 @@ pub(crate) fn github_ahead_behind_with(
             behind: Some(0),
         });
     }
-    gh.ensure_auth()
-        .map_err(|error| remap_state_error(error, ""))?;
     let path = format!(
         "/repos/{}/compare/{}...{}",
         repo.slug(),
@@ -1052,6 +1254,21 @@ pub(crate) fn github_ahead_behind_with(
         status: "compared".into(),
         ahead: Some(payload.ahead_by),
         behind: Some(payload.behind_by),
+    })
+}
+
+fn clean_github_compare_branch(branch: &str) -> Result<String, ProjectPullRequestMergeError> {
+    let trimmed = branch.trim();
+    if trimmed.starts_with("refs/")
+        && !trimmed.starts_with("refs/heads/")
+    {
+        return Err(ProjectPullRequestMergeError::new(
+            "github_state_failed",
+            "GitHub compare accepts a branch name, not a non-branch ref.",
+        ));
+    }
+    clean_branch(Some(trimmed.to_string())).ok_or_else(|| {
+        ProjectPullRequestMergeError::new("github_state_failed", "Invalid GitHub branch name.")
     })
 }
 
@@ -1104,6 +1321,7 @@ pub(crate) fn get_github_ahead_behind_with_runner(
     github_ahead_behind_with(&gh, &clone_url, &branch, &local_sha, &remote_sha)
 }
 
+/// Compare a local HEAD against the loaded GitHub branch tip.
 #[tauri::command]
 pub async fn get_github_ahead_behind(
     clone_url: String,
@@ -1139,6 +1357,7 @@ Expected: PASS on unix.
 
 ```bash
 . ./bin/activate-hermit
+if [ -f .gitnexus/run.cjs ]; then node .gitnexus/run.cjs detect; fi
 git add desktop/src-tauri/src/commands/project_github_ahead_behind.rs \
   desktop/src-tauri/src/commands/mod.rs \
   desktop/src-tauri/src/lib.rs
@@ -1161,7 +1380,7 @@ git commit -s -m "feat(projects): compare GitHub ahead and behind via gh api"
   - `export async function getGithubRepositorySnapshot(input: { cloneUrl: string; ref: string }): Promise<ProjectRepoSnapshot>`
   - `export function githubRemoteSnapshotEnabled(input: { cloneUrl?: string | null; buzzHost: boolean; githubStateReady: boolean }): boolean`
   - `export async function fetchProjectRepoSnapshotWith(project, branchName, pullRequest, tag, loaders)`
-  - Query key includes `project.cloneUrls[0]`
+  - Query key includes the actual snapshot clone URL: `project.cloneUrls[0]` for GitHub, otherwise `pullRequest?.cloneUrls[0] ?? project.cloneUrls[0]`
 
 - [ ] **Step 1: Write routing tests**
 
@@ -1235,15 +1454,17 @@ test("Buzz clone URL does not call the GitHub snapshot command", async () => {
   assert.equal(buzzCalls, 1);
 });
 
-test("GitHub snapshot ignores Buzz tag and nostr target refs", async () => {
+test("GitHub snapshot ignores Buzz tag, nostr refs, and PR source clone URLs", async () => {
   let seenRef = null;
+  let seenCloneUrl = null;
   await fetchProjectRepoSnapshotWith(
     repository("https://github.com/acme/app"),
     "develop",
-    { id: "pr1", cloneUrls: ["https://github.com/acme/app"], commit: "c".repeat(40) },
+    { id: "pr1", cloneUrls: ["https://github.com/fork/app"], commit: "c".repeat(40) },
     { name: "v1", commit: "d".repeat(40) },
     {
-      loadGithub: async ({ ref }) => {
+      loadGithub: async ({ cloneUrl, ref }) => {
+        seenCloneUrl = cloneUrl;
         seenRef = ref;
         return { latestCommit: null, commits: [], files: [], contributors: [] };
       },
@@ -1252,6 +1473,7 @@ test("GitHub snapshot ignores Buzz tag and nostr target refs", async () => {
       },
     },
   );
+  assert.equal(seenCloneUrl, "https://github.com/acme/app");
   assert.equal(seenRef, "develop");
 });
 
@@ -1296,14 +1518,16 @@ Expected: FAIL because `projectGithubSnapshot.ts` is missing.
 In `projectGit.ts` next to `getGithubRepositoryState`:
 
 ```ts
+/** Load a GitHub remote snapshot through the native `gh api` command. */
 export async function getGithubRepositorySnapshot(input: {
   cloneUrl: string;
   ref: string;
 }): Promise<ProjectRepoSnapshot> {
   try {
+    // Native uses refName because ref is a reserved Rust keyword.
     const snapshot = await invokeTauri<RawProjectRepoSnapshot>(
       "get_github_repository_snapshot",
-      { cloneUrl: input.cloneUrl, ref: input.ref },
+      { cloneUrl: input.cloneUrl, refName: input.ref },
     );
     return fromRawProjectRepoSnapshot(snapshot);
   } catch (error) {
@@ -1311,8 +1535,6 @@ export async function getGithubRepositorySnapshot(input: {
   }
 }
 ```
-
-If Task 3 settled on `gitRef`, pass `{ cloneUrl, gitRef: input.ref }` and keep the public TS field named `ref`.
 
 In `projectGithubSnapshot.ts`:
 
@@ -1322,6 +1544,7 @@ import type { Repository } from "@/features/projects/projectModels";
 import type { ProjectPullRequest } from "@/features/projects/projectPullRequests.mjs";
 import type { ProjectRepoSnapshot } from "@/shared/api/types";
 
+/** True when the remote snapshot query can run for the selected repository host. */
 export function githubRemoteSnapshotEnabled(input: {
   cloneUrl?: string | null;
   buzzHost: boolean;
@@ -1331,11 +1554,12 @@ export function githubRemoteSnapshotEnabled(input: {
   return Boolean(input.cloneUrl) && isGitHubCloneUrl(input.cloneUrl) && input.githubStateReady;
 }
 
+/** Route project-detail remote snapshots by the project clone URL host. */
 export async function fetchProjectRepoSnapshotWith(
   project: Repository,
   branchName: string | null | undefined,
-  pullRequest: ProjectPullRequest | null | undefined,
-  tag: { name: string; commit: string } | null | undefined,
+  _pullRequest: ProjectPullRequest | null | undefined,
+  _tag: { name: string; commit: string } | null | undefined,
   loaders: {
     loadGithub: (input: {
       cloneUrl: string;
@@ -1344,27 +1568,37 @@ export async function fetchProjectRepoSnapshotWith(
     loadBuzz: () => Promise<ProjectRepoSnapshot | null>;
   },
 ): Promise<ProjectRepoSnapshot | null> {
-  const cloneUrl = pullRequest?.cloneUrls[0] ?? project.cloneUrls[0];
-  if (!cloneUrl) return null;
-  if (isGitHubCloneUrl(cloneUrl)) {
+  const projectCloneUrl = project.cloneUrls[0];
+  if (!projectCloneUrl) return null;
+  if (isGitHubCloneUrl(projectCloneUrl)) {
     const ref = branchName ?? project.defaultBranch;
     if (!ref) return null;
-    return loaders.loadGithub({ cloneUrl, ref });
+    return loaders.loadGithub({ cloneUrl: projectCloneUrl, ref });
   }
   return loaders.loadBuzz();
 }
 ```
 
 Replace the private `fetchProjectRepoSnapshot` in `hooks.ts` so it calls `fetchProjectRepoSnapshotWith` with `getGithubRepositorySnapshot` and the existing `getProjectRepoSnapshot` path (including `targetRef` / `targetCommit` for Buzz only).
+For Buzz, the `loadBuzz` closure keeps the existing `pullRequest?.cloneUrls[0] ?? project.cloneUrls[0]` clone URL.
+Import `isGitHubCloneUrl` in `hooks.ts` for the query key calculation.
+Import `getGithubRepositorySnapshot` from `@/shared/api/projectGit`.
+Import `fetchProjectRepoSnapshotWith` from `@/features/projects/lib/projectGithubSnapshot`.
 
 Change `useProjectRepoSnapshotQuery`:
 
 ```ts
+const projectCloneUrl = project?.cloneUrls[0] ?? null;
+const snapshotCloneUrl =
+  projectCloneUrl && isGitHubCloneUrl(projectCloneUrl)
+    ? projectCloneUrl
+    : pullRequest?.cloneUrls[0] ?? projectCloneUrl;
+
 queryKey: [
   "project",
   project?.id ?? "none",
   "repo-snapshot",
-  project?.cloneUrls[0] ?? "no-clone",
+  snapshotCloneUrl ?? "no-clone",
   selectedBranch ?? "default",
   pullRequest?.id ?? "none",
   pullRequest?.commit ?? "none",
@@ -1388,6 +1622,7 @@ Expected: PASS.
 
 ```bash
 . ./bin/activate-hermit
+if [ -f .gitnexus/run.cjs ]; then node .gitnexus/run.cjs detect; fi
 git add desktop/src/shared/api/projectGit.ts \
   desktop/src/features/projects/lib/projectGithubSnapshot.ts \
   desktop/src/features/projects/lib/projectGithubSnapshot.test.mjs \
@@ -1418,7 +1653,7 @@ git commit -s -m "feat(projects): route GitHub remotes to the snapshot command"
   - `export function githubAheadBehindCounts(result: GithubAheadBehind | null | undefined): { ahead: number; behind: number } | null`
   - `export function githubSplashHost(input: { repoSource: "remote" | "local"; hostKind?: string; host?: string; cloneUrl?: string | null }): string | undefined`
   - `useGithubAheadBehindQuery(...)`
-  - GitHub header: Fetch + optional `N / M`; no Open-as-primary; no Pull/Push
+  - GitHub header: Fetch + optional `N / M`; no Open-as-primary; no Pull/Push/Create/Delete
   - Source dropdown: “Open on GitHub” when `externalUrl` is set
 
 - [ ] **Step 1: Write failing helper tests**
@@ -1476,12 +1711,14 @@ Expected: FAIL because the modules are missing.
 `getGithubAheadBehind` in `projectGit.ts`:
 
 ```ts
+/** GitHub compare status for the selected local and remote commits. */
 export type GithubAheadBehind = {
   status: "compared" | "unpushed";
   ahead?: number;
   behind?: number;
 };
 
+/** Compare a local HEAD against the loaded GitHub branch tip. */
 export async function getGithubAheadBehind(input: {
   cloneUrl: string;
   branch: string;
@@ -1501,9 +1738,16 @@ export async function getGithubAheadBehind(input: {
 }
 ```
 
+In `projectGithubAheadBehind.ts`, import and re-export `GithubAheadBehind` from `@/shared/api/projectGit`, then add `githubAheadBehindCounts`.
+
 ```ts
+import type { GithubAheadBehind } from "@/shared/api/projectGit";
+
+export type { GithubAheadBehind };
+
+/** Return visible counts only for completed GitHub comparisons. */
 export function githubAheadBehindCounts(
-  result: { status: string; ahead?: number; behind?: number } | null | undefined,
+  result: GithubAheadBehind | null | undefined,
 ) {
   if (!result || result.status !== "compared") return null;
   if (typeof result.ahead !== "number" || typeof result.behind !== "number") {
@@ -1513,7 +1757,12 @@ export function githubAheadBehindCounts(
 }
 ```
 
+In `projectGithubRemoteView.ts`, import `isGitHubCloneUrl` from `@/features/projects/lib/projectGitError`.
+
 ```ts
+import { isGitHubCloneUrl } from "@/features/projects/lib/projectGitError";
+
+/** Return the external-host splash label, but never for GitHub remotes. */
 export function githubSplashHost(input: {
   repoSource: "remote" | "local";
   hostKind?: string;
@@ -1529,8 +1778,15 @@ export function githubSplashHost(input: {
 
 Add `useGithubAheadBehindQuery` to `repoSyncHooks.ts`.
 Leave `useProjectRepoSyncStatusQuery` enabled only when `host.kind === "buzz"`.
+Import `getGithubAheadBehind` from `@/shared/api/projectGit`.
+Import `isGitHubCloneUrl` from `@/features/projects/lib/projectGitError`.
+Merge these with existing imports instead of adding duplicate import declarations.
 
 ```ts
+import { isGitHubCloneUrl } from "@/features/projects/lib/projectGitError";
+import { getGithubAheadBehind } from "@/shared/api/projectGit";
+
+/** Query local-vs-GitHub ahead/behind only when both SHAs are known. */
 export function useGithubAheadBehindQuery(input: {
   projectId?: string;
   cloneUrl?: string | null;
@@ -1574,6 +1830,10 @@ export function useGithubAheadBehindQuery(input: {
 ```
 
 In `ProjectDetailScreen.tsx`:
+Import `githubRemoteSnapshotEnabled` from `@/features/projects/lib/projectGithubSnapshot`.
+Import `githubAheadBehindCounts` from `@/features/projects/lib/projectGithubAheadBehind`.
+Add `useGithubAheadBehindQuery` to the existing import from `@/features/projects/repoSyncHooks`.
+Keep the existing `isGitHubCloneUrl` import.
 
 ```ts
 const githubHosted = isGitHubCloneUrl(repository?.cloneUrls[0]);
@@ -1589,14 +1849,17 @@ const repoSnapshotQuery = useProjectRepoSnapshotQuery(
   activeTag,
   snapshotEnabled,
 );
+const activeRemoteSha =
+  repoStateQuery.data?.branches.find((item) => item.name === activeBranch)
+    ?.commit ?? null;
+const localHeadSha =
+  localRepoSnapshotQuery.data?.snapshot.latestCommit?.hash ?? null;
 const githubAheadBehindQuery = useGithubAheadBehindQuery({
   projectId: repository?.id,
   cloneUrl: repository?.cloneUrls[0],
   branch: activeBranch,
-  localSha: localRepoSnapshotQuery.data?.snapshot.latestCommit?.hash ?? null,
-  remoteSha:
-    repoStateQuery.data?.branches.find((item) => item.name === activeBranch)
-      ?.commit ?? null,
+  localSha: localHeadSha,
+  remoteSha: activeRemoteSha,
   enabled: githubHosted && repoStateQuery.isSuccess,
 });
 const githubCounts = githubAheadBehindCounts(githubAheadBehindQuery.data);
@@ -1611,9 +1874,7 @@ const handleFetchRepo = React.useCallback(async () => {
         repoStateQuery.refetch(),
         ...(repoStateQuery.isError ? [] : [repoSnapshotQuery.refetch()]),
         ...(githubAheadBehindQuery.isFetched ||
-        (localRepoSnapshotQuery.data?.snapshot.latestCommit?.hash &&
-          repoStateQuery.data?.branches.find((item) => item.name === activeBranch)
-            ?.commit)
+        (localHeadSha && activeRemoteSha)
           ? [githubAheadBehindQuery.refetch()]
           : []),
       ]
@@ -1637,13 +1898,23 @@ const handleFetchRepo = React.useCallback(async () => {
     return;
   }
   toast.success("Remote state refreshed.");
-}, [/* include the queries used above */]);
+}, [
+  activeRemoteSha,
+  githubAheadBehindQuery.isFetched,
+  githubAheadBehindQuery.refetch,
+  githubHosted,
+  localHeadSha,
+  repoSnapshotQuery.refetch,
+  repoStateQuery.isError,
+  repoStateQuery.refetch,
+  repoSyncStatusQuery.refetch,
+]);
 ```
 
 On `filesSourceControls`:
 
 - Set `githubHosted`.
-- For GitHub, set `canPush: false`, `canPull: false`, `onPush: undefined`, `onPull: undefined`.
+- For GitHub, set `onCreateBranch: undefined`, `onDeleteBranch: undefined`, `canPush: false`, `canPull: false`, `onPush: undefined`, and `onPull: undefined`.
 - Set `aheadCount` / `behindCount` from `githubCounts` on GitHub, otherwise keep Buzz sync counts.
 - Keep `onFetch`.
 - `fetchPending` includes `githubAheadBehindQuery.isFetching` on GitHub and does not wait on Buzz sync.
@@ -1652,7 +1923,12 @@ On `filesSourceControls`:
 - `stateError` is the G1 error if present, otherwise the G3 error.
 - `onRetryState` refetches G1 when G1 failed, otherwise refetches G3.
 
-In `RepoSourceHeaderControls` add `githubHosted?: boolean`.
+In `RepoSourceHeaderControls` add:
+
+```ts
+/** True for github.com remotes so the header renders GitHub Fetch. */
+githubHosted?: boolean;
+```
 
 In `RepoSyncActionButton`, handle GitHub **before** the generic `remoteKind === "external"` Open branch:
 
@@ -1718,13 +1994,35 @@ Use `splashHost` everywhere `externalHost` currently drives the README splash or
 
 Pass `snapshotLoading` from the screen as `repoSnapshotQuery.isLoading || (githubHosted && repoStateQuery.isPending)` so G1 pending shows “Loading repository…” instead of the splash.
 
-In `ProjectReadmePanel.tsx` `findReadmeFile` call site (WorkspaceTabs already computes `readmeFile`), add:
+In the `setRepoSource` effect in `ProjectDetailScreen.tsx`, keep the existing remote-to-local fallback only for non-GitHub hosts:
 
 ```ts
-const readmeFile =
-  findReadmeFile(files) ??
-  files.find((file) => Boolean(file.previewContent)) ??
-  null;
+if (
+  currentSource === "remote" &&
+  !githubHosted &&
+  !hasRemoteSnapshot &&
+  hasLocalCheckout
+) {
+  return "local";
+}
+```
+
+In `ProjectReadmePanel.tsx`, update `findReadmeFile` so it falls back to the first file that carries `previewContent`.
+This keeps a README preview visible when the GitHub README API returns a path that does not match the local README filename heuristic.
+
+```ts
+export function findReadmeFile(files: ProjectRepoFile[]) {
+  const readmes = files.filter((file) =>
+    /^readme(?:\.(?:md|markdown|mdx|txt))?$/i.test(baseName(file.path)),
+  );
+
+  return (
+    readmes.find((file) => !file.path.includes("/")) ??
+    readmes[0] ??
+    files.find((file) => Boolean(file.previewContent)) ??
+    null
+  );
+}
 ```
 
 - [ ] **Step 4: Typecheck and unit tests**
@@ -1740,6 +2038,7 @@ Expected: PASS.
 
 ```bash
 . ./bin/activate-hermit
+if [ -f .gitnexus/run.cjs ]; then node .gitnexus/run.cjs detect; fi
 git add desktop/src/shared/api/projectGit.ts \
   desktop/src/features/projects/lib/projectGithubAheadBehind.ts \
   desktop/src/features/projects/lib/projectGithubAheadBehind.test.mjs \
@@ -1923,6 +2222,12 @@ test("GitHub remote source shows README instead of the hosted-elsewhere card", a
   await expect(header.getByRole("link", { name: /^Open$/ })).toHaveCount(0);
   await expect(header.getByRole("button", { name: /Pull/ })).toHaveCount(0);
   await expect(header.getByRole("button", { name: /Push/ })).toHaveCount(0);
+  await header.getByRole("button", { name: /github.com/ }).click();
+  await expect(page.getByRole("menuitem", { name: /Open on GitHub/ })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await header.getByRole("button").filter({ hasText: "develop" }).click();
+  await expect(page.getByTestId("project-create-branch")).toHaveCount(0);
+  await expect(page.getByTestId("project-delete-branch")).toHaveCount(0);
 });
 
 test("GitHub snapshot auth recovery does not show the empty GitHub-host card", async ({
@@ -1980,6 +2285,9 @@ test("local HEAD matching the GitHub tip shows 0 / 0 and Fetch calls GitHub comm
     timeout: 10_000,
   });
   await waitForAnimations(page);
+  await page.evaluate(() => {
+    window.__BUZZ_E2E_COMMANDS__ = [];
+  });
   await page
     .getByTestId("project-repository-selection-row")
     .getByRole("button", { name: /^Fetch$/ })
@@ -2008,6 +2316,7 @@ Kill anything on port 4173 first if a stale e2e preview is serving an old build.
 
 ```bash
 . ./bin/activate-hermit
+if [ -f .gitnexus/run.cjs ]; then node .gitnexus/run.cjs detect; fi
 git add desktop/src/testing/e2eBridge.ts \
   desktop/tests/e2e/github-snapshot-and-fetch.spec.ts \
   desktop/playwright.config.ts
@@ -2025,11 +2334,12 @@ git commit -s -m "test(e2e): cover GitHub snapshot, fetch, and ahead behind"
 | Empty repo skips tree/README | 2 |
 | README 404 is success | 2 |
 | Insert README if missing from the 250-file window | 2 |
-| Reject non-GitHub URL and `refs/nostr` / `refs/tags` | 2 |
+| Reject non-GitHub URL, `refs/nostr`, `refs/tags`, and other non-branch refs | 2, 4 |
 | Fake-gh match order | 2, 4 |
 | Remap merge errors / missing CLI / auth | 1–4 |
 | `get_github_ahead_behind` equal / compare / unpushed | 4 |
 | No `can_pull` / `can_push` / `git fetch` | 4, 6 |
+| No GitHub create/delete branch controls | 6–7 |
 | GitHub snapshot routing; Buzz unchanged | 5 |
 | Query key includes clone URL | 5 |
 | `useProjectsRepoSnapshots` unchanged | 5 (do not edit) |
@@ -2058,5 +2368,5 @@ Do not hit live GitHub in unit tests.
 ## Self-review
 
 1. Spec coverage: every Goals / Product decisions / Error handling / Testing row maps to a task above.
-2. Placeholder scan: no TBD, no “handle edge cases”, no “similar to Task N” without code.
-3. Type consistency: `GithubAheadBehind.status` is `"compared" | "unpushed"` in Rust strings and TS; snapshot invoke key is `ref` unless Task 3 documents `gitRef`; query names stay `get_github_repository_snapshot` and `get_github_ahead_behind`.
+2. Completeness scan: no unresolved filler items remain.
+3. Type consistency: `GithubAheadBehind.status` is `"compared" | "unpushed"` in Rust strings and TS; the public TS snapshot wrapper uses `ref`, the Tauri invoke key is `refName`, and query names stay `get_github_repository_snapshot` and `get_github_ahead_behind`.
