@@ -8,7 +8,8 @@
 **Architecture:** Keep the current two-event create path (`kind:30617` then `kind:30621`).
 `buildInitialProjectEventTemplates` still keys project identity on trimmed **Name**.
 When `repositoryName` is present after trim, the repository `name` tag keeps that string (including `/`) and the repository `d` tag is `repositoryDtagFromName(trimmed)`.
-`useCreateProject` queries `kinds: [30617]` only when `repositoryDtag !== dtag` and refuses to publish if a head already exists.
+`useCreateProject` queries `kinds: [30617]` only when `repositoryDtag !== dtag`.
+It refuses to publish if a head already exists, except for the existing same-session retry path where `resumableProjectIds` proves the first attempt already published the repository and only the project event must be retried.
 
 **Tech Stack:** TypeScript, React 19, TanStack Query, Node `node:test` via `desktop` `pnpm test`, Playwright mock-bridge smoke.
 
@@ -18,8 +19,8 @@ When `repositoryName` is present after trim, the repository `name` tag keeps tha
 This change removes the leftover Create-project coupling that forced the first repo to inherit the project slug.
 It does not change NIP-MP, NIP-34, relay `validate_repo_id`, CLI `buzz projects create`, mobile, web, or **Add repository**.
 
-**GitNexus blast radius (upstream, 2026-08-18):** `buildInitialProjectEventTemplates`, `createProject`, `repositoryDtagFromName`, and `CreateProjectDialog` are all **LOW** risk.
-Direct callers stay inside Desktop Projects create/add-repository.
+**GitNexus blast radius (upstream, 2026-08-18):** `npx gitnexus impact <symbol> --direction upstream --repo buzz` reports **LOW** risk for `buildInitialProjectEventTemplates`, `projectDtagFromName`, `createProject`, `repositoryDtagFromName`, and `CreateProjectDialog`.
+Direct callers are `createProject`, `mutationFn`, `buildAddedRepositoryEventTemplatesFromHead`, `addProjectRepository`, and `ProjectsView`.
 No HIGH or CRITICAL warning.
 
 ## Global Constraints
@@ -44,6 +45,7 @@ No HIGH or CRITICAL warning.
 - `projectDtagFromName` must call `repositoryDtagFromName`.
 - Project identity, resume, and `You already have a project named "…".` stay keyed on `templates.dtag`.
 - Clobber fetch runs only when `repositoryDtag !== dtag`.
+- If `repositoryDtag !== dtag`, a `30617` head exists, and `resumableProjectIds` contains the project id, treat that head as the repository from the previous failed attempt and publish only `30621`.
 - Do not trust `fetchProjects()` for the clobber check; hidden cards are omitted there.
 - A filled **Repository name** never falls back to the project name, even if invalid.
 - No live relay is required for unit tests.
@@ -51,7 +53,7 @@ No HIGH or CRITICAL warning.
 - Activate Hermit in every shell: `. ./bin/activate-hermit && …`.
 - Shell CWD does not persist across commands; `cd` in the same command.
 - Commits use `git commit -s`.
-- Before each commit run `node .gitnexus/run.cjs detect` if that runner exists.
+- Before each commit run `npx gitnexus detect-changes --scope staged --repo buzz` after `git add`.
 - Do not edit NIP-MP, NIP-34, or `validate_repo_id`.
 
 ---
@@ -64,8 +66,8 @@ No HIGH or CRITICAL warning.
 | `desktop/src/features/projects/projectRepositoryCreation.ts` | Re-export `repositoryDtagFromName` only; keep add-repository templates unchanged |
 | `desktop/src/features/projects/projectCreation.test.mjs` | Empty-field bit-compatibility plus override, `///`, 64-char, and 256-byte cases |
 | `desktop/src/features/projects/projectRepositoryCreation.test.mjs` | One re-export slug assertion so add-repository still sees the same function |
-| `desktop/src/features/projects/useCreateProject.ts` | `CreateProjectInput.repositoryName?`, export `createProject`, inject I/O seams, clobber fetch |
-| Create: `desktop/src/features/projects/useCreateProject.test.mjs` | Clobber throws and publishes nothing; same-slug path does not query `30617` |
+| `desktop/src/features/projects/useCreateProject.ts` | `CreateProjectInput.repositoryName?`, export `createProject`, inject I/O seams, clobber fetch, distinct-slug retry |
+| Create: `desktop/src/features/projects/useCreateProject.test.mjs` | Clobber throws and publishes nothing; same-slug path does not query `30617`; same-session retry reuses the prior repo head |
 | `desktop/src/features/projects/ui/CreateProjectDialog.tsx` | Optional field after Description, before clone URL |
 | `desktop/tests/e2e/project-commit-detail.spec.ts` | Field visible, Optional marker, helper, submit enabled without it, reset on reopen |
 
@@ -90,7 +92,7 @@ Do not create other files.
   - `function projectDtagFromName(name: string): string` that only calls `repositoryDtagFromName(name)`
   - `export type InitialProjectEventTemplates = { dtag: string; repositoryDtag: string; project: ProjectEventTemplate; repository: ProjectEventTemplate; repositoryAddress: string }`
   - `buildInitialProjectEventTemplates({ accessChannelId: string; cloneUrl?: string; description?: string; name: string; ownerPubkey: string; repositoryName?: string; webUrl?: string }): InitialProjectEventTemplates`
-  - `export { repositoryDtagFromName } from "./projectCreation"` in `projectRepositoryCreation.ts` (or equivalent import-then-export)
+  - `import { repositoryDtagFromName, type ProjectEventTemplate } from "./projectCreation"` plus `export { repositoryDtagFromName };` in `projectRepositoryCreation.ts`
 - `useAddProjectRepository.ts` keeps importing `repositoryDtagFromName` from `projectRepositoryCreation.ts`.
 
 - [ ] **Step 1: Write the failing template tests**
@@ -349,6 +351,7 @@ Expected: FAIL because `repositoryDtag` is missing, `repositoryName` is ignored,
 Replace the private slugger and builder in `desktop/src/features/projects/projectCreation.ts` with:
 
 ```ts
+/** Derives the ASCII NIP-34 repository d-tag from a user-facing name. */
 export function repositoryDtagFromName(name: string): string {
   return name
     .toLowerCase()
@@ -361,7 +364,9 @@ function projectDtagFromName(name: string): string {
 }
 
 export type InitialProjectEventTemplates = {
+  /** Project d-tag derived from the Create project Name field. */
   dtag: string;
+  /** Initial repository d-tag derived from Repository name, or `dtag` when omitted. */
   repositoryDtag: string;
   project: ProjectEventTemplate;
   repository: ProjectEventTemplate;
@@ -499,7 +504,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-. ./bin/activate-hermit && git add desktop/src/features/projects/projectCreation.ts desktop/src/features/projects/projectCreation.test.mjs desktop/src/features/projects/projectRepositoryCreation.ts desktop/src/features/projects/projectRepositoryCreation.test.mjs && (test -f .gitnexus/run.cjs && node .gitnexus/run.cjs detect || true) && git commit -s -m "$(cat <<'EOF'
+. ./bin/activate-hermit && git add desktop/src/features/projects/projectCreation.ts desktop/src/features/projects/projectCreation.test.mjs desktop/src/features/projects/projectRepositoryCreation.ts desktop/src/features/projects/projectRepositoryCreation.test.mjs && npx gitnexus detect-changes --scope staged --repo buzz && git commit -s -m "$(cat <<'EOF'
 feat(projects): slug the first repository independently of the project name
 
 Allow Create project templates to take an optional repositoryName so the
@@ -521,7 +526,8 @@ EOF
 - Consumes: `buildInitialProjectEventTemplates` from Task 1 (`templates.dtag`, `templates.repositoryDtag`, `templates.repositoryAddress`)
 - Produces:
   - `export type CreateProjectInput = { accessChannelId: string; name: string; description?: string; cloneUrl?: string; webUrl?: string; repositoryName?: string }`
-  - `export type CreateProjectDeps = { fetchEvents: (filter: RelaySubscriptionFilter) => Promise<RelayEvent[]>; fetchProjects: typeof fetchProjects; getIdentity: () => Promise<{ pubkey: string }>; publishEvent: (event: RelayEvent, timeoutMessage: string, sendErrorMessage: string) => Promise<unknown>; signRelayEvent: typeof signRelayEvent }`
+  - `type FetchEventsInput = Parameters<(typeof relayClient)["fetchEvents"]>[0]`
+  - `export type CreateProjectDeps = { fetchEvents: (filter: FetchEventsInput) => Promise<RelayEvent[]>; fetchProjects: typeof fetchProjects; getIdentity: () => Promise<{ pubkey: string }>; publishEvent: (event: RelayEvent, timeoutMessage: string, sendErrorMessage: string) => Promise<unknown>; signRelayEvent: typeof signRelayEvent }`
   - `export async function createProject(input: CreateProjectInput, resumableProjectIds: Set<string>, deps?: Partial<CreateProjectDeps>): Promise<CreateProjectResult>`
 - `useCreateProjectMutation` still calls `createProject(input, resumableProjectIdsRef.current)` with production defaults.
 
@@ -549,6 +555,27 @@ function makeRepoHead(dtag) {
       ["d", dtag],
       ["name", dtag],
     ],
+    sig: "0".repeat(128),
+  };
+}
+
+function makeRepoHeadWithName(dtag, name) {
+  return {
+    ...makeRepoHead(dtag),
+    tags: [
+      ["d", dtag],
+      ["name", name],
+      ["buzz-channel", CHANNEL],
+    ],
+  };
+}
+
+function signEvent(template) {
+  return {
+    ...template,
+    id: template.kind === 30621 ? "c".repeat(64) : "d".repeat(64),
+    pubkey: OWNER,
+    created_at: 2,
     sig: "0".repeat(128),
   };
 }
@@ -677,6 +704,52 @@ test("distinct repo slug with no existing 30617 head proceeds to sign", async ()
   assert.equal(filters.length, 1);
   assert.deepEqual(filters[0]["#d"], ["anhle128-buzz"]);
 });
+
+test("distinct repo slug retry reuses the published 30617 head and publishes only the project", async () => {
+  const resumableProjectIds = new Set();
+  const publishedKinds = [];
+  let firstProjectPublish = true;
+  const input = {
+    accessChannelId: CHANNEL,
+    name: "Bee Garden",
+    repositoryName: "anhle128/buzz",
+  };
+
+  const deps = {
+    getIdentity: async () => ({ pubkey: OWNER }),
+    fetchProjects: async () => [],
+    fetchEvents: async (filter) => {
+      assert.deepEqual(filter.kinds, [30617]);
+      assert.deepEqual(filter.authors, [OWNER]);
+      assert.deepEqual(filter["#d"], ["anhle128-buzz"]);
+      assert.equal(filter.limit, 1);
+      return firstProjectPublish
+        ? []
+        : [makeRepoHeadWithName("anhle128-buzz", "anhle128/buzz")];
+    },
+    signRelayEvent: async (template) => signEvent(template),
+    publishEvent: async (event) => {
+      publishedKinds.push(event.kind);
+      if (event.kind === 30621 && firstProjectPublish) {
+        firstProjectPublish = false;
+        throw new Error("mock project event rejection");
+      }
+    },
+  };
+
+  await assert.rejects(
+    createProject(input, resumableProjectIds, deps),
+    /mock project event rejection/,
+  );
+  assert.deepEqual(publishedKinds, [30617, 30621]);
+  assert.ok(resumableProjectIds.has(`${OWNER}:bee-garden`));
+
+  const result = await createProject(input, resumableProjectIds, deps);
+  assert.deepEqual(publishedKinds, [30617, 30621, 30621]);
+  assert.equal(result.project.dtag, "bee-garden");
+  assert.equal(result.project.repositories[0]?.dtag, "anhle128-buzz");
+  assert.equal(result.project.repositories[0]?.name, "anhle128/buzz");
+});
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -685,7 +758,7 @@ test("distinct repo slug with no existing 30617 head proceeds to sign", async ()
 . ./bin/activate-hermit && cd desktop && node --import ./test-loader.mjs --experimental-strip-types --test src/features/projects/useCreateProject.test.mjs
 ```
 
-Expected: FAIL because `createProject` is not exported and no `30617` clobber fetch exists.
+Expected: FAIL because `createProject` is not exported, no `30617` clobber fetch exists, and a same-session distinct-slug retry cannot reuse the repository head from the failed first attempt.
 
 - [ ] **Step 3: Export `createProject` and add the clobber fetch**
 
@@ -714,6 +787,7 @@ export type CreateProjectInput = {
 
 type FetchEventsInput = Parameters<(typeof relayClient)["fetchEvents"]>[0];
 
+/** Test seams for createProject relay, signing, and project-list I/O. */
 export type CreateProjectDeps = {
   fetchEvents: (filter: FetchEventsInput) => Promise<RelayEvent[]>;
   fetchProjects: typeof fetchProjects;
@@ -769,6 +843,7 @@ export async function createProject(
     throw new Error(`You already have a project named "${templates.dtag}".`);
   }
 
+  let repositoryEvent: RelayEvent | null = null;
   if (!existingProject && templates.repositoryDtag !== templates.dtag) {
     const existingRepoHeads = await fetchEvents({
       kinds: [KIND_REPO_ANNOUNCEMENT],
@@ -777,17 +852,19 @@ export async function createProject(
       limit: 1,
     });
     if (existingRepoHeads.length > 0) {
-      throw new Error(
-        `A repository named "${templates.repositoryDtag}" already exists (as a standalone repository or in another project). Choose a different name to avoid overwriting it.`,
-      );
+      if (!canResume) {
+        throw new Error(
+          `A repository named "${templates.repositoryDtag}" already exists (as a standalone repository or in another project). Choose a different name to avoid overwriting it.`,
+        );
+      }
+      repositoryEvent = existingRepoHeads[0] ?? null;
     }
   }
 
   resumableProjectIds.add(projectId);
   const projectEvent = await signRelayEventFn(templates.project);
 
-  let repositoryEvent = null;
-  if (!existingProject) {
+  if (!existingProject && !repositoryEvent) {
     repositoryEvent = await signRelayEventFn(templates.repository);
     await publishEvent(
       repositoryEvent,
@@ -845,6 +922,7 @@ export async function createProject(
 Place the new `30617` fetch **after** the existing project-collision / resume branches and **before** `signRelayEvent`.
 Do not run it when `existingProject` is set.
 Do not run it when `templates.repositoryDtag === templates.dtag`.
+If `canResume` is true and this fetch finds the distinct repository head, assign that head to `repositoryEvent`, skip the repository publish, and publish only the project event.
 Do not change publish order (`30617` then `30621`) or the unsupported-`30621` fallback.
 
 - [ ] **Step 4: Run tests to verify they pass**
@@ -866,12 +944,12 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-. ./bin/activate-hermit && git add desktop/src/features/projects/useCreateProject.ts desktop/src/features/projects/useCreateProject.test.mjs && (test -f .gitnexus/run.cjs && node .gitnexus/run.cjs detect || true) && git commit -s -m "$(cat <<'EOF'
+. ./bin/activate-hermit && git add desktop/src/features/projects/useCreateProject.ts desktop/src/features/projects/useCreateProject.test.mjs && npx gitnexus detect-changes --scope staged --repo buzz && git commit -s -m "$(cat <<'EOF'
 feat(projects): refuse to clobber an existing first repository slug
 
 When Create project uses a repository d-tag that differs from the project
-slug, query kind:30617 directly and abort before sign or publish if a head
-already exists.
+slug, query kind:30617 directly and abort before sign or publish unless the
+head belongs to the current retry.
 EOF
 )"
 ```
@@ -963,7 +1041,7 @@ Those tests must keep proving the empty-field path.
 If a stale preview is listening on port 4173, stop it first so Playwright does not serve an old `dist`.
 
 ```bash
-. ./bin/activate-hermit && cd desktop && pnpm build:e2e && pnpm exec playwright test --project=smoke tests/e2e/project-commit-detail.spec.ts -g "create project dialog exposes an optional repository name"
+. ./bin/activate-hermit && PIDS="$(lsof -tiTCP:4173 -sTCP:LISTEN || true)" && if [ -n "$PIDS" ]; then kill $PIDS; fi && cd desktop && pnpm build:e2e && pnpm exec playwright test --project=smoke tests/e2e/project-commit-detail.spec.ts -g "create project dialog exposes an optional repository name"
 ```
 
 Expected: FAIL because `create-project-repository-name` is not in the dialog.
@@ -1042,7 +1120,7 @@ Kill anything bound to 4173, then rebuild.
 `reuseExistingServer: true` will otherwise serve the previous `dist`.
 
 ```bash
-. ./bin/activate-hermit && cd desktop && pnpm build:e2e && pnpm exec playwright test --project=smoke tests/e2e/project-commit-detail.spec.ts
+. ./bin/activate-hermit && PIDS="$(lsof -tiTCP:4173 -sTCP:LISTEN || true)" && if [ -n "$PIDS" ]; then kill $PIDS; fi && cd desktop && pnpm build:e2e && pnpm exec playwright test --project=smoke tests/e2e/project-commit-detail.spec.ts
 ```
 
 Expected: PASS, including the older create-project cases that only fill **Name**.
@@ -1058,7 +1136,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-. ./bin/activate-hermit && git add desktop/src/features/projects/ui/CreateProjectDialog.tsx desktop/tests/e2e/project-commit-detail.spec.ts && (test -f .gitnexus/run.cjs && node .gitnexus/run.cjs detect || true) && git commit -s -m "$(cat <<'EOF'
+. ./bin/activate-hermit && git add desktop/src/features/projects/ui/CreateProjectDialog.tsx desktop/tests/e2e/project-commit-detail.spec.ts && npx gitnexus detect-changes --scope staged --repo buzz && git commit -s -m "$(cat <<'EOF'
 feat(projects): add optional repository name to create project
 
 Surface an optional first-repository name on the Desktop create dialog so
@@ -1076,7 +1154,9 @@ EOF
 - Typing `///` throws `Repository name must include letters or numbers.` and does not fall back to the project name.
 - A repository display that slugs to 65 `a` characters throws `Repository name slug must not exceed 64 characters.`
 - A 257-byte repository display throws `Repository name must not exceed 256 bytes.`
-- When `repositoryDtag !== dtag` and the `30617` fetch returns a head, create throws `A repository named "<repositoryDtag>" already exists (as a standalone repository or in another project). Choose a different name to avoid overwriting it.` and signs/publishes nothing.
+- When `repositoryDtag !== dtag`, the `30617` fetch returns a head, and `resumableProjectIds` does not contain the project id, create throws the exact clobber error and signs/publishes nothing.
+- The exact clobber error is `A repository named "<repositoryDtag>" already exists (as a standalone repository or in another project). Choose a different name to avoid overwriting it.`
+- When a previous same-session distinct-slug create attempt already published `30617` and then failed on `30621`, retry publishes only `30621` and returns a grouped project.
 - When `repositoryDtag === dtag`, create does not issue that extra `30617` fetch.
 - The dialog shows **Repository name** with the Optional marker, helper `Defaults to the project name.`, placeholder `bee-garden-ios`, and `data-testid="create-project-repository-name"`.
 - Submit stays enabled without filling **Repository name** once **Name** is filled and a channel is selected.
@@ -1097,7 +1177,7 @@ Run from the worktree root after Hermit is active.
 ```
 
 ```bash
-. ./bin/activate-hermit && cd desktop && pnpm build:e2e && pnpm exec playwright test --project=smoke tests/e2e/project-commit-detail.spec.ts
+. ./bin/activate-hermit && PIDS="$(lsof -tiTCP:4173 -sTCP:LISTEN || true)" && if [ -n "$PIDS" ]; then kill $PIDS; fi && cd desktop && pnpm build:e2e && pnpm exec playwright test --project=smoke tests/e2e/project-commit-detail.spec.ts
 ```
 
 Optional package-wide unit sweep after the last task:
@@ -1125,6 +1205,7 @@ Optional package-wide unit sweep after the last task:
 | Clobber fetch when slugs differ | Task 2 |
 | No extra `30617` fetch when slugs match | Task 2 |
 | Exact clobber copy; publish nothing | Task 2 |
+| Existing create-project retry semantics with a distinct repo slug | Task 2 |
 | Field order, Optional, helper, placeholder, testid | Task 3 |
 | Omit `repositoryName` when trim is empty | Task 3 submit payload |
 | Reset to `""` on open | Task 3 e2e reopen |
