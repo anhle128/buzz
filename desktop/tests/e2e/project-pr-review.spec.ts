@@ -43,12 +43,23 @@ async function openAlicePullRequest(page: import("@playwright/test").Page) {
   await aliceRow.getByRole("button", { name: /^#/ }).click();
 }
 
+async function cloneMissingGitHubRepository(
+  page: import("@playwright/test").Page,
+) {
+  await page
+    .getByTestId("project-repository-selection-row")
+    .getByRole("button", { name: /github.com/ })
+    .click();
+  await waitForAnimations(page);
+  await page.getByRole("menuitem", { name: "Local missing Clone" }).click();
+  await expect(page.getByText("Cloned repository.")).toBeVisible();
+}
+
 async function openClonedGitHubAlicePullRequest(
   page: import("@playwright/test").Page,
 ) {
   await openBuzzProject(page);
-  await page.getByRole("button", { name: "Clone locally" }).click();
-  await expect(page.getByText("Cloned repository.")).toBeVisible();
+  await cloneMissingGitHubRepository(page);
   await openAlicePullRequest(page);
 }
 
@@ -549,8 +560,7 @@ test("sends GitHub merge payload unchanged through native boundary", async ({
   await installMockBridge(page);
 
   await openBuzzProject(page);
-  await page.getByRole("button", { name: "Clone locally" }).click();
-  await expect(page.getByText("Cloned repository.")).toBeVisible();
+  await cloneMissingGitHubRepository(page);
   await page.getByRole("tab", { name: "Pull Request" }).click();
   const aliceRow = page
     .getByTestId("project-pull-request-row")
@@ -1611,9 +1621,7 @@ test("GitHub SCP clone URLs offer local cloning", async ({ page }) => {
   await installMockBridge(page);
   await openBuzzProject(page);
 
-  await expect(page.getByText("Code hosted on github.com")).toBeVisible();
-  await page.getByRole("button", { name: "Clone locally" }).click();
-  await expect(page.getByText("Cloned repository.")).toBeVisible();
+  await cloneMissingGitHubRepository(page);
   await expect
     .poll(() =>
       page.evaluate(() =>

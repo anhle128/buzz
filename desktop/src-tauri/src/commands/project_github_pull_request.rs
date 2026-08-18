@@ -338,6 +338,14 @@ impl GhRunner {
     }
 
     pub(crate) fn run(&self, args: &[OsString]) -> Result<GhOutput, ProjectPullRequestMergeError> {
+        self.run_with_limit(args, GH_STREAM_LIMIT)
+    }
+
+    pub(crate) fn run_with_limit(
+        &self,
+        args: &[OsString],
+        stdout_limit: usize,
+    ) -> Result<GhOutput, ProjectPullRequestMergeError> {
         let mut command = Command::new(&self.binary);
         command
             .args(args)
@@ -376,7 +384,7 @@ impl GhRunner {
         let mut job = None::<GhJob>;
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
-        let stdout_thread = std::thread::spawn(move || read_pipe_bounded(stdout, GH_STREAM_LIMIT));
+        let stdout_thread = std::thread::spawn(move || read_pipe_bounded(stdout, stdout_limit));
         let stderr_thread = std::thread::spawn(move || read_pipe_bounded(stderr, GH_STREAM_LIMIT));
 
         let started = Instant::now();

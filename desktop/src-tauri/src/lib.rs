@@ -647,6 +647,8 @@ pub fn run() {
             get_git_identity,
             get_project_repo_snapshot,
             get_github_repository_state,
+            get_github_repository_snapshot,
+            get_github_ahead_behind,
             get_project_repo_diff,
             get_project_local_repo_diff,
             get_project_local_repo_snapshot,
@@ -924,7 +926,6 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
     let shutdown_done = Arc::new(AtomicBool::new(false));
-
     #[cfg(unix)]
     shutdown::install_signal_handler(app.handle().clone(), Arc::clone(&shutdown_done));
 

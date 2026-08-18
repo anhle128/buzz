@@ -496,6 +496,49 @@ export async function getGithubRepositoryState(cloneUrl: string): Promise<{
   }
 }
 
+/** Load a GitHub remote snapshot through the native `gh api` command. */
+export async function getGithubRepositorySnapshot(input: {
+  cloneUrl: string;
+  ref: string;
+}): Promise<ProjectRepoSnapshot> {
+  try {
+    // Native uses refName because ref is a reserved Rust keyword.
+    const snapshot = await invokeTauri<RawProjectRepoSnapshot>(
+      "get_github_repository_snapshot",
+      { cloneUrl: input.cloneUrl, refName: input.ref },
+    );
+    return fromRawProjectRepoSnapshot(snapshot);
+  } catch (error) {
+    throw parseProjectPullRequestMergeError(error) ?? error;
+  }
+}
+
+/** GitHub compare status for the selected local and remote commits. */
+export type GithubAheadBehind = {
+  status: "compared" | "unpushed";
+  ahead?: number;
+  behind?: number;
+};
+
+/** Compare a local HEAD against the loaded GitHub branch tip. */
+export async function getGithubAheadBehind(input: {
+  cloneUrl: string;
+  branch: string;
+  localSha: string;
+  remoteSha: string;
+}): Promise<GithubAheadBehind> {
+  try {
+    return await invokeTauri<GithubAheadBehind>("get_github_ahead_behind", {
+      cloneUrl: input.cloneUrl,
+      branch: input.branch,
+      localSha: input.localSha,
+      remoteSha: input.remoteSha,
+    });
+  } catch (error) {
+    throw parseProjectPullRequestMergeError(error) ?? error;
+  }
+}
+
 type RawProjectRepoMergeResult = {
   message: string;
   merge_commit: string;
