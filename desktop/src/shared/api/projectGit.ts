@@ -471,6 +471,31 @@ export async function deleteProjectRemoteBranch(input: {
   );
 }
 
+/** Load default branch + branch tips for a github.com clone URL via `gh api`. */
+export async function getGithubRepositoryState(cloneUrl: string): Promise<{
+  head: string | null;
+  branches: Array<{ name: string; commit: string }>;
+  tags: Array<{ name: string; commit: string }>;
+  updatedAt: number;
+}> {
+  try {
+    const raw = await invokeTauri<{
+      head: string;
+      branches: Array<{ name: string; commit: string }>;
+      tags: Array<{ name: string; commit: string }>;
+      updated_at: number;
+    }>("get_github_repository_state", { cloneUrl });
+    return {
+      head: raw.head,
+      branches: raw.branches,
+      tags: raw.tags ?? [],
+      updatedAt: raw.updated_at,
+    };
+  } catch (error) {
+    throw parseProjectPullRequestMergeError(error) ?? error;
+  }
+}
+
 type RawProjectRepoMergeResult = {
   message: string;
   merge_commit: string;

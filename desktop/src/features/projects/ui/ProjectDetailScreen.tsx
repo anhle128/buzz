@@ -59,6 +59,7 @@ import {
   projectBranchOptionsFromSync,
   resolveProjectDefaultBranch,
 } from "@/features/projects/lib/projectBranches";
+import { isGitHubCloneUrl } from "@/features/projects/lib/projectGitError";
 import { normalizeRepositoryUrl } from "@/features/projects/lib/projectsViewHelpers";
 import {
   shareTabForWorkspaceTab,
@@ -151,18 +152,28 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
   );
   const repoStateQuery = useRepoStateQuery(repository);
   const pullRequestsQuery = useProjectPullRequestsQuery(repository);
-  const defaultBranch = repository
-    ? resolveProjectDefaultBranch(repository.defaultBranch, repoStateQuery.data)
-    : null;
+  // GitHub state errors must not fall back to the announcement default ("main").
+  const githubHosted = isGitHubCloneUrl(repository?.cloneUrls[0]);
+  const githubStateFailed = githubHosted && repoStateQuery.isError;
+  const defaultBranch =
+    !repository || githubStateFailed
+      ? null
+      : resolveProjectDefaultBranch(
+          repository.defaultBranch,
+          repoStateQuery.data,
+        );
   const { branchOptions, forgetBranch, managedBranches, rememberBranch } =
     useOptimisticProjectBranches({
       defaultBranch,
-      observedBranches: repoStateQuery.data?.branches ?? [],
+      observedBranches: githubStateFailed
+        ? []
+        : (repoStateQuery.data?.branches ?? []),
       projectId: repository?.id ?? projectId,
-      referencedBranches:
-        pullRequestsQuery.data?.map(
-          (pullRequest) => pullRequest.branchName ?? null,
-        ) ?? [],
+      referencedBranches: githubStateFailed
+        ? []
+        : (pullRequestsQuery.data?.map(
+            (pullRequest) => pullRequest.branchName ?? null,
+          ) ?? []),
     });
   const { activeBranch, selectBranch, selectedTag, selectTag } =
     useProjectRepositoryRefSelection({

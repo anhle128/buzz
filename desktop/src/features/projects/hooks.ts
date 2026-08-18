@@ -2,7 +2,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as React from "react";
 
 import { relayClient } from "@/shared/api/relayClient";
-import { getRelaySelf } from "@/features/moderation/lib/relaySelf";
 import { getCachedRelayOrigin } from "@/shared/lib/mediaUrl";
 import { signRelayEvent } from "@/shared/api/tauri";
 import { getIdentity } from "@/shared/api/tauriIdentity";
@@ -23,9 +22,10 @@ import {
   KIND_GIT_STATUS_DRAFT,
   KIND_GIT_STATUS_MERGED,
   KIND_GIT_STATUS_OPEN,
-  KIND_REPO_STATE,
   KIND_TEXT_NOTE,
 } from "@/shared/constants/kinds";
+import { fetchRepoState } from "@/features/projects/lib/projectRepoState";
+export type { RepoState } from "@/features/projects/lib/projectRepoState";
 import type {
   ProjectLocalRepository,
   ProjectLocalRepoSnapshot,
@@ -82,13 +82,6 @@ export type {
 export type ProjectPullRequestCommentDecision = "request-changes";
 
 const HIDDEN_PROJECT_CARDS_KEY = "buzz.projects.hidden-cards.v1";
-
-export type RepoState = {
-  branches: Array<{ name: string; commit: string }>;
-  tags: Array<{ name: string; commit: string }>;
-  head: string | null;
-  updatedAt: number;
-};
 
 export type ProjectActivitySummary = {
   repoAddress: string;
@@ -178,51 +171,6 @@ export async function fetchProjects(
     relayOrigin: getCachedRelayOrigin(),
     hiddenAddresses: new Set(readHiddenProjectCards()),
   });
-}
-
-function eventToRepoState(event: RelayEvent): RepoState {
-  const branches: RepoState["branches"] = [];
-  const tags: RepoState["tags"] = [];
-  let head: string | null = null;
-
-  for (const tag of event.tags) {
-    const [name, value] = tag;
-    if (!name || !value) continue;
-
-    if (name.startsWith("refs/heads/")) {
-      branches.push({ name: name.slice("refs/heads/".length), commit: value });
-    } else if (name.startsWith("refs/tags/")) {
-      tags.push({ name: name.slice("refs/tags/".length), commit: value });
-    } else if (name === "HEAD") {
-      head = value.replace(/^ref:\s*/, "").replace(/^refs\/heads\//, "");
-    }
-  }
-
-  return {
-    branches,
-    tags,
-    head,
-    updatedAt: event.created_at,
-  };
-}
-
-async function fetchRepoState(project: Repository): Promise<RepoState | null> {
-  const relaySelf = await getRelaySelf();
-  const trustedAuthors = [
-    ...new Set(
-      [project.owner, relaySelf].filter((value): value is string =>
-        Boolean(value),
-      ),
-    ),
-  ];
-  const events = await relayClient.fetchEvents({
-    kinds: [KIND_REPO_STATE],
-    authors: trustedAuthors,
-    "#d": [project.dtag],
-    limit: 1,
-  });
-
-  return events.length > 0 ? eventToRepoState(events[0]) : null;
 }
 
 async function fetchProjectIssues(
@@ -659,7 +607,12 @@ export function useProjectQuery(projectId: string) {
 export function useRepoStateQuery(project: Repository | null | undefined) {
   return useQuery({
     enabled: Boolean(project),
-    queryKey: ["project", project?.id ?? "none", "repo-state"],
+    queryKey: [
+      "project",
+      project?.id ?? "none",
+      "repo-state",
+      project?.cloneUrls[0] ?? "no-clone",
+    ],
     queryFn: () => {
       if (!project) throw new Error("No project selected.");
       return fetchRepoState(project);
