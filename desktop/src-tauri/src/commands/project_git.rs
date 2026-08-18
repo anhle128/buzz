@@ -1,6 +1,6 @@
 use super::project_git_exec::{
-    build_git_auth_config, clean_branch, clean_target_ref, run_git, validate_workspace_clone_url,
-    GitAuthConfig,
+    build_git_auth_config, build_git_operation_auth_config, clean_branch, clean_target_ref,
+    run_git, validate_git_operation_url, validate_workspace_clone_url, GitAuthConfig,
 };
 use super::project_git_push::push_project_local_repository_blocking;
 use super::project_repo_paths::{canonical_repos_roots, find_local_repo_dir};
@@ -870,8 +870,8 @@ pub async fn get_project_repo_sync_status(
     base_branch: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<ProjectRepoSyncStatusInfo, String> {
-    validate_workspace_clone_url(&clone_url, &state)?;
-    let auth = build_git_auth_config(&state)?;
+    validate_git_operation_url(&clone_url, &state)?;
+    let auth = build_git_operation_auth_config(&clone_url, &state)?;
 
     tauri::async_runtime::spawn_blocking(move || {
         let Some(repo_dir) =
@@ -921,8 +921,8 @@ pub async fn push_project_local_repository(
     base_branch: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<ProjectRepoPushResult, String> {
-    validate_workspace_clone_url(&clone_url, &state)?;
-    let auth = build_git_auth_config(&state)?;
+    validate_git_operation_url(&clone_url, &state)?;
+    let auth = build_git_operation_auth_config(&clone_url, &state)?;
 
     tauri::async_runtime::spawn_blocking(move || {
         let Some(repo_dir) =
@@ -952,8 +952,8 @@ pub async fn pull_project_local_repository(
     branch_name: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<ProjectRepoPullResult, String> {
-    validate_workspace_clone_url(&clone_url, &state)?;
-    let auth = build_git_auth_config(&state)?;
+    validate_git_operation_url(&clone_url, &state)?;
+    let auth = build_git_operation_auth_config(&clone_url, &state)?;
 
     tauri::async_runtime::spawn_blocking(move || {
         let Some(repo_dir) =

@@ -5,7 +5,12 @@
 //! variables so nothing key-related ever touches disk or global git config.
 
 use crate::{
-    app_state::AppState, commands::project_github_pull_request::GitHubRepoRef,
+    app_state::AppState,
+    commands::{
+        project_git_merge_error::ProjectPullRequestMergeError,
+        project_github_pull_request::{GhRunner, GitHubRepoRef},
+        project_github_repository_state::remap_state_error,
+    },
     managed_agents::resolve_command,
 };
 use nostr::{Keys, ToBech32};
@@ -47,9 +52,10 @@ fn git_needs_credentials(args: &[&str]) -> bool {
     )
 }
 
+#[derive(Debug)]
 pub(crate) struct GitAuthConfig {
     git_path: std::path::PathBuf,
-    credential_helper: Option<std::path::PathBuf>,
+    credential_helper: Option<String>,
     nsec: String,
     allow_file_transport: bool,
 }
@@ -134,6 +140,7 @@ pub(crate) fn run_git(
 fn configure_git_auth(command: &mut Command, auth: &GitAuthConfig, needs_credentials: bool) {
     command.env("GIT_TERMINAL_PROMPT", "0");
     command.env("GIT_CONFIG_NOSYSTEM", "1");
+    command.env_remove("NOSTR_PRIVATE_KEY");
     for key in [
         "GIT_DIR",
         "GIT_WORK_TREE",
@@ -173,14 +180,13 @@ fn configure_git_auth(command: &mut Command, auth: &GitAuthConfig, needs_credent
         ),
     ];
     if needs_credentials {
-        let Some(cred_helper) = &auth.credential_helper else {
+        let Some(credential_helper) = &auth.credential_helper else {
             return apply_git_config(command, &entries);
         };
-        command.env("NOSTR_PRIVATE_KEY", &auth.nsec);
-        entries.push((
-            "credential.helper",
-            credential_helper_config_value(cred_helper),
-        ));
+        if !auth.nsec.is_empty() {
+            command.env("NOSTR_PRIVATE_KEY", &auth.nsec);
+        }
+        entries.push(("credential.helper", credential_helper.clone()));
         entries.push(("credential.useHttpPath", "true".to_string()));
     }
     apply_git_config(command, &entries);
@@ -192,6 +198,11 @@ fn configure_git_auth(command: &mut Command, auth: &GitAuthConfig, needs_credent
 /// escapes. Forward slashes work on every platform git supports.
 fn credential_helper_config_value(path: &std::path::Path) -> String {
     path.to_string_lossy().replace('\\', "/")
+}
+
+fn github_credential_helper_config_value(path: &std::path::Path) -> String {
+    let path = credential_helper_config_value(path);
+    format!("!'{}' auth git-credential", path.replace('\'', "'\\''"),)
 }
 
 fn apply_git_config(command: &mut Command, entries: &[(&str, String)]) {
@@ -207,25 +218,64 @@ pub(crate) fn build_git_auth_config(state: &AppState) -> Result<GitAuthConfig, S
     build_git_auth_config_for_keys(&keys)
 }
 
-pub(crate) fn build_git_clone_auth_config(
+/// Serialize a GitHub CLI error after remapping merge-failed codes.
+pub(crate) fn github_command_error_string(error: ProjectPullRequestMergeError) -> String {
+    let remapped = remap_state_error(error, "");
+    serde_json::to_string(&remapped).unwrap_or_else(|_| {
+        "{\"code\":\"github_state_failed\",\"message\":\"GitHub authentication failed.\",\"recovery\":null}"
+            .to_string()
+    })
+}
+
+/// Build GitHub git auth using an injected `gh` discovery function.
+pub(crate) fn build_github_git_auth_config_with<F>(
     clone_url: &str,
-    state: &AppState,
-) -> Result<GitAuthConfig, String> {
-    if validate_github_clone_url(clone_url).is_ok() {
+    discover: F,
+) -> Result<GitAuthConfig, String>
+where
+    F: FnOnce() -> Result<GhRunner, ProjectPullRequestMergeError>,
+{
+    let git_path = resolve_command("git").ok_or_else(|| "git was not found on PATH".to_string())?;
+    if !clone_url.starts_with("https://github.com/") {
         return Ok(GitAuthConfig {
-            git_path: resolve_command("git")
-                .ok_or_else(|| "git was not found on PATH".to_string())?,
+            git_path,
             credential_helper: None,
             nsec: String::new(),
             allow_file_transport: false,
         });
     }
+    let gh = discover().map_err(github_command_error_string)?;
+    gh.ensure_auth().map_err(github_command_error_string)?;
+    Ok(GitAuthConfig {
+        git_path,
+        credential_helper: Some(github_credential_helper_config_value(gh.binary_path())),
+        nsec: String::new(),
+        allow_file_transport: false,
+    })
+}
+
+/// Build host-aware git auth for Buzz remotes or github.com remotes.
+pub(crate) fn build_git_operation_auth_config(
+    clone_url: &str,
+    state: &AppState,
+) -> Result<GitAuthConfig, String> {
+    if GitHubRepoRef::parse(clone_url).is_ok() {
+        return build_github_git_auth_config_with(clone_url, GhRunner::discover);
+    }
     build_git_auth_config(state)
+}
+
+pub(crate) fn build_git_clone_auth_config(
+    clone_url: &str,
+    state: &AppState,
+) -> Result<GitAuthConfig, String> {
+    build_git_operation_auth_config(clone_url, state)
 }
 
 pub(crate) fn build_git_auth_config_for_keys(keys: &Keys) -> Result<GitAuthConfig, String> {
     let git_path = resolve_command("git").ok_or_else(|| "git was not found on PATH".to_string())?;
-    let credential_helper = resolve_command("git-credential-nostr");
+    let credential_helper =
+        resolve_command("git-credential-nostr").map(|path| credential_helper_config_value(&path));
     let nsec = keys
         .secret_key()
         .to_bech32()
@@ -347,6 +397,22 @@ pub(crate) fn validate_workspace_clone_url(
     validate_clone_url_against_relay(clone_url, &relay_base)
 }
 
+/// Accept a Buzz URL on the active relay or a strict github.com URL.
+pub(crate) fn validate_git_operation_url(clone_url: &str, state: &AppState) -> Result<(), String> {
+    let relay_base = crate::relay::relay_api_base_url_with_override(state);
+    validate_git_operation_url_against_relay(clone_url, &relay_base)
+}
+
+fn validate_git_operation_url_against_relay(
+    clone_url: &str,
+    relay_base: &str,
+) -> Result<(), String> {
+    if GitHubRepoRef::parse(clone_url).is_ok() {
+        return Ok(());
+    }
+    validate_clone_url_against_relay(clone_url, relay_base)
+}
+
 fn validate_clone_url_against_relay(clone_url: &str, relay_base: &str) -> Result<(), String> {
     validate_clone_url(clone_url)?;
     let clone = Url::parse(clone_url).map_err(|error| format!("invalid clone URL: {error}"))?;
@@ -368,9 +434,11 @@ fn validate_clone_url_against_relay(clone_url: &str, relay_base: &str) -> Result
 #[cfg(test)]
 mod tests {
     use super::{
-        clean_branch, clean_target_ref, credential_helper_config_value, git_needs_credentials,
-        git_subcommand, validate_clone_url, validate_clone_url_against_relay,
-        validate_local_clone_url,
+        build_github_git_auth_config_with, clean_branch, clean_target_ref, configure_git_auth,
+        credential_helper_config_value, git_needs_credentials, git_subcommand,
+        github_command_error_string, github_credential_helper_config_value, validate_clone_url,
+        validate_clone_url_against_relay, validate_git_operation_url_against_relay,
+        validate_local_clone_url, GhRunner, GitAuthConfig, ProjectPullRequestMergeError,
     };
 
     #[test]
@@ -485,6 +553,46 @@ mod tests {
     }
 
     #[test]
+    fn git_operation_url_accepts_strict_github_https_and_ssh() {
+        let relay = "https://relay.example/prefix";
+        for clone_url in [
+            "https://github.com/acme/app",
+            "https://github.com/acme/app.git",
+            "git@github.com:acme/app.git",
+            "ssh://git@github.com/acme/app.git",
+        ] {
+            assert!(
+                validate_git_operation_url_against_relay(clone_url, relay).is_ok(),
+                "{clone_url}",
+            );
+        }
+    }
+
+    #[test]
+    fn git_operation_url_rejects_other_hosts_and_keeps_buzz_relay_scoped() {
+        let owner = "a".repeat(64);
+        let relay = "https://relay.example/prefix";
+        assert!(
+            validate_git_operation_url_against_relay("https://gitlab.com/acme/app", relay).is_err()
+        );
+        assert!(validate_git_operation_url_against_relay(
+            "https://github.com/acme/app/issues",
+            relay,
+        )
+        .is_err());
+        assert!(validate_git_operation_url_against_relay(
+            &format!("https://relay.example/prefix/git/{owner}/repo"),
+            relay,
+        )
+        .is_ok());
+        assert!(validate_git_operation_url_against_relay(
+            &format!("https://evil.example/prefix/git/{owner}/repo"),
+            relay,
+        )
+        .is_err());
+    }
+
+    #[test]
     fn local_clone_url_allows_github_https_and_ssh_urls() {
         assert!(validate_local_clone_url("https://github.com/block/buzz").is_ok());
         assert!(validate_local_clone_url("https://github.com/block/buzz.git").is_ok());
@@ -499,5 +607,166 @@ mod tests {
         assert!(validate_local_clone_url("git@github.com:block/buzz/issues").is_err());
         assert!(validate_local_clone_url("https://github.com.evil.test/block/buzz").is_err());
         assert!(validate_local_clone_url("https://gitlab.com/block/buzz").is_err());
+    }
+
+    fn error_json_code(error: &str) -> String {
+        serde_json::from_str::<serde_json::Value>(error)
+            .ok()
+            .and_then(|value| value.get("code")?.as_str().map(ToString::to_string))
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn github_git_auth_quotes_spaces_and_apostrophes_in_helper_path() {
+        let path = std::path::Path::new("/tmp/Buzz's GitHub CLI/gh");
+        assert_eq!(
+            github_credential_helper_config_value(path),
+            "!'/tmp/Buzz'\\''s GitHub CLI/gh' auth git-credential",
+        );
+    }
+
+    #[cfg(unix)]
+    fn fake_gh(script: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("create fake gh directory");
+        let bin_dir = dir.path().join("GitHub CLI");
+        std::fs::create_dir(&bin_dir).expect("create spaced bin directory");
+        let path = bin_dir.join("gh");
+        std::fs::write(&path, format!("#!/bin/sh\nset -eu\n{script}\n")).expect("write fake gh");
+        let mut permissions = std::fs::metadata(&path)
+            .expect("stat fake gh")
+            .permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&path, permissions).expect("chmod fake gh");
+        (dir, path)
+    }
+
+    #[cfg(unix)]
+    fn invoke_credential_helper(auth: &GitAuthConfig) {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+        let mut command = Command::new(&auth.git_path);
+        command
+            .args(["credential", "fill"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .env("NOSTR_PRIVATE_KEY", "must-not-leak");
+        configure_git_auth(&mut command, auth, true);
+        let mut child = command.spawn().expect("run git credential fill");
+        let mut stdin = child.stdin.take().expect("credential stdin");
+        stdin
+            .write_all(b"protocol=https\nhost=github.com\n\n")
+            .expect("write credential request");
+        drop(stdin);
+        let _ = child.wait().expect("wait for git credential fill");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn github_git_auth_https_invokes_quoted_gh_helper_without_nsec() {
+        let script = r#"
+printf '%s\n' "$*" >> "${0%/GitHub CLI/gh}/calls"
+case "$*" in
+  *auth*status*) exit 0 ;;
+  *auth*git-credential*)
+    if [ "${NOSTR_PRIVATE_KEY+x}" = x ]; then exit 41; fi
+    exit 0
+    ;;
+  *api*) exit 42 ;;
+  *) exit 43 ;;
+esac
+"#;
+        let (dir, path) = fake_gh(script);
+        let auth = build_github_git_auth_config_with("https://github.com/acme/app", || {
+            GhRunner::from_resolved(Some(path.clone()))
+        })
+        .expect("https GitHub auth");
+        let helper = auth
+            .credential_helper
+            .as_deref()
+            .expect("credential helper");
+        assert!(helper.starts_with("!'"), "{helper}");
+        assert!(helper.ends_with("' auth git-credential"), "{helper}");
+        assert!(auth.nsec.is_empty());
+        invoke_credential_helper(&auth);
+        let calls = std::fs::read_to_string(dir.path().join("calls")).expect("read calls");
+        assert!(calls
+            .lines()
+            .any(|line| line == "auth status --hostname github.com"));
+        assert!(calls.lines().any(|line| line == "auth git-credential get"));
+        assert!(!calls.lines().any(|line| line.starts_with("api ")));
+    }
+
+    #[test]
+    fn github_git_auth_ssh_skips_gh_helper_and_discovery() {
+        let auth = build_github_git_auth_config_with("git@github.com:acme/app.git", || {
+            panic!("SSH GitHub must not discover gh")
+        })
+        .expect("SSH GitHub auth");
+        assert!(auth.credential_helper.is_none());
+        assert!(auth.nsec.is_empty());
+    }
+
+    #[test]
+    fn github_git_auth_missing_cli_is_structured_json() {
+        let error = build_github_git_auth_config_with("https://github.com/acme/app", || {
+            GhRunner::from_resolved(None)
+        })
+        .expect_err("missing gh must fail");
+        assert_eq!(error_json_code(&error), "github_cli_missing");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn github_git_auth_failed_status_is_structured_json() {
+        let (_dir, path) = fake_gh(
+            r#"
+case "$*" in
+  *auth*status*) exit 1 ;;
+  *) exit 43 ;;
+esac
+"#,
+        );
+        let error = build_github_git_auth_config_with("https://github.com/acme/app", || {
+            GhRunner::from_resolved(Some(path))
+        })
+        .expect_err("failed auth status must fail");
+        assert_eq!(error_json_code(&error), "github_auth_required");
+    }
+
+    #[test]
+    fn github_git_auth_remaps_merge_failed_before_serializing() {
+        let json = github_command_error_string(ProjectPullRequestMergeError::new(
+            "github_merge_failed",
+            "boom",
+        ));
+        assert_eq!(error_json_code(&json), "github_state_failed");
+    }
+
+    #[test]
+    fn buzz_git_auth_adds_nsec_only_for_credential_operations() {
+        use std::ffi::OsStr;
+        use std::process::Command;
+        let auth = GitAuthConfig {
+            git_path: std::path::PathBuf::from("git"),
+            credential_helper: Some("/tmp/git-credential-nostr".to_string()),
+            nsec: "nsec1test".to_string(),
+            allow_file_transport: false,
+        };
+        let mut local = Command::new("git");
+        configure_git_auth(&mut local, &auth, false);
+        let local_nsec = local
+            .get_envs()
+            .find(|(key, _)| *key == OsStr::new("NOSTR_PRIVATE_KEY"))
+            .and_then(|(_, value)| value);
+        assert_eq!(local_nsec, None);
+        let mut remote = Command::new("git");
+        configure_git_auth(&mut remote, &auth, true);
+        let remote_nsec = remote
+            .get_envs()
+            .find(|(key, _)| *key == OsStr::new("NOSTR_PRIVATE_KEY"))
+            .and_then(|(_, value)| value);
+        assert_eq!(remote_nsec, Some(OsStr::new("nsec1test")));
     }
 }

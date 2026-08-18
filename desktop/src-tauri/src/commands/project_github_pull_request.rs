@@ -300,6 +300,11 @@ impl GhRunner {
         })
     }
 
+    /// Resolved GitHub CLI binary used by git's credential-helper command.
+    pub(crate) fn binary_path(&self) -> &std::path::Path {
+        &self.binary
+    }
+
     pub(crate) fn ensure_auth(&self) -> Result<(), ProjectPullRequestMergeError> {
         let output = self.run(&[
             OsString::from("auth"),
@@ -349,6 +354,7 @@ impl GhRunner {
         let mut command = Command::new(&self.binary);
         command
             .args(args)
+            .env_remove("NOSTR_PRIVATE_KEY")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
