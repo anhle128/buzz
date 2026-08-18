@@ -1,9 +1,12 @@
+import { useQuery } from "@tanstack/react-query";
+
 import type { ProjectIssue } from "@/features/projects/projectIssues.mjs";
 import type { Repository } from "@/features/projects/projectModels";
-import type {
-  GithubIssueCommentDto,
-  GithubIssueDto,
-  GithubIssueListDto,
+import {
+  listGithubIssueComments,
+  type GithubIssueCommentDto,
+  type GithubIssueDto,
+  type GithubIssueListDto,
 } from "@/shared/api/projectGit";
 import { isGitHubCloneUrl } from "./projectGitError";
 
@@ -111,4 +114,50 @@ export function issueIdentityPubkeys(issues: ProjectIssue[]): string[] {
         .map((value) => value.toLowerCase()),
     ),
   ];
+}
+
+/** Resolve a valid GitHub comment request and its cache key. */
+export function githubIssueCommentsRequest(
+  project: Pick<Repository, "id" | "cloneUrls"> | null | undefined,
+  selectedIssueId: string | null | undefined,
+): {
+  cloneUrl: string;
+  number: number;
+  queryKey: readonly ["project", string, "issues", number, "comments"];
+} | null {
+  const cloneUrl = project?.cloneUrls[0] ?? "";
+  const number = parseGithubIssueNumber(selectedIssueId);
+  if (!project || !isGitHubCloneUrl(cloneUrl) || number === null) return null;
+  return {
+    cloneUrl,
+    number,
+    queryKey: ["project", project.id, "issues", number, "comments"],
+  };
+}
+
+/** Load the first read-only GitHub comment page for the selected numeric issue. */
+export function useGithubIssueCommentsQuery(
+  project: Pick<Repository, "id" | "cloneUrls"> | null | undefined,
+  selectedIssueId: string | null | undefined,
+) {
+  const request = githubIssueCommentsRequest(project, selectedIssueId);
+  return useQuery({
+    enabled: request !== null,
+    queryKey: request?.queryKey ?? [
+      "project",
+      project?.id ?? "none",
+      "issues",
+      "none",
+      "comments",
+    ],
+    queryFn: async () => {
+      if (!request) throw new Error("No GitHub issue selected.");
+      const comments = await listGithubIssueComments({
+        cloneUrl: request.cloneUrl,
+        number: request.number,
+      });
+      return comments.map(mapGithubCommentToProjectIssueComment);
+    },
+    staleTime: 30_000,
+  });
 }

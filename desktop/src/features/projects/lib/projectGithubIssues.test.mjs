@@ -3,6 +3,7 @@ import { test } from "node:test";
 
 import {
   fetchProjectIssuesWith,
+  githubIssueCommentsRequest,
   issueDisplayNumber,
   issueIdentityPubkeys,
   mapGithubCommentToProjectIssueComment,
@@ -174,4 +175,35 @@ test("identity collection drops GitHub logins and keeps lowercase Nostr pubkeys"
     "c".repeat(64),
     "d".repeat(64),
   ]);
+});
+
+test("GitHub comment request validates host, number, and exact query key", () => {
+  assert.deepEqual(
+    githubIssueCommentsRequest(
+      { id: "p1", cloneUrls: ["https://github.com/acme/app"] },
+      "42",
+    ),
+    {
+      cloneUrl: "https://github.com/acme/app",
+      number: 42,
+      queryKey: ["project", "p1", "issues", 42, "comments"],
+    },
+  );
+  assert.equal(
+    githubIssueCommentsRequest(
+      { id: "p1", cloneUrls: ["https://github.com/acme/app"] },
+      "0",
+    ),
+    null,
+  );
+  assert.equal(
+    githubIssueCommentsRequest(
+      {
+        id: "p2",
+        cloneUrls: [`https://relay.example/git/${"ab".repeat(32)}/app`],
+      },
+      "42",
+    ),
+    null,
+  );
 });

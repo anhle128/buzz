@@ -386,7 +386,7 @@ export function ProjectIssuesPanel({
   selectedIssueId: string | null;
 }) {
   const issuesQuery = useProjectIssuesQuery(project);
-  const issues = issuesQuery.data ?? [];
+  const issues = issuesQuery.data?.issues ?? [];
   const selectedIssue =
     issues.find((issue) => issue.id === selectedIssueId) ?? null;
 
