@@ -9,14 +9,10 @@ import {
   KIND_PROJECT_ANNOUNCEMENT,
   KIND_REPO_ANNOUNCEMENT,
 } from "@/shared/constants/kinds";
-import type { ProjectEventTemplate } from "./projectCreation";
-
-function repositoryDtagFromName(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-}
+import {
+  repositoryDtagFromName,
+  type ProjectEventTemplate,
+} from "./projectCreation";
 
 export { repositoryDtagFromName };
 

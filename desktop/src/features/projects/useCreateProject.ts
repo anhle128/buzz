@@ -12,6 +12,8 @@ import {
 } from "@/features/projects/projectCreation";
 import { buildProjectReadModels } from "@/features/projects/projectModels";
 import { relayClient } from "@/shared/api/relayClient";
+import type { RelayEvent } from "@/shared/api/types";
+import { KIND_REPO_ANNOUNCEMENT } from "@/shared/constants/kinds";
 import { getCachedRelayOrigin } from "@/shared/lib/mediaUrl";
 import { signRelayEvent } from "@/shared/api/tauri";
 import { getIdentity } from "@/shared/api/tauriIdentity";
@@ -22,6 +24,7 @@ export type CreateProjectInput = {
   description?: string;
   cloneUrl?: string;
   webUrl?: string;
+  repositoryName?: string;
 };
 
 export type CreateProjectResult = {
@@ -29,17 +32,46 @@ export type CreateProjectResult = {
   compatibilityWarning?: string;
 };
 
+type FetchEventsInput = Parameters<(typeof relayClient)["fetchEvents"]>[0];
+
+/** Test seams for createProject relay, signing, and project-list I/O. */
+export type CreateProjectDeps = {
+  fetchEvents: (filter: FetchEventsInput) => Promise<RelayEvent[]>;
+  fetchProjects: typeof fetchProjects;
+  getIdentity: () => Promise<{ pubkey: string }>;
+  publishEvent: (
+    event: RelayEvent,
+    timeoutMessage: string,
+    sendErrorMessage: string,
+  ) => Promise<unknown>;
+  signRelayEvent: typeof signRelayEvent;
+};
+
+type CreateProjectResume = {
+  repositoryAddress: string;
+  repositoryEventId: string;
+};
+
 /** Publishes a project announcement and its initial NIP-34 repository. */
-async function createProject(
+export async function createProject(
   input: CreateProjectInput,
-  resumableProjectIds: Set<string>,
+  resumableProjects: Map<string, CreateProjectResume>,
+  deps: Partial<CreateProjectDeps> = {},
 ): Promise<CreateProjectResult> {
-  const identity = await getIdentity();
+  const {
+    fetchEvents = relayClient.fetchEvents.bind(relayClient),
+    fetchProjects: fetchProjectsFn = fetchProjects,
+    getIdentity: getIdentityFn = getIdentity,
+    publishEvent = relayClient.publishEvent.bind(relayClient),
+    signRelayEvent: signRelayEventFn = signRelayEvent,
+  } = deps;
+
+  const identity = await getIdentityFn();
   const templates = buildInitialProjectEventTemplates({
     ...input,
     ownerPubkey: identity.pubkey,
   });
-  const existing = await fetchProjects();
+  const existing = await fetchProjectsFn();
   const ownerPubkey = identity.pubkey.toLowerCase();
   const existingProject = existing.find(
     (project) =>
@@ -47,7 +79,8 @@ async function createProject(
       project.dtag === templates.dtag,
   );
   const projectId = `${ownerPubkey}:${templates.dtag}`;
-  const canResume = resumableProjectIds.has(projectId);
+  const resume = resumableProjects.get(projectId);
+  const canResume = resume?.repositoryAddress === templates.repositoryAddress;
   if (existingProject && !canResume) {
     throw new Error(`You already have a project named "${templates.dtag}".`);
   }
@@ -57,19 +90,42 @@ async function createProject(
         (repository) => repository.repoAddress === templates.repositoryAddress,
       )
     ) {
-      resumableProjectIds.delete(projectId);
+      resumableProjects.delete(projectId);
       return { project: existingProject };
     }
     throw new Error(`You already have a project named "${templates.dtag}".`);
   }
 
-  resumableProjectIds.add(projectId);
-  const projectEvent = await signRelayEvent(templates.project);
+  let repositoryEvent: RelayEvent | null = null;
+  if (!existingProject && templates.repositoryDtag !== templates.dtag) {
+    const existingRepoHeads = await fetchEvents({
+      kinds: [KIND_REPO_ANNOUNCEMENT],
+      authors: [ownerPubkey],
+      "#d": [templates.repositoryDtag],
+      limit: 1,
+    });
+    if (existingRepoHeads.length > 0) {
+      if (
+        !canResume ||
+        existingRepoHeads[0]?.id !== resume?.repositoryEventId
+      ) {
+        throw new Error(
+          `A repository named "${templates.repositoryDtag}" already exists (as a standalone repository or in another project). Choose a different name to avoid overwriting it.`,
+        );
+      }
+      repositoryEvent = existingRepoHeads[0] ?? null;
+    }
+  }
 
-  let repositoryEvent = null;
-  if (!existingProject) {
-    repositoryEvent = await signRelayEvent(templates.repository);
-    await relayClient.publishEvent(
+  const projectEvent = await signRelayEventFn(templates.project);
+
+  if (!existingProject && !repositoryEvent) {
+    repositoryEvent = await signRelayEventFn(templates.repository);
+    resumableProjects.set(projectId, {
+      repositoryAddress: templates.repositoryAddress,
+      repositoryEventId: repositoryEvent.id,
+    });
+    await publishEvent(
       repositoryEvent,
       "Timed out creating the initial repository.",
       "Failed to create the initial repository.",
@@ -77,7 +133,7 @@ async function createProject(
   }
 
   try {
-    await relayClient.publishEvent(
+    await publishEvent(
       projectEvent,
       "Timed out creating project.",
       "Failed to create project.",
@@ -94,7 +150,7 @@ async function createProject(
         });
     if (!legacyProject) throw error;
 
-    resumableProjectIds.delete(projectId);
+    resumableProjects.delete(projectId);
     return {
       project: legacyProject,
       compatibilityWarning:
@@ -108,7 +164,7 @@ async function createProject(
         repositoryEvents: [repositoryEvent],
         relayOrigin: getCachedRelayOrigin(),
       })
-    : (await fetchProjects()).filter(
+    : (await fetchProjectsFn()).filter(
         (candidate) =>
           candidate.owner.toLowerCase() === ownerPubkey &&
           candidate.dtag === templates.dtag &&
@@ -117,18 +173,20 @@ async function createProject(
   if (!project) {
     throw new Error("The project was created but could not be read.");
   }
-  resumableProjectIds.delete(projectId);
+  resumableProjects.delete(projectId);
   return { project };
 }
 
 /** Mutation that creates a project and inserts it into the projects cache. */
 export function useCreateProjectMutation() {
   const queryClient = useQueryClient();
-  const resumableProjectIdsRef = React.useRef(new Set<string>());
+  const resumableProjectsRef = React.useRef(
+    new Map<string, CreateProjectResume>(),
+  );
 
   return useMutation({
     mutationFn: (input: CreateProjectInput) =>
-      createProject(input, resumableProjectIdsRef.current),
+      createProject(input, resumableProjectsRef.current),
     onSuccess: ({ project }) => {
       queryClient.setQueryData<Project[]>(projectsQueryKey, (current = []) => [
         project,

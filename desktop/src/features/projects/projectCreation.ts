@@ -10,13 +10,6 @@ export type ProjectEventTemplate = {
   tags: string[][];
 };
 
-export type InitialProjectEventTemplates = {
-  dtag: string;
-  project: ProjectEventTemplate;
-  repository: ProjectEventTemplate;
-  repositoryAddress: string;
-};
-
 export function isUnsupportedProjectKindError(error: unknown): boolean {
   return (
     error instanceof Error &&
@@ -24,12 +17,27 @@ export function isUnsupportedProjectKindError(error: unknown): boolean {
   );
 }
 
-function projectDtagFromName(name: string): string {
+/** Derives the ASCII NIP-34 repository d-tag from a user-facing name. */
+export function repositoryDtagFromName(name: string): string {
   return name
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
 }
+
+function projectDtagFromName(name: string): string {
+  return repositoryDtagFromName(name);
+}
+
+export type InitialProjectEventTemplates = {
+  /** Project d-tag derived from the Create project Name field. */
+  dtag: string;
+  /** Initial repository d-tag derived from Repository name, or `dtag` when omitted. */
+  repositoryDtag: string;
+  project: ProjectEventTemplate;
+  repository: ProjectEventTemplate;
+  repositoryAddress: string;
+};
 
 export function buildInitialProjectEventTemplates({
   accessChannelId,
@@ -37,6 +45,7 @@ export function buildInitialProjectEventTemplates({
   description,
   name,
   ownerPubkey,
+  repositoryName,
   webUrl,
 }: {
   accessChannelId: string;
@@ -44,6 +53,7 @@ export function buildInitialProjectEventTemplates({
   description?: string;
   name: string;
   ownerPubkey: string;
+  repositoryName?: string;
   webUrl?: string;
 }): InitialProjectEventTemplates {
   const normalizedName = name.trim();
@@ -57,6 +67,24 @@ export function buildInitialProjectEventTemplates({
   if (!dtag) {
     throw new Error("Project name must include letters or numbers.");
   }
+
+  const normalizedRepositoryName = repositoryName?.trim() ?? "";
+  let repositoryDisplayName = normalizedName;
+  let repositoryDtag = dtag;
+  if (normalizedRepositoryName) {
+    if (new TextEncoder().encode(normalizedRepositoryName).byteLength > 256) {
+      throw new Error("Repository name must not exceed 256 bytes.");
+    }
+    repositoryDtag = repositoryDtagFromName(normalizedRepositoryName);
+    if (!repositoryDtag) {
+      throw new Error("Repository name must include letters or numbers.");
+    }
+    if (repositoryDtag.length > 64) {
+      throw new Error("Repository name slug must not exceed 64 characters.");
+    }
+    repositoryDisplayName = normalizedRepositoryName;
+  }
+
   const normalizedOwner = ownerPubkey.trim().toLowerCase();
   if (!/^[0-9a-f]{64}$/.test(normalizedOwner)) {
     throw new Error("Project owner public key is invalid.");
@@ -67,8 +95,8 @@ export function buildInitialProjectEventTemplates({
     throw new Error("Project description must not exceed 2,048 bytes.");
   }
   const repositoryTags: string[][] = [
-    ["d", dtag],
-    ["name", normalizedName],
+    ["d", repositoryDtag],
+    ["name", repositoryDisplayName],
   ];
   const projectTags: string[][] = [
     ["d", dtag],
@@ -93,11 +121,12 @@ export function buildInitialProjectEventTemplates({
     repositoryTags.push(["web", normalizedWebUrl]);
   }
 
-  const repositoryAddress = `${KIND_REPO_ANNOUNCEMENT}:${normalizedOwner}:${dtag}`;
+  const repositoryAddress = `${KIND_REPO_ANNOUNCEMENT}:${normalizedOwner}:${repositoryDtag}`;
   projectTags.push(["a", repositoryAddress]);
 
   return {
     dtag,
+    repositoryDtag,
     project: {
       kind: KIND_PROJECT_ANNOUNCEMENT,
       content: "",
