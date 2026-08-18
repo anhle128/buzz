@@ -9,6 +9,8 @@ use url::Url;
 
 const GH_ISSUE_STREAM_LIMIT: usize = 32 * 1024 * 1024;
 const ISSUE_LIST_JQ: &str = "[.[] | {number, title, body: (.body // \"\"), state, html_url, comments, created_at, updated_at, user: (if .user == null then null else {login: .user.login, avatar_url: (.user.avatar_url // \"\")} end), labels: [(.labels // [])[] | if type == \"string\" then . else .name end], assignees: [(.assignees // [])[] | {login, avatar_url: (.avatar_url // \"\")}], has_pull_request: has(\"pull_request\")}]";
+const ISSUE_ITEM_JQ: &str = "{number, title, body: (.body // \"\"), state, html_url, comments, created_at, updated_at, user: (if .user == null then null else {login: .user.login, avatar_url: (.user.avatar_url // \"\")} end), labels: [(.labels // [])[] | if type == \"string\" then . else .name end], assignees: [(.assignees // [])[] | {login, avatar_url: (.avatar_url // \"\")}], has_pull_request: has(\"pull_request\")}";
+const ISSUE_COMMENTS_JQ: &str = "[.[] | {id, body: (.body // \"\"), created_at, user: (if .user == null then null else {login: .user.login, avatar_url: (.user.avatar_url // \"\")} end)}]";
 
 /// GitHub login identity returned to the desktop issue UI.
 #[derive(Clone, Debug, Serialize)]
@@ -40,6 +42,15 @@ pub struct GitHubIssueListDto {
     pub has_more: bool,
 }
 
+/// One read-only GitHub issue comment returned to the desktop UI.
+#[derive(Clone, Debug, Serialize)]
+pub struct GitHubIssueCommentDto {
+    pub id: u64,
+    pub body: String,
+    pub created_at: i64,
+    pub user: GitHubIssueUserDto,
+}
+
 #[derive(Debug, Deserialize)]
 struct GitHubIssueUserWire {
     login: String,
@@ -60,6 +71,14 @@ struct GitHubIssueWire {
     labels: Vec<String>,
     assignees: Vec<GitHubIssueUserWire>,
     has_pull_request: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct GitHubIssueCommentWire {
+    id: u64,
+    body: String,
+    created_at: String,
+    user: Option<GitHubIssueUserWire>,
 }
 
 fn github_api_json<T: DeserializeOwned>(
@@ -243,6 +262,109 @@ pub(crate) fn list_github_issues_with(
         .filter_map(|item| map_issue(&repo, item))
         .collect();
     Ok(GitHubIssueListDto { issues, has_more })
+}
+
+fn issue_json_input(
+    title: &str,
+    body: &str,
+) -> Result<tempfile::NamedTempFile, ProjectPullRequestMergeError> {
+    use std::io::Write;
+    let mut file = tempfile::Builder::new()
+        .prefix("buzz-gh-")
+        .tempfile()
+        .map_err(|error| {
+            ProjectPullRequestMergeError::new("github_issues_failed", error.to_string())
+        })?;
+    serde_json::to_writer(
+        &mut file,
+        &serde_json::json!({ "title": title, "body": body }),
+    )
+    .map_err(|error| {
+        ProjectPullRequestMergeError::new("github_issues_failed", error.to_string())
+    })?;
+    file.flush().map_err(|error| {
+        ProjectPullRequestMergeError::new("github_issues_failed", error.to_string())
+    })?;
+    Ok(file)
+}
+
+pub(crate) fn create_github_issue_with(
+    gh: &GhRunner,
+    clone_url: &str,
+    title: &str,
+    body: &str,
+) -> Result<GitHubIssueDto, ProjectPullRequestMergeError> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err(ProjectPullRequestMergeError::new(
+            "github_issues_failed",
+            "Issue title is required.",
+        ));
+    }
+    if title.chars().count() > 256 {
+        return Err(ProjectPullRequestMergeError::new(
+            "github_issues_failed",
+            "Issue title must be 256 characters or fewer.",
+        ));
+    }
+    let repo = GitHubRepoRef::parse(clone_url)
+        .map_err(|message| ProjectPullRequestMergeError::new("github_issues_failed", message))?;
+    gh.ensure_auth()
+        .map_err(|error| remap_issues_error(error, ""))?;
+    let input = issue_json_input(title, body)?;
+    let path = format!("/repos/{}/issues", repo.slug());
+    let raw: GitHubIssueWire =
+        github_api_json(gh, "POST", &path, ISSUE_ITEM_JQ, Some(input.path()))?;
+    map_issue(&repo, raw).ok_or_else(|| {
+        ProjectPullRequestMergeError::new(
+            "github_issues_failed",
+            "GitHub returned an invalid created issue.",
+        )
+    })
+}
+
+pub(crate) fn list_github_issue_comments_with(
+    gh: &GhRunner,
+    clone_url: &str,
+    number: u64,
+) -> Result<Vec<GitHubIssueCommentDto>, ProjectPullRequestMergeError> {
+    if number == 0 {
+        return Err(ProjectPullRequestMergeError::new(
+            "github_issues_failed",
+            "GitHub issue number must be greater than zero.",
+        ));
+    }
+    let repo = GitHubRepoRef::parse(clone_url)
+        .map_err(|message| ProjectPullRequestMergeError::new("github_issues_failed", message))?;
+    gh.ensure_auth()
+        .map_err(|error| remap_issues_error(error, ""))?;
+    let path = format!(
+        "/repos/{}/issues/{number}/comments?per_page=100",
+        repo.slug()
+    );
+    let raw: Vec<GitHubIssueCommentWire> =
+        github_api_json(gh, "GET", &path, ISSUE_COMMENTS_JQ, None)?;
+    Ok(raw
+        .into_iter()
+        .filter_map(|comment| {
+            let user = comment.user?;
+            if comment.id == 0 || user.login.trim().is_empty() {
+                return None;
+            }
+            let created_at = DateTime::parse_from_rfc3339(&comment.created_at)
+                .ok()?
+                .timestamp();
+            Some(GitHubIssueCommentDto {
+                id: comment.id,
+                body: comment.body,
+                created_at,
+                user: GitHubIssueUserDto {
+                    login: user.login,
+                    avatar_url: user.avatar_url,
+                },
+            })
+        })
+        .collect())
 }
 
 #[cfg(test)]
@@ -432,5 +554,111 @@ mod tests {
             error_code(&remap_issues_error(limited, "API rate limit exceeded")),
             "github_issues_failed"
         );
+    }
+
+    #[test]
+    fn create_rejects_blank_title_before_running_gh() {
+        let gh =
+            GhRunner::from_resolved(Some(std::path::PathBuf::from("/bin/false"))).expect("runner");
+        let error = create_github_issue_with(&gh, "https://github.com/acme/app", "   ", "body")
+            .expect_err("blank");
+        assert_eq!(error_code(&error), "github_issues_failed");
+    }
+
+    #[test]
+    fn create_rejects_more_than_256_unicode_scalars_before_running_gh() {
+        let gh =
+            GhRunner::from_resolved(Some(std::path::PathBuf::from("/bin/false"))).expect("runner");
+        let title = "é".repeat(257);
+        let error = create_github_issue_with(&gh, "https://github.com/acme/app", &title, "")
+            .expect_err("long");
+        assert_eq!(error_code(&error), "github_issues_failed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_posts_trimmed_title_and_exact_body() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("dir");
+        let path = dir.path().join("gh");
+        let output = projected_issue(43, false).to_string();
+        let script = format!(
+            "#!/bin/sh\nset -eu\nroot=${{0%/gh}}\nprintf '%s\\n' \"$*\" >> \"$root/calls\"\ncase \"$*\" in\n  *auth*status*) exit 0 ;;\n  *--method*POST*)\n    previous=\"\"\n    for argument in \"$@\"; do\n      if [ \"$previous\" = \"--input\" ]; then cp \"$argument\" \"$root/input.json\"; fi\n      previous=\"$argument\"\n    done\n    printf '%s' '{}'\n    ;;\n  *) exit 1 ;;\nesac\n",
+            output,
+        );
+        std::fs::write(&path, script).expect("write fake gh");
+        let mut permissions = std::fs::metadata(&path).expect("stat").permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&path, permissions).expect("chmod");
+        let gh = GhRunner::from_resolved(Some(path)).expect("runner");
+        let issue = create_github_issue_with(
+            &gh,
+            "https://github.com/acme/app",
+            "  Issue 43  ",
+            " body with surrounding space ",
+        )
+        .expect("create");
+        assert_eq!(issue.number, 43);
+        let input: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("input.json")).expect("input"),
+        )
+        .expect("json");
+        assert_eq!(
+            input,
+            serde_json::json!({
+                "title": "Issue 43",
+                "body": " body with surrounding space ",
+            })
+        );
+        let calls = std::fs::read_to_string(dir.path().join("calls")).expect("calls");
+        assert!(calls.contains("--method POST"));
+        assert!(calls.contains("/repos/acme/app/issues"));
+        assert!(calls.contains("--input"));
+        assert!(calls.contains("--jq"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_rejects_response_with_foreign_html_url() {
+        let mut output = projected_issue(43, false);
+        output["html_url"] =
+            serde_json::Value::String("https://evil.example/issues/43".to_string());
+        let (_dir, path) = fake_gh(&output, 0, "");
+        let gh = GhRunner::from_resolved(Some(path)).expect("runner");
+        let error = create_github_issue_with(&gh, "https://github.com/acme/app", "Issue 43", "")
+            .expect_err("foreign URL");
+        assert_eq!(error_code(&error), "github_issues_failed");
+    }
+
+    #[test]
+    fn comments_reject_number_zero_before_running_gh() {
+        let gh =
+            GhRunner::from_resolved(Some(std::path::PathBuf::from("/bin/false"))).expect("runner");
+        let error = list_github_issue_comments_with(&gh, "https://github.com/acme/app", 0)
+            .expect_err("zero");
+        assert_eq!(error_code(&error), "github_issues_failed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn comments_keep_projected_github_order() {
+        let output = serde_json::json!([
+            { "id": 1, "body": "first", "created_at": "2026-01-02T03:04:05Z", "user": { "login": "ada", "avatar_url": "https://example.com/a" } },
+            { "id": 2, "body": "second", "created_at": "2026-01-02T04:04:05Z", "user": { "login": "linus", "avatar_url": "https://example.com/b" } }
+        ]);
+        let (dir, path) = fake_gh(&output, 0, "");
+        let gh = GhRunner::from_resolved(Some(path)).expect("runner");
+        let comments = list_github_issue_comments_with(&gh, "https://github.com/acme/app", 42)
+            .expect("comments");
+        assert_eq!(
+            comments
+                .iter()
+                .map(|comment| comment.body.as_str())
+                .collect::<Vec<_>>(),
+            vec!["first", "second"]
+        );
+        assert_eq!(comments[1].user.login, "linus");
+        let calls = std::fs::read_to_string(dir.path().join("calls")).expect("calls");
+        assert!(calls.contains("/repos/acme/app/issues/42/comments?per_page=100"));
     }
 }
