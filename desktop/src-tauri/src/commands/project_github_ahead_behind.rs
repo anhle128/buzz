@@ -114,6 +114,7 @@ fn parse_oid(value: &str) -> Result<String, ProjectPullRequestMergeError> {
 }
 
 fn github_api_output(gh: &GhRunner, path: &str) -> Result<GhOutput, ProjectPullRequestMergeError> {
+    // Project only ahead/behind counts so full compare payloads stay under GH_STREAM_LIMIT.
     gh.run(&[
         OsString::from("api"),
         OsString::from("--hostname"),
@@ -121,6 +122,8 @@ fn github_api_output(gh: &GhRunner, path: &str) -> Result<GhOutput, ProjectPullR
         OsString::from("--method"),
         OsString::from("GET"),
         OsString::from(path),
+        OsString::from("--jq"),
+        OsString::from("{ahead_by,behind_by}"),
     ])
     .map_err(|error| remap_state_error(error, ""))
 }
@@ -230,6 +233,40 @@ esac
         assert_eq!(result.status, "compared");
         assert_eq!(result.ahead, Some(2));
         assert_eq!(result.behind, Some(1));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn uses_jq_for_compare_calls() {
+        let local = "e".repeat(40);
+        let remote = "d".repeat(40);
+        let script = r#"
+root=${0%/gh}
+printf '%s\n' "$*" >> "$root/calls"
+case "$*" in
+  *auth*status*) exit 0 ;;
+  *"/repos/acme/app/compare"*)
+    printf '%s' '{"ahead_by":2,"behind_by":1}'
+    ;;
+  *) exit 1 ;;
+esac
+"#;
+        let (dir, path) = fake_gh(script);
+        let gh = GhRunner::from_resolved(Some(path)).expect("runner");
+        let _result = github_ahead_behind_with(
+            &gh,
+            "https://github.com/acme/app",
+            "develop",
+            &local,
+            &remote,
+        )
+        .expect("compared");
+        let calls = std::fs::read_to_string(dir.path().join("calls")).expect("read calls");
+        assert!(calls.lines().any(|line| {
+            line.contains("/repos/acme/app/compare")
+                && line.contains("--jq")
+                && line.contains("{ahead_by,behind_by}")
+        }));
     }
 
     #[cfg(unix)]
