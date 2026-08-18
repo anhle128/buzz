@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { ProjectPullRequestMergeError } from "../../../shared/api/projectGit.ts";
 import {
+  githubBranchActionReason,
   isNoChannelBindingError,
   projectBranchErrorMessage,
 } from "./projectBranchErrors.ts";
@@ -40,4 +42,31 @@ test("passes through other errors and falls back for non-errors", () => {
   );
   assert.equal(projectBranchErrorMessage("boom", "fallback"), "fallback");
   assert.equal(projectBranchErrorMessage(null, "fallback"), "fallback");
+});
+
+test("maps structured GitHub errors in branch dialogs", () => {
+  assert.equal(
+    projectBranchErrorMessage(
+      new ProjectPullRequestMergeError(
+        "github_auth_required",
+        "Authenticate GitHub CLI with: gh auth login --hostname github.com",
+        null,
+      ),
+      "Failed to create branch.",
+    ),
+    "Authenticate GitHub CLI with: gh auth login --hostname github.com",
+  );
+});
+
+test("derives a GitHub branch-action recovery reason and gates it by host", () => {
+  const error = new ProjectPullRequestMergeError(
+    "github_cli_missing",
+    "Install the GitHub CLI to continue.",
+    null,
+  );
+  assert.equal(
+    githubBranchActionReason({ githubHosted: true, error }),
+    "Install GitHub CLI, then retry.",
+  );
+  assert.equal(githubBranchActionReason({ githubHosted: false, error }), null);
 });

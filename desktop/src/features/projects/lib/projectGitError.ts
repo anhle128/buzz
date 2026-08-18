@@ -1,3 +1,5 @@
+import { parseProjectPullRequestMergeError } from "@/shared/api/projectGit";
+
 export type ProjectGitErrorPresentation = {
   title: string;
   description: string;
@@ -24,6 +26,28 @@ export function projectCloneErrorPresentation(
 ): ProjectGitErrorPresentation {
   const message = errorText(error);
   const github = isGitHubCloneUrl(cloneUrl);
+
+  const structured = github ? parseProjectPullRequestMergeError(error) : null;
+  if (structured) {
+    switch (structured.code) {
+      case "github_cli_missing":
+        return {
+          title: "GitHub CLI is required",
+          description: "Install GitHub CLI, then retry.",
+        };
+      case "github_auth_required":
+        return {
+          title: "GitHub authentication required",
+          description: structured.message,
+        };
+      case "github_repo_unavailable":
+      case "github_state_failed":
+        return {
+          title: "Could not load GitHub branches",
+          description: structured.message,
+        };
+    }
+  }
 
   if (
     /\b(?:401|403)\b|authenticat|authoriz|permission denied|access denied|ssh certificate/.test(
