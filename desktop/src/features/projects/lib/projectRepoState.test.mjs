@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { isGitHubCloneUrl } from "./projectGitError.ts";
-import { fetchRepoStateWith } from "./projectRepoState.ts";
+import {
+  fetchRepoStateWith,
+  githubRepositoryStateUnresolved,
+} from "./projectRepoState.ts";
 
 function repository(cloneUrl) {
   return {
@@ -20,6 +23,25 @@ function repository(cloneUrl) {
     repoAddress: `30617:${"ab".repeat(32)}:app`,
   };
 }
+
+test("treats GitHub pending and error as unresolved state", () => {
+  assert.equal(
+    githubRepositoryStateUnresolved(true, { isPending: true, isError: false }),
+    true,
+  );
+  assert.equal(
+    githubRepositoryStateUnresolved(true, { isPending: false, isError: true }),
+    true,
+  );
+  assert.equal(
+    githubRepositoryStateUnresolved(true, { isPending: false, isError: false }),
+    false,
+  );
+  assert.equal(
+    githubRepositoryStateUnresolved(false, { isPending: true, isError: false }),
+    false,
+  );
+});
 
 test("isGitHubCloneUrl accepts https and ssh github hosts", () => {
   assert.equal(isGitHubCloneUrl("https://github.com/acme/app"), true);

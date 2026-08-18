@@ -5480,8 +5480,7 @@ function buildMockProjectEvents(): RelayEvent[] {
       projectIndex === 0
         ? (window.__BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__ ?? seed.cloneUrl)
         : seed.cloneUrl;
-    // GitHub override: announce a branch that is not in the GitHub stub so the
-    // picker can reset to published HEAD (`develop`) once state loads.
+    // GitHub override: announce stale `main` so first-open must take GitHub HEAD.
     const githubCloneOverride =
       projectIndex === 0 &&
       Boolean(window.__BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__);
@@ -5499,9 +5498,7 @@ function buildMockProjectEvents(): RelayEvent[] {
           ["description", seed.description],
           ["buzz-channel", "9a1657ac-f7aa-5db0-b632-d8bbeb6dfb50"],
           ["clone", cloneUrl],
-          ...(githubCloneOverride
-            ? [["default-branch", "announced"]]
-            : []),
+          ...(githubCloneOverride ? [["default-branch", "main"]] : []),
           ...seed.contributors.map((pubkey) => ["p", pubkey]),
         ],
         owner,

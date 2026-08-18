@@ -81,6 +81,14 @@ export async function fetchRepoStateWith(
   return loaders.loadBuzz(project);
 }
 
+/** Hold GitHub picker defaults until `gh` state succeeds or fails. */
+export function githubRepositoryStateUnresolved(
+  hosted: boolean,
+  query: { isPending: boolean; isError: boolean },
+): boolean {
+  return hosted && (query.isPending || query.isError);
+}
+
 /** Load repository branch state for the Projects picker. */
 export async function fetchRepoState(
   project: Repository,

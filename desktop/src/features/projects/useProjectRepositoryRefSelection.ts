@@ -25,7 +25,9 @@ export function useProjectRepositoryRefSelection(input: {
       if (currentBranch && input.branchOptions.includes(currentBranch)) {
         return currentBranch;
       }
-      return input.defaultBranch ?? input.branchOptions[0] ?? null;
+      // Keep auto-selection derived from defaultBranch so a later GitHub HEAD
+      // can replace an announced fallback that is still in the option list.
+      return null;
     });
     setSelectedTag((currentTag) => {
       if (currentTag && input.tags.some((tag) => tag.name === currentTag)) {
@@ -35,7 +37,6 @@ export function useProjectRepositoryRefSelection(input: {
     });
   }, [
     input.branchOptions,
-    input.defaultBranch,
     input.projectAvailable,
     input.projectPending,
     input.tags,

@@ -1,6 +1,6 @@
 # GitHub repository state (branch list + default branch)
 
-**Status:** Draft pending review  
+**Status:** Approved 2026-08-18  
 **Scope:** Buzz Desktop Projects — G1 + G2 only. When a repository clone URL is `github.com`, the branch picker and default branch come from GitHub via `gh api`.  
 **Plan:** [phase-01-git-native.md](../../../plans/20260818-1211-github-native-host/phase-01-git-native.md) slice G1 + G2.
 
@@ -66,7 +66,7 @@ Parses a plain `https://github.com/<owner>/<repo>[.git]` or `git@github.com:` UR
 - **Auth:** `GhRunner::discover` then `ensure_auth` (same as merge)
 - **Calls:**
   1. `GET /repos/{owner}/{repo}` → `default_branch`
-  2. `GET /repos/{owner}/{repo}/branches?per_page=100` following `Link` pagination
+  2. Branch pages via `gh api --paginate --slurp` **or** explicit `page=N` loops. Never deserialize `--paginate` without `--slurp` (`gh` emits one JSON array per page).
 - **Output:** `{ head, branches: [{ name, commit }], tags: [], updated_at }`
   - `head` = `default_branch`
   - `commit` = branch `commit.sha`
@@ -101,10 +101,14 @@ Do not invent a successful `RepoState` on failure.
 |-----------|------|-----|
 | `gh` not on PATH | `github_cli_missing` | Same title/body as merge: install GitHub CLI |
 | `gh auth status` fails | `github_auth_required` | `gh auth login --hostname github.com` plus copy button |
-| Repo 404 or no access | `github_repo_unavailable` | `gh` message; picker disabled |
-| Other `gh` / JSON failure | `github_state_failed` | Retry; project page stays up |
+| Repo HTTP 404, or 403 that is not a rate/abuse limit | `github_repo_unavailable` | `gh` message; picker disabled |
+| Rate/abuse 403, timeout, truncated JSON, other `gh` failure | `github_state_failed` | Retry; project page stays up |
 
-`useRepoStateQuery` is in error state (`data` is undefined). Show recovery next to the branch dropdown, not as a full-page failure. Provide Retry (`refetch`). No automatic infinite retry.
+`useRepoStateQuery` is in error state (`data` is undefined).
+
+For a **GitHub-hosted** repo in that state, do **not** call `resolveProjectDefaultBranch` with the announcement default. That tag is usually missing and falls back to `"main"`, so the optimistic picker would still select `main`. Pass `defaultBranch = null` and `observedBranches = []` until GitHub state succeeds. Show recovery next to the real header rows (`ProjectWorkspaceTabs`, `ProjectReadmePanel`, `ProjectRepositoryPanel`), not only in `ProjectRepositorySource.tsx`. Retry calls `refetch`. No automatic infinite retry.
+
+Buzz kind:30618 errors must **not** use GitHub-only copy. Gate recovery on `isGitHubCloneUrl`.
 
 ## Testing
 
@@ -115,7 +119,8 @@ No live GitHub in unit tests. Inject `GhRunner` fixtures like merge tests.
 - Fixture JSON maps to `head: "develop"` and the listed branch names.
 - `resolveProjectDefaultBranch` returns `develop` when `head` is `develop` and that name is in `branches`.
 - Missing binary → `github_cli_missing`; failed auth → `github_auth_required`.
-- e2e mock bridge stubs `get_github_repository_state` so smoke tests still run.
+- e2e mock bridge stubs `get_github_repository_state`.
+- One mock-bridge smoke spec asserts the picker selects `develop` when the stub returns `head: "develop"`, and shows recovery (not `main`) when the stub throws `github_auth_required`.
 
 Existing 30618 tests stay green.
 

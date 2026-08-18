@@ -60,6 +60,7 @@ import {
   resolveProjectDefaultBranch,
 } from "@/features/projects/lib/projectBranches";
 import { isGitHubCloneUrl } from "@/features/projects/lib/projectGitError";
+import { githubRepositoryStateUnresolved } from "@/features/projects/lib/projectRepoState";
 import { normalizeRepositoryUrl } from "@/features/projects/lib/projectsViewHelpers";
 import {
   shareTabForWorkspaceTab,
@@ -152,11 +153,15 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
   );
   const repoStateQuery = useRepoStateQuery(repository);
   const pullRequestsQuery = useProjectPullRequestsQuery(repository);
-  // GitHub state errors must not fall back to the announcement default ("main").
+  // GitHub pending/error must not fall back to the announcement default ("main").
   const githubHosted = isGitHubCloneUrl(repository?.cloneUrls[0]);
   const githubStateFailed = githubHosted && repoStateQuery.isError;
+  const githubStateUnresolved = githubRepositoryStateUnresolved(
+    githubHosted,
+    repoStateQuery,
+  );
   const defaultBranch =
-    !repository || githubStateFailed
+    !repository || githubStateUnresolved
       ? null
       : resolveProjectDefaultBranch(
           repository.defaultBranch,
@@ -165,17 +170,19 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
   const { branchOptions, forgetBranch, managedBranches, rememberBranch } =
     useOptimisticProjectBranches({
       defaultBranch,
-      observedBranches: githubStateFailed
+      observedBranches: githubStateUnresolved
         ? []
         : (repoStateQuery.data?.branches ?? []),
       projectId: repository?.id ?? projectId,
-      referencedBranches: githubStateFailed
+      referencedBranches: githubStateUnresolved
         ? []
         : (pullRequestsQuery.data?.map(
             (pullRequest) => pullRequest.branchName ?? null,
           ) ?? []),
     });
-  const repoTags = githubStateFailed ? [] : (repoStateQuery.data?.tags ?? []);
+  const repoTags = githubStateUnresolved
+    ? []
+    : (repoStateQuery.data?.tags ?? []);
   const { activeBranch, selectBranch, selectedTag, selectTag } =
     useProjectRepositoryRefSelection({
       branchOptions,
