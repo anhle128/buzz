@@ -66,3 +66,5 @@ Start **G1 + G2** only. Then G3+G4. Then G5–G7.
 **G1+G2 spec:** [docs/superpowers/specs/2026-08-18-github-repository-state-design.md](../../docs/superpowers/specs/2026-08-18-github-repository-state-design.md)
 
 **G3+G4 spec:** [docs/superpowers/specs/2026-08-18-github-snapshot-and-fetch-design.md](../../docs/superpowers/specs/2026-08-18-github-snapshot-and-fetch-design.md)
+
+**G5–G7 spec:** [docs/superpowers/specs/2026-08-18-github-pull-push-and-branches-design.md](../../docs/superpowers/specs/2026-08-18-github-pull-push-and-branches-design.md)
