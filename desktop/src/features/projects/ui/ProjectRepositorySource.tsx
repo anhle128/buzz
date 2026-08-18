@@ -210,6 +210,8 @@ export type RepoSourceHeaderControls = {
   onRetryState?: () => void;
   /** When true, render GitHub CLI/auth recovery under the header row. */
   showGithubStateRecovery?: boolean;
+  /** True for github.com remotes so the header renders GitHub Fetch. */
+  githubHosted?: boolean;
 };
 
 /** Compact dropdown picking the repository source (remote or local). */
@@ -281,6 +283,17 @@ export function RepoSourceDropdown({
             </span>
           </DropdownMenuItem>
         ) : null}
+        {controls.githubHosted && controls.externalUrl ? (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem asChild>
+              <a href={controls.externalUrl} rel="noreferrer" target="_blank">
+                <ExternalLink className="h-4 w-4" />
+                Open on GitHub
+              </a>
+            </DropdownMenuItem>
+          </>
+        ) : null}
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -293,6 +306,37 @@ export function RepoSyncActionButton({
 }: {
   controls: RepoSourceHeaderControls;
 }) {
+  if (controls.githubHosted) {
+    if (!controls.onFetch) return null;
+    return (
+      <div className="flex items-center gap-2">
+        {controls.aheadCount != null && controls.behindCount != null ? (
+          <span
+            className="font-mono text-2xs text-muted-foreground"
+            data-testid="repo-ahead-behind"
+          >
+            {controls.aheadCount} / {controls.behindCount}
+          </span>
+        ) : null}
+        <Button
+          className={PROJECT_PANEL_ACTION_BUTTON_CLASS}
+          disabled={controls.fetchPending}
+          onClick={controls.onFetch}
+          size="sm"
+          title={controls.fetchTitle ?? "Refresh GitHub repository"}
+          variant="ghost"
+        >
+          {controls.fetchPending ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <RefreshCw className="h-4 w-4" />
+          )}
+          Fetch
+        </Button>
+      </div>
+    );
+  }
+
   if (controls.remoteKind === "external") {
     return controls.externalUrl ? (
       <Button

@@ -47,7 +47,7 @@ test("isGitHubCloneUrl accepts https and ssh github hosts", () => {
   assert.equal(isGitHubCloneUrl("https://github.com/acme/app"), true);
   assert.equal(isGitHubCloneUrl("git@github.com:acme/app.git"), true);
   assert.equal(
-    isGitHubCloneUrl("https://relay.example/git/" + "ab".repeat(32) + "/app"),
+    isGitHubCloneUrl(`https://relay.example/git/${"ab".repeat(32)}/app`),
     false,
   );
 });

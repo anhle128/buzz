@@ -80,9 +80,7 @@ pub async fn get_github_repository_state(
         get_github_repository_state_with_runner(clone_url, GhRunner::discover())
     })
     .await
-    .map_err(|error| {
-        ProjectPullRequestMergeError::new("github_state_failed", error.to_string())
-    })?
+    .map_err(|error| ProjectPullRequestMergeError::new("github_state_failed", error.to_string()))?
 }
 
 fn get_json<T: serde::de::DeserializeOwned>(
@@ -120,7 +118,7 @@ fn get_json<T: serde::de::DeserializeOwned>(
     })
 }
 
-fn combined_cli_diagnostic(stderr: &str, stdout: &str) -> String {
+pub(crate) fn combined_cli_diagnostic(stderr: &str, stdout: &str) -> String {
     match (stderr.trim().is_empty(), stdout.trim().is_empty()) {
         (true, true) => String::new(),
         (false, true) => stderr.to_string(),
@@ -160,7 +158,7 @@ fn list_branch_pages(
     Ok(branches)
 }
 
-fn remap_state_error(
+pub(crate) fn remap_state_error(
     error: ProjectPullRequestMergeError,
     diagnostic: &str,
 ) -> ProjectPullRequestMergeError {

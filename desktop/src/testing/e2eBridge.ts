@@ -1262,6 +1262,12 @@ declare global {
       code: string;
       message: string;
     };
+    __BUZZ_E2E_GITHUB_SNAPSHOT_ERROR__?: { code: string; message: string };
+    __BUZZ_E2E_GITHUB_AHEAD_BEHIND__?: {
+      status: "compared" | "unpushed";
+      ahead?: number;
+      behind?: number;
+    };
     /** Overrides the first mock repository owner for delegated-owner tests. */
     __BUZZ_E2E_PROJECT_OWNER_OVERRIDE__?: string;
     __BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__?: string;
@@ -5499,6 +5505,9 @@ function buildMockProjectEvents(): RelayEvent[] {
           ["buzz-channel", "9a1657ac-f7aa-5db0-b632-d8bbeb6dfb50"],
           ["clone", cloneUrl],
           ...(githubCloneOverride ? [["default-branch", "main"]] : []),
+          ...(githubCloneOverride && cloneUrl.startsWith("https://")
+            ? [["web", cloneUrl]]
+            : []),
           ...seed.contributors.map((pubkey) => ["p", pubkey]),
         ],
         owner,
@@ -11570,6 +11579,64 @@ export function maybeInstallE2eTauriMocks() {
           updated_at: Math.floor(Date.now() / 1000),
         };
       }
+      case "get_github_repository_snapshot": {
+        if (window.__BUZZ_E2E_GITHUB_SNAPSHOT_ERROR__) {
+          throw window.__BUZZ_E2E_GITHUB_SNAPSHOT_ERROR__;
+        }
+        return {
+          latest_commit: {
+            hash: "d".repeat(40),
+            short_hash: "ddddddd",
+            author_name: "Ada",
+            author_email: "ada@example.com",
+            timestamp: Math.floor(Date.now() / 1000) - 120,
+            subject: "Document develop",
+          },
+          commits: [
+            {
+              hash: "d".repeat(40),
+              short_hash: "ddddddd",
+              author_name: "Ada",
+              author_email: "ada@example.com",
+              timestamp: Math.floor(Date.now() / 1000) - 120,
+              subject: "Document develop",
+            },
+          ],
+          contributors: [],
+          files: [
+            {
+              path: "README.md",
+              kind: "blob",
+              size: 24,
+              preview_content: "# Develop branch\n",
+              last_changed_at: null,
+              latest_commit: null,
+            },
+            {
+              path: "src/lib.rs",
+              kind: "blob",
+              size: 12,
+              preview_content: null,
+              last_changed_at: null,
+              latest_commit: null,
+            },
+          ],
+        };
+      }
+      case "get_github_ahead_behind": {
+        if (window.__BUZZ_E2E_GITHUB_AHEAD_BEHIND__) {
+          return window.__BUZZ_E2E_GITHUB_AHEAD_BEHIND__;
+        }
+        const input = payload as { localSha?: string; remoteSha?: string };
+        if (
+          input.localSha &&
+          input.remoteSha &&
+          input.localSha.toLowerCase() === input.remoteSha.toLowerCase()
+        ) {
+          return { status: "compared", ahead: 0, behind: 0 };
+        }
+        return { status: "unpushed" };
+      }
       case "get_project_repo_snapshot":
         return {
           latest_commit: {
@@ -11666,10 +11733,28 @@ export function maybeInstallE2eTauriMocks() {
           ],
         };
       case "get_project_local_repo_snapshot": {
-        const path = window.__BUZZ_E2E_PROJECT_REPO_SYNC_STATUS__?.local_path;
-        return path
-          ? { path, snapshot: { latest_commit: null, files: [] } }
-          : null;
+        const status = window.__BUZZ_E2E_PROJECT_REPO_SYNC_STATUS__;
+        const path = status?.local_path;
+        if (!path) return null;
+        const hash = status.local_head;
+        return {
+          path,
+          snapshot: {
+            latest_commit: hash
+              ? {
+                  hash,
+                  short_hash: hash.slice(0, 7),
+                  author_name: "Local",
+                  author_email: "local@example.com",
+                  timestamp: Math.floor(Date.now() / 1000),
+                  subject: "Local HEAD",
+                }
+              : null,
+            commits: [],
+            files: [],
+            contributors: [],
+          },
+        };
       }
       case "get_project_repo_diff":
         return {
