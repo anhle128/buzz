@@ -496,6 +496,23 @@ export async function getGithubRepositoryState(cloneUrl: string): Promise<{
   }
 }
 
+/** Load a GitHub remote snapshot through the native `gh api` command. */
+export async function getGithubRepositorySnapshot(input: {
+  cloneUrl: string;
+  ref: string;
+}): Promise<ProjectRepoSnapshot> {
+  try {
+    // Native uses refName because ref is a reserved Rust keyword.
+    const snapshot = await invokeTauri<RawProjectRepoSnapshot>(
+      "get_github_repository_snapshot",
+      { cloneUrl: input.cloneUrl, refName: input.ref },
+    );
+    return fromRawProjectRepoSnapshot(snapshot);
+  } catch (error) {
+    throw parseProjectPullRequestMergeError(error) ?? error;
+  }
+}
+
 type RawProjectRepoMergeResult = {
   message: string;
   merge_commit: string;
