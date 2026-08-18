@@ -55,6 +55,48 @@ export function combineObserverIngestionAgents(
   return [...managed, ...owned];
 }
 
+/** Canonical owner-global list of agents eligible for observer ingestion. */
+export function useObserverIngestionAgents(): Array<
+  Pick<ManagedAgent, "pubkey" | "status">
+> {
+  const identityQuery = useIdentityQuery();
+  const currentPubkey = identityQuery.data?.pubkey;
+
+  const managedAgentsQuery = useManagedAgentsQuery();
+  const managedAgents = managedAgentsQuery.data;
+
+  const relayAgentsQuery = useRelayAgentsQuery();
+  const relayAgentPubkeys = React.useMemo(
+    () => (relayAgentsQuery.data ?? []).map((agent) => agent.pubkey),
+    [relayAgentsQuery.data],
+  );
+
+  const profilesQuery = useUsersBatchQuery(relayAgentPubkeys, {
+    enabled: Boolean(currentPubkey) && relayAgentPubkeys.length > 0,
+  });
+  const profiles = profilesQuery.data?.profiles;
+
+  return React.useMemo(() => {
+    const ownerByPubkey = new Map<string, string>();
+    for (const [pubkey, summary] of Object.entries(profiles ?? {})) {
+      if (summary.ownerPubkey) {
+        // Store both key and value normalized so lookups and ownership
+        // comparisons never depend on the casing the relay happened to send.
+        ownerByPubkey.set(
+          normalizePubkey(pubkey),
+          normalizePubkey(summary.ownerPubkey),
+        );
+      }
+    }
+    return combineObserverIngestionAgents(
+      managedAgents ?? [],
+      relayAgentPubkeys,
+      ownerByPubkey,
+      currentPubkey,
+    );
+  }, [currentPubkey, managedAgents, profiles, relayAgentPubkeys]);
+}
+
 /**
  * App-level owner-global observer ingestion.
  *
@@ -74,43 +116,7 @@ export function combineObserverIngestionAgents(
  * managed-agent observer coverage during startup.
  */
 export function useAgentObserverIngestion() {
-  const identityQuery = useIdentityQuery();
-  const currentPubkey = identityQuery.data?.pubkey;
-
-  const managedAgentsQuery = useManagedAgentsQuery();
-  const managedAgents = managedAgentsQuery.data;
-
-  const relayAgentsQuery = useRelayAgentsQuery();
-  const relayAgentPubkeys = React.useMemo(
-    () => (relayAgentsQuery.data ?? []).map((agent) => agent.pubkey),
-    [relayAgentsQuery.data],
-  );
-
-  const profilesQuery = useUsersBatchQuery(relayAgentPubkeys, {
-    enabled: Boolean(currentPubkey) && relayAgentPubkeys.length > 0,
-  });
-  const profiles = profilesQuery.data?.profiles;
-
-  const ingestionAgents = React.useMemo(() => {
-    const ownerByPubkey = new Map<string, string>();
-    for (const [pubkey, summary] of Object.entries(profiles ?? {})) {
-      if (summary.ownerPubkey) {
-        // Store both key and value normalized so lookups and ownership
-        // comparisons never depend on the casing the relay happened to send.
-        ownerByPubkey.set(
-          normalizePubkey(pubkey),
-          normalizePubkey(summary.ownerPubkey),
-        );
-      }
-    }
-    return combineObserverIngestionAgents(
-      managedAgents ?? [],
-      relayAgentPubkeys,
-      ownerByPubkey,
-      currentPubkey,
-    );
-  }, [currentPubkey, managedAgents, profiles, relayAgentPubkeys]);
-
+  const ingestionAgents = useObserverIngestionAgents();
   useManagedAgentObserverBridge(ingestionAgents);
   useActiveAgentTurnsBridge(ingestionAgents);
 }
