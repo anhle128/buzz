@@ -32,6 +32,7 @@ export function CreateProjectDialog({
 }: CreateProjectDialogProps) {
   const [name, setName] = React.useState("");
   const [description, setDescription] = React.useState("");
+  const [repositoryName, setRepositoryName] = React.useState("");
   const [cloneUrl, setCloneUrl] = React.useState("");
   const [webUrl, setWebUrl] = React.useState("");
   const [accessChannelId, setAccessChannelId] = React.useState("");
@@ -54,6 +55,7 @@ export function CreateProjectDialog({
 
     setName("");
     setDescription("");
+    setRepositoryName("");
     setCloneUrl("");
     setWebUrl("");
     setAccessChannelId(accessChannels[0]?.id ?? "");
@@ -79,6 +81,7 @@ export function CreateProjectDialog({
         accessChannelId,
         name: trimmedName,
         description: description.trim() || undefined,
+        repositoryName: repositoryName.trim() || undefined,
         cloneUrl: cloneUrl.trim() || undefined,
         webUrl: webUrl.trim() || undefined,
       });
@@ -232,6 +235,45 @@ export function CreateProjectDialog({
                 value={description}
               />
             </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <label
+              className="text-sm font-medium text-foreground"
+              htmlFor="create-project-repository-name"
+            >
+              Repository name
+              <span className={CREATE_LABEL_OPTIONAL_CLASS}>Optional</span>
+            </label>
+            <div
+              className={cn(
+                "flex min-h-11 items-center px-3",
+                CREATE_FIELD_SHELL_CLASS,
+              )}
+            >
+              <Input
+                autoCapitalize="none"
+                autoComplete="off"
+                autoCorrect="off"
+                className={cn(
+                  "h-8 px-0 py-0 leading-6",
+                  CREATE_FIELD_CONTROL_CLASS,
+                )}
+                data-testid="create-project-repository-name"
+                disabled={isCreating}
+                id="create-project-repository-name"
+                onChange={(event) => {
+                  setRepositoryName(event.target.value);
+                  setErrorMessage(null);
+                }}
+                placeholder="bee-garden-ios"
+                spellCheck={false}
+                value={repositoryName}
+              />
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Defaults to the project name.
+            </p>
           </div>
 
           <div className="space-y-1.5">

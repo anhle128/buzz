@@ -5,10 +5,15 @@ import {
   buildRepositoryChannelBindingTemplate,
   buildProjectPatchTemplate,
   buildAddedRepositoryEventTemplatesFromHead,
+  repositoryDtagFromName,
 } from "./projectRepositoryCreation.ts";
 import { validateProjectEventEnvelope } from "./projectModels.ts";
 
 const OWNER = "a".repeat(64);
+
+test("repositoryDtagFromName re-export slugs owner/repo display names", () => {
+  assert.equal(repositoryDtagFromName("anhle128/buzz"), "anhle128-buzz");
+});
 
 test("buildRepositoryChannelBindingTemplate preserves repository metadata", () => {
   const repository = {
