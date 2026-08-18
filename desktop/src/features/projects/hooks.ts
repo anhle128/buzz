@@ -399,31 +399,25 @@ async function fetchProjectRepoSnapshot(
   pullRequest?: ProjectPullRequest | null,
   tag?: { name: string; commit: string } | null,
 ): Promise<ProjectRepoSnapshot | null> {
-  return fetchProjectRepoSnapshotWith(
-    project,
-    branchName,
-    pullRequest,
-    tag,
-    {
-      loadGithub: getGithubRepositorySnapshot,
-      loadBuzz: async () => {
-        const cloneUrl = pullRequest?.cloneUrls[0] ?? project.cloneUrls[0];
-        if (!cloneUrl) return null;
+  return fetchProjectRepoSnapshotWith(project, branchName, pullRequest, tag, {
+    loadGithub: getGithubRepositorySnapshot,
+    loadBuzz: async () => {
+      const cloneUrl = pullRequest?.cloneUrls[0] ?? project.cloneUrls[0];
+      if (!cloneUrl) return null;
 
-        return getProjectRepoSnapshot({
-          cloneUrl,
-          defaultBranch: branchName ?? project.defaultBranch,
-          baseBranch: project.defaultBranch,
-          targetCommit: tag?.commit ?? pullRequest?.commit ?? null,
-          targetRef: tag
-            ? `refs/tags/${tag.name}`
-            : pullRequest
-              ? `refs/nostr/${pullRequest.id}`
-              : null,
-        });
-      },
+      return getProjectRepoSnapshot({
+        cloneUrl,
+        defaultBranch: branchName ?? project.defaultBranch,
+        baseBranch: project.defaultBranch,
+        targetCommit: tag?.commit ?? pullRequest?.commit ?? null,
+        targetRef: tag
+          ? `refs/tags/${tag.name}`
+          : pullRequest
+            ? `refs/nostr/${pullRequest.id}`
+            : null,
+      });
     },
-  );
+  });
 }
 
 async function fetchProjectRepoDiff(

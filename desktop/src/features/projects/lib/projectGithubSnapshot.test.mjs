@@ -25,7 +25,12 @@ function repository(cloneUrl) {
 test("GitHub clone URL uses the GitHub snapshot command", async () => {
   let githubCalls = 0;
   let buzzCalls = 0;
-  const snapshot = { latestCommit: null, commits: [], files: [], contributors: [] };
+  const snapshot = {
+    latestCommit: null,
+    commits: [],
+    files: [],
+    contributors: [],
+  };
   const result = await fetchProjectRepoSnapshotWith(
     repository("https://github.com/acme/app"),
     "develop",
@@ -73,7 +78,11 @@ test("GitHub snapshot ignores Buzz tag, nostr refs, and PR source clone URLs", a
   await fetchProjectRepoSnapshotWith(
     repository("https://github.com/acme/app"),
     "develop",
-    { id: "pr1", cloneUrls: ["https://github.com/fork/app"], commit: "c".repeat(40) },
+    {
+      id: "pr1",
+      cloneUrls: ["https://github.com/fork/app"],
+      commit: "c".repeat(40),
+    },
     { name: "v1", commit: "d".repeat(40) },
     {
       loadGithub: async ({ cloneUrl, ref }) => {

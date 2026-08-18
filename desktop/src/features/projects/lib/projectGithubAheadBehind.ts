@@ -6,7 +6,7 @@ export type { GithubAheadBehind };
 export function githubAheadBehindCounts(
   result: GithubAheadBehind | null | undefined,
 ) {
-  if (!result || result.status !== "compared") return null;
+  if (result?.status !== "compared") return null;
   if (typeof result.ahead !== "number" || typeof result.behind !== "number") {
     return null;
   }

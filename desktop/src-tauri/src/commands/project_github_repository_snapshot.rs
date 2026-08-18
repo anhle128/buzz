@@ -99,16 +99,10 @@ pub async fn get_github_repository_snapshot(
     ref_name: String,
 ) -> Result<ProjectRepoSnapshotInfo, ProjectPullRequestMergeError> {
     tauri::async_runtime::spawn_blocking(move || {
-        get_github_repository_snapshot_with_runner(
-            clone_url,
-            ref_name,
-            GhRunner::discover(),
-        )
+        get_github_repository_snapshot_with_runner(clone_url, ref_name, GhRunner::discover())
     })
     .await
-    .map_err(|error| {
-        ProjectPullRequestMergeError::new("github_state_failed", error.to_string())
-    })?
+    .map_err(|error| ProjectPullRequestMergeError::new("github_state_failed", error.to_string()))?
 }
 
 fn clean_github_branch(git_ref: &str) -> Result<String, ProjectPullRequestMergeError> {
@@ -139,7 +133,7 @@ fn list_commit_rows(
         let diagnostic = combined_cli_diagnostic(&output.stderr, &output.stdout);
         let lower = diagnostic.to_ascii_lowercase();
         // Empty GitHub repos return HTTP 409 ("Git Repository is empty."), not [].
-        if lower.contains("409") || lower.contains("empty") {
+        if lower.contains("409") && lower.contains("empty") {
             return Ok(vec![]);
         }
         return Err(remap_state_error(
@@ -207,7 +201,15 @@ fn fetch_readme(
     }
     serde_json::from_str::<GithubReadmePayload>(&output.stdout)
         .map(Some)
-        .or(Ok(None))
+        .map_err(|_| {
+            remap_state_error(
+                ProjectPullRequestMergeError::new(
+                    "github_merge_failed",
+                    "GitHub CLI returned an unexpected JSON response. Update gh, then retry.",
+                ),
+                &output.stderr,
+            )
+        })
 }
 
 fn attach_readme(
@@ -250,16 +252,21 @@ fn decode_readme_preview(readme: &GithubReadmePayload) -> Option<String> {
         .chars()
         .filter(|character| !character.is_whitespace())
         .collect();
-    let mut bytes = base64::engine::general_purpose::STANDARD
+    let bytes = base64::engine::general_purpose::STANDARD
         .decode(compact.as_bytes())
         .ok()?;
     if bytes.contains(&0) {
         return None;
     }
-    if bytes.len() > MAX_PREVIEW_BYTES {
-        bytes.truncate(MAX_PREVIEW_BYTES);
+    let mut preview = String::from_utf8(bytes).ok()?;
+    if preview.len() > MAX_PREVIEW_BYTES {
+        let mut end = MAX_PREVIEW_BYTES;
+        while !preview.is_char_boundary(end) {
+            end -= 1;
+        }
+        preview.truncate(end);
     }
-    String::from_utf8(bytes).ok()
+    Some(preview)
 }
 
 fn map_commit(row: GithubCommitRow) -> ProjectRepoCommitInfo {
@@ -541,6 +548,35 @@ esac
 
     #[cfg(unix)]
     #[test]
+    fn malformed_readme_json_is_state_failed() {
+        let sha = "a".repeat(40);
+        let tree = "b".repeat(40);
+        let script = format!(
+            r#"
+case "$*" in
+  *auth*status*) exit 0 ;;
+  *"/repos/acme/app/commits"*)
+    printf '%s' '[{{"sha":"{sha}","tree":"{tree}","name":"Ada","email":"ada@example.com","date":"2026-01-02T03:04:05Z","subject":"Seed"}}]'
+    ;;
+  *"/repos/acme/app/git/trees/"*)
+    printf '%s' '{{"tree":[]}}'
+    ;;
+  *"/repos/acme/app/readme"*)
+    printf '%s' '{{broken'
+    ;;
+  *) exit 1 ;;
+esac
+"#
+        );
+        let (_dir, path) = fake_gh(&script);
+        let gh = GhRunner::from_resolved(Some(path)).expect("runner");
+        let error = github_repository_snapshot_with(&gh, "https://github.com/acme/app", "develop")
+            .expect_err("malformed readme JSON");
+        assert_eq!(error_code(&error), "github_state_failed");
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn empty_commit_list_skips_tree_and_readme() {
         let script = r#"
 case "$*" in
@@ -588,6 +624,42 @@ esac
 
     #[cfg(unix)]
     #[test]
+    fn non_409_empty_diagnostic_is_state_failed() {
+        let script = r#"
+case "$*" in
+  *auth*status*) exit 0 ;;
+  *"/repos/acme/app/commits"*)
+    printf 'gh: server returned an empty response body\n' >&2
+    exit 1
+    ;;
+  *) exit 1 ;;
+esac
+"#;
+        let (_dir, path) = fake_gh(script);
+        let gh = GhRunner::from_resolved(Some(path)).expect("runner");
+        let error = github_repository_snapshot_with(&gh, "https://github.com/acme/app", "develop")
+            .expect_err("non-409 failure");
+        assert_eq!(error_code(&error), "github_state_failed");
+    }
+
+    #[test]
+    fn readme_preview_preserves_utf8_at_byte_cap() {
+        let mut content = vec![b'x'; MAX_PREVIEW_BYTES - 1];
+        content.extend_from_slice("é".as_bytes());
+        let payload = GithubReadmePayload {
+            path: "README.md".to_string(),
+            content: Some(base64::engine::general_purpose::STANDARD.encode(content)),
+            encoding: Some("base64".to_string()),
+            size: None,
+        };
+
+        let preview = decode_readme_preview(&payload).expect("valid UTF-8 preview");
+        assert_eq!(preview.len(), MAX_PREVIEW_BYTES - 1);
+        assert!(preview.bytes().all(|byte| byte == b'x'));
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn tree_entries_keep_blobs_and_commits_only() {
         let sha = "a".repeat(40);
         let tree = "b".repeat(40);
@@ -614,9 +686,13 @@ esac
         let snapshot =
             github_repository_snapshot_with(&gh, "https://github.com/acme/app", "develop")
                 .expect("snapshot");
-        let paths: Vec<&str> = snapshot.files.iter().map(|file| file.path.as_str()).collect();
+        let paths: Vec<&str> = snapshot
+            .files
+            .iter()
+            .map(|file| file.path.as_str())
+            .collect();
         assert_eq!(paths, vec!["src/lib.rs", "vendor/dep"]);
-        assert!(!paths.iter().any(|path| *path == "src"));
+        assert!(!paths.contains(&"src"));
     }
 
     #[test]

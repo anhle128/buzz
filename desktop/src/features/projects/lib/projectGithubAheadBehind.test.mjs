@@ -7,9 +7,6 @@ test("compared counts are visible and unpushed hides them", () => {
     githubAheadBehindCounts({ status: "compared", ahead: 0, behind: 0 }),
     { ahead: 0, behind: 0 },
   );
-  assert.equal(
-    githubAheadBehindCounts({ status: "unpushed" }),
-    null,
-  );
+  assert.equal(githubAheadBehindCounts({ status: "unpushed" }), null);
   assert.equal(githubAheadBehindCounts(undefined), null);
 });

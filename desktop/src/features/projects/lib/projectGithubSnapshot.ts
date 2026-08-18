@@ -10,7 +10,11 @@ export function githubRemoteSnapshotEnabled(input: {
   githubStateReady: boolean;
 }) {
   if (input.buzzHost) return Boolean(input.cloneUrl);
-  return Boolean(input.cloneUrl) && isGitHubCloneUrl(input.cloneUrl) && input.githubStateReady;
+  return (
+    Boolean(input.cloneUrl) &&
+    isGitHubCloneUrl(input.cloneUrl) &&
+    input.githubStateReady
+  );
 }
 
 /** Route project-detail remote snapshots by the project clone URL host. */

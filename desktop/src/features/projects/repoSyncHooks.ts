@@ -85,7 +85,12 @@ export function useGithubAheadBehindQuery(input: {
       input.remoteSha ?? "no-remote",
     ],
     queryFn: () => {
-      if (!input.cloneUrl || !input.branch || !input.localSha || !input.remoteSha) {
+      if (
+        !input.cloneUrl ||
+        !input.branch ||
+        !input.localSha ||
+        !input.remoteSha
+      ) {
         throw new Error("GitHub compare is missing a SHA.");
       }
       return getGithubAheadBehind({

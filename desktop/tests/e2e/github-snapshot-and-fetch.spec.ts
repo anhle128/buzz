@@ -35,7 +35,9 @@ test("GitHub remote source shows README instead of the hosted-elsewhere card", a
   });
   await installMockBridge(page);
   await openBuzzProject(page);
-  await expect(page.getByText("Develop branch")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Develop branch")).toBeVisible({
+    timeout: 10_000,
+  });
   await waitForAnimations(page);
   await expect(page.getByText("Code hosted on github.com")).toHaveCount(0);
   const header = page.getByTestId("project-repository-selection-row");
@@ -44,7 +46,9 @@ test("GitHub remote source shows README instead of the hosted-elsewhere card", a
   await expect(header.getByRole("button", { name: /Pull/ })).toHaveCount(0);
   await expect(header.getByRole("button", { name: /Push/ })).toHaveCount(0);
   await header.getByRole("button", { name: /github.com/ }).click();
-  await expect(page.getByRole("menuitem", { name: /Open on GitHub/ })).toBeVisible();
+  await expect(
+    page.getByRole("menuitem", { name: /Open on GitHub/ }),
+  ).toBeVisible();
   await page.keyboard.press("Escape");
   await header.getByRole("button").filter({ hasText: "develop" }).click();
   await expect(page.getByTestId("project-create-branch")).toHaveCount(0);
@@ -113,9 +117,17 @@ test("local HEAD matching the GitHub tip shows 0 / 0 and Fetch calls GitHub comm
     .getByTestId("project-repository-selection-row")
     .getByRole("button", { name: /^Fetch$/ })
     .click();
-  const commands = await page.evaluate(() => window.__BUZZ_E2E_COMMANDS__ ?? []);
-  expect(commands).toContain("get_github_repository_state");
-  expect(commands).toContain("get_github_repository_snapshot");
-  expect(commands).toContain("get_github_ahead_behind");
+  await expect
+    .poll(() => page.evaluate(() => window.__BUZZ_E2E_COMMANDS__ ?? []))
+    .toEqual(
+      expect.arrayContaining([
+        "get_github_repository_state",
+        "get_github_repository_snapshot",
+        "get_github_ahead_behind",
+      ]),
+    );
+  const commands = await page.evaluate(
+    () => window.__BUZZ_E2E_COMMANDS__ ?? [],
+  );
   expect(commands).not.toContain("get_project_repo_sync_status");
 });
