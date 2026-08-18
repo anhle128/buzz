@@ -82,12 +82,13 @@ fn get_json<T: serde::de::DeserializeOwned>(
         ])
         .map_err(|error| remap_state_error(error, ""))?;
     if !output.status.success() {
+        // `gh api` often puts the JSON error body on stdout and a short line on
+        // stderr (e.g. "gh: HTTP 403"). Classify from both streams.
+        let diagnostic = combined_cli_diagnostic(&output.stderr, &output.stdout);
+        let redacted = redact_diagnostic(&diagnostic);
         return Err(remap_state_error(
-            ProjectPullRequestMergeError::new(
-                "github_merge_failed",
-                redact_diagnostic(&output.stderr),
-            ),
-            &output.stderr,
+            ProjectPullRequestMergeError::new("github_merge_failed", redacted),
+            &diagnostic,
         ));
     }
     serde_json::from_str(&output.stdout).map_err(|_| {
@@ -99,6 +100,15 @@ fn get_json<T: serde::de::DeserializeOwned>(
             &output.stderr,
         )
     })
+}
+
+fn combined_cli_diagnostic(stderr: &str, stdout: &str) -> String {
+    match (stderr.trim().is_empty(), stdout.trim().is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => stderr.to_string(),
+        (true, false) => stdout.to_string(),
+        (false, false) => format!("{}\n{}", stderr.trim_end(), stdout.trim_end()),
+    }
 }
 
 fn list_branch_pages(
@@ -134,24 +144,24 @@ fn list_branch_pages(
 
 fn remap_state_error(
     error: ProjectPullRequestMergeError,
-    stderr: &str,
+    diagnostic: &str,
 ) -> ProjectPullRequestMergeError {
     let value = serde_json::to_value(&error).unwrap_or_default();
     let code = value.get("code").and_then(|v| v.as_str()).unwrap_or("");
     let original_message = value.get("message").and_then(|v| v.as_str()).unwrap_or("");
-    let blob = format!("{stderr} {original_message}");
+    let blob = format!("{diagnostic} {original_message}");
     let lower = blob.to_ascii_lowercase();
     if code == "github_cli_missing" || code == "github_auth_required" {
         return error;
     }
-    let message = if stderr.trim().is_empty() {
+    let message = if diagnostic.trim().is_empty() {
         if original_message.is_empty() {
             "GitHub repository state failed.".to_string()
         } else {
             original_message.to_string()
         }
     } else {
-        redact_diagnostic(stderr)
+        redact_diagnostic(diagnostic)
     };
     if lower.contains("rate limit") || lower.contains("abuse") {
         return ProjectPullRequestMergeError::new("github_state_failed", message);
@@ -236,5 +246,48 @@ esac
         let err = GhRunner::from_resolved(None).expect_err("missing");
         let value = serde_json::to_value(err).expect("json");
         assert_eq!(value["code"], "github_cli_missing");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rate_limit_in_stdout_body_is_state_failed() {
+        let script = r#"
+case "$*" in
+  *auth*status*) exit 0 ;;
+  *"/repos/acme/app"*)
+    printf '%s' '{"message":"API rate limit exceeded for the user"}'
+    printf 'gh: HTTP 403\n' >&2
+    exit 1
+    ;;
+  *) exit 1 ;;
+esac
+"#;
+        let (_dir, path) = fake_gh(script);
+        let gh = GhRunner::from_resolved(Some(path)).expect("runner");
+        let err =
+            github_repository_state_with(&gh, "https://github.com/acme/app").expect_err("rate");
+        let value = serde_json::to_value(err).expect("json");
+        assert_eq!(value["code"], "github_state_failed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn not_found_in_stdout_body_is_repo_unavailable() {
+        let script = r#"
+case "$*" in
+  *auth*status*) exit 0 ;;
+  *"/repos/acme/app"*)
+    printf '%s' '{"message":"Not Found"}'
+    exit 1
+    ;;
+  *) exit 1 ;;
+esac
+"#;
+        let (_dir, path) = fake_gh(script);
+        let gh = GhRunner::from_resolved(Some(path)).expect("runner");
+        let err =
+            github_repository_state_with(&gh, "https://github.com/acme/app").expect_err("missing");
+        let value = serde_json::to_value(err).expect("json");
+        assert_eq!(value["code"], "github_repo_unavailable");
     }
 }
