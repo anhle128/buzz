@@ -25,6 +25,7 @@ export type AppBadgeState =
   | { kind: "count"; count: number };
 
 export type DesktopNotificationTarget = {
+  agentPubkey?: string;
   channelId: string | null;
   channelName?: string | null;
   content?: string;
@@ -68,7 +69,8 @@ function notificationExtra(
   };
 }
 
-function parseNotificationTarget(
+/** Parse an opaque native notification activation target. */
+export function parseNotificationTarget(
   value: unknown,
 ): DesktopNotificationTarget | null {
   if (!value || typeof value !== "object") {
@@ -76,6 +78,11 @@ function parseNotificationTarget(
   }
 
   const candidate = value as Partial<DesktopNotificationTarget>;
+  const agentPubkey =
+    typeof candidate.agentPubkey === "string" &&
+    candidate.agentPubkey.length > 0
+      ? candidate.agentPubkey
+      : undefined;
   const channelId =
     typeof candidate.channelId === "string" ? candidate.channelId : null;
   const channelName =
@@ -92,11 +99,12 @@ function parseNotificationTarget(
   const threadRootId =
     typeof candidate.threadRootId === "string" ? candidate.threadRootId : null;
 
-  if (!channelId && !eventId) {
+  if (!channelId && !eventId && !agentPubkey) {
     return null;
   }
 
   return {
+    agentPubkey,
     channelId,
     channelName,
     content,
