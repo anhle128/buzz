@@ -51,6 +51,7 @@ Issues tab on `harness-service` shows GitHub `#N`. Creating an issue creates a G
 
 ## Suggested Superpowers slice
 
-Start **I1 + I2** only (list + create). Status, labels, assignees, and comments are read-only. I3–I6 writes are later.
+Start **I1 + I2** only (list + create). Then **I3–I6** writes (close/reopen, comment, labels, assignees) with an Open | Closed filter.
 
-**I1+I2 spec:** [docs/superpowers/specs/2026-08-18-github-issues-design.md](../../docs/superpowers/specs/2026-08-18-github-issues-design.md)
+**I1+I2 spec:** [docs/superpowers/specs/2026-08-18-github-issues-design.md](../../docs/superpowers/specs/2026-08-18-github-issues-design.md)  
+**I3–I6 spec:** [docs/superpowers/specs/2026-08-18-github-issue-writes-design.md](../../docs/superpowers/specs/2026-08-18-github-issue-writes-design.md)

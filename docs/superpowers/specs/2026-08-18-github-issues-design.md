@@ -2,7 +2,8 @@
 
 **Status:** Draft — awaiting user review  
 **Scope:** Buzz Desktop Projects — I1 + I2 only. When a repository clone URL is `github.com`, the per-repo Issues tab lists and creates GitHub Issues via `gh api`.  
-**Plan:** [phase-02-github-issues.md](../../../plans/20260818-1211-github-native-host/phase-02-github-issues.md) slice I1 + I2.
+**Plan:** [phase-02-github-issues.md](../../../plans/20260818-1211-github-native-host/phase-02-github-issues.md) slice I1 + I2.  
+**Amended by:** [I3–I6 writes](./2026-08-18-github-issue-writes-design.md) — `list_github_issues` takes `state`, Open | Closed filter, body composer, label/assignee writes. Until that slice lands, treat status, labels, assignees, and comments as read-only and send `state=open`.
 
 ## Summary
 
@@ -29,10 +30,10 @@ A GitHub clone URL never yields 1621 events. Create would dual-write a Nostr iss
 
 ## Non-goals
 
-- Close / reopen (I3).
-- Posting comments (I4).
-- Adding or removing labels or assignees (I5, I6).
-- Closed issues, a second page, or Load more.
+- Close / reopen (I3) — [writes spec](./2026-08-18-github-issue-writes-design.md).
+- Posting comments (I4) — writes spec.
+- Adding or removing labels or assignees (I5, I6) — writes spec.
+- Closed issues — writes spec adds Open | Closed. Still no `state=all`, second page, or Load more.
 - Global Projects Issues list (`fetchProjectsWorkItems`) and card / activity counts (X2 / M4).
 - New `buzz://issue` scheme for GitHub numbers.
 - CLI (`buzz issues`) and mobile.
@@ -44,10 +45,10 @@ A GitHub clone URL never yields 1621 events. Create would dual-write a Nostr iss
 
 - **Host split:** `isGitHubCloneUrl` / `GitHubRepoRef::parse`. GitHub is the only issue source for that host. Do not union with kind:1621.
 - **Auth:** installed `gh`, `gh auth status --hostname github.com`. Buzz never reads or stores a GitHub token.
-- **List:** `state=open`, first 100 items from one page, `sort=updated`, `direction=desc`. No `--paginate`. Drop pull requests (items with a `pull_request` field).
+- **List:** `state` is `open` or `closed` (required). I1+I2 UI sends `open` only. First 100 items from one page, `sort=updated`, `direction=desc`. No `--paginate`. Drop pull requests (items with a `pull_request` field).
 - **More:** `hasMore` is true when the **raw** GitHub page has 100 items. After PR filter the UI may show fewer. One muted note, not a button.
 - **Identity:** authors and assignees are GitHub logins + avatar URLs, not pubkeys. Never pass a login to `ProfileIdentityButton`, `normalizePubkey`, or assignment mutations.
-- **Status:** add `"Open"` to `ProjectIssueStatus`. GitHub `open` → `"Open"`, `closed` → `"Closed"`. Do not map open → Backlog. v1 list is open-only.
+- **Status:** add `"Open"` to `ProjectIssueStatus`. GitHub `open` → `"Open"`, `closed` → `"Closed"`. Do not map open → Backlog. I1+I2 UI lists `open` only; I3–I6 adds the Closed filter.
 - **Share:** Copy link uses validated `html_url`. No `buzz://` change.
 - **Create:** title + body only. Title required after trim, max 256 characters (same as Buzz). Body may be empty. No labels or assignees on create.
 - **Surface:** per-repo Issues tab only. Global create dialog still routes by the **selected repository** host so a GitHub target never signs 1621.
@@ -78,7 +79,7 @@ Reuses `GhRunner`, `ensure_auth`, redaction, and `ProjectPullRequestMergeError`.
 
 | Command | Input | GitHub | Output |
 |---|---|---|---|
-| `list_github_issues` | `clone_url` | `GET /repos/{owner}/{repo}/issues?state=open&per_page=100&sort=updated&direction=desc` | `{ issues, has_more }` |
+| `list_github_issues` | `clone_url`, `state` | `GET /repos/{owner}/{repo}/issues?state={open\|closed}&per_page=100&sort=updated&direction=desc` | `{ issues, has_more }` |
 | `create_github_issue` | `clone_url`, `title`, `body` | `POST /repos/{owner}/{repo}/issues` via `--input` tempfile | one issue DTO |
 | `list_github_issue_comments` | `clone_url`, `number` | `GET /repos/{owner}/{repo}/issues/{number}/comments?per_page=100` | comment list |
 
@@ -125,7 +126,7 @@ Inject loaders for tests, same idea as `fetchRepoStateWith`:
 - `isGitHubCloneUrl(cloneUrl)` → `list_github_issues` → map DTOs
 - otherwise → current kind:1621 fetch; `hasMore = false`
 
-`useProjectIssuesQuery` keeps key `["project", id, "issues"]`. Its data shape becomes `{ issues: ProjectIssue[]; hasMore: boolean }`. Callers that treated `data` as an array (`ProjectIssuesPanel`) read `data.issues`. Stale time stays 30s.
+`useProjectIssuesQuery` data shape becomes `{ issues: ProjectIssue[]; hasMore: boolean }`. Callers that treated `data` as an array (`ProjectIssuesPanel`) read `data.issues`. Stale time stays 30s. I1+I2 may keep key `["project", id, "issues"]` while the UI is open-only; I3–I6 adds `state` to the GitHub key.
 
 ### `useCreateProjectIssueMutation` (existing, routed)
 
