@@ -367,6 +367,74 @@ pub(crate) fn list_github_issue_comments_with(
         .collect())
 }
 
+pub(crate) fn list_github_issues_with_runner(
+    clone_url: String,
+    state: String,
+    gh: Result<GhRunner, ProjectPullRequestMergeError>,
+) -> Result<GitHubIssueListDto, ProjectPullRequestMergeError> {
+    let gh = gh.map_err(|error| remap_issues_error(error, ""))?;
+    list_github_issues_with(&gh, &clone_url, &state)
+}
+
+pub(crate) fn create_github_issue_with_runner(
+    clone_url: String,
+    title: String,
+    body: String,
+    gh: Result<GhRunner, ProjectPullRequestMergeError>,
+) -> Result<GitHubIssueDto, ProjectPullRequestMergeError> {
+    let gh = gh.map_err(|error| remap_issues_error(error, ""))?;
+    create_github_issue_with(&gh, &clone_url, &title, &body)
+}
+
+pub(crate) fn list_github_issue_comments_with_runner(
+    clone_url: String,
+    number: u64,
+    gh: Result<GhRunner, ProjectPullRequestMergeError>,
+) -> Result<Vec<GitHubIssueCommentDto>, ProjectPullRequestMergeError> {
+    let gh = gh.map_err(|error| remap_issues_error(error, ""))?;
+    list_github_issue_comments_with(&gh, &clone_url, number)
+}
+
+/// List one page of GitHub issues for a github.com clone URL.
+#[tauri::command]
+pub async fn list_github_issues(
+    clone_url: String,
+    state: String,
+) -> Result<GitHubIssueListDto, ProjectPullRequestMergeError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        list_github_issues_with_runner(clone_url, state, GhRunner::discover())
+    })
+    .await
+    .map_err(|error| ProjectPullRequestMergeError::new("github_issues_failed", error.to_string()))?
+}
+
+/// Create one GitHub issue for a github.com clone URL.
+#[tauri::command]
+pub async fn create_github_issue(
+    clone_url: String,
+    title: String,
+    body: String,
+) -> Result<GitHubIssueDto, ProjectPullRequestMergeError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        create_github_issue_with_runner(clone_url, title, body, GhRunner::discover())
+    })
+    .await
+    .map_err(|error| ProjectPullRequestMergeError::new("github_issues_failed", error.to_string()))?
+}
+
+/// List the first page of comments for one GitHub issue.
+#[tauri::command]
+pub async fn list_github_issue_comments(
+    clone_url: String,
+    number: u64,
+) -> Result<Vec<GitHubIssueCommentDto>, ProjectPullRequestMergeError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        list_github_issue_comments_with_runner(clone_url, number, GhRunner::discover())
+    })
+    .await
+    .map_err(|error| ProjectPullRequestMergeError::new("github_issues_failed", error.to_string()))?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -660,5 +728,39 @@ mod tests {
         assert_eq!(comments[1].user.login, "linus");
         let calls = std::fs::read_to_string(dir.path().join("calls")).expect("calls");
         assert!(calls.contains("/repos/acme/app/issues/42/comments?per_page=100"));
+    }
+
+    #[test]
+    fn list_wrapper_maps_missing_discovered_cli() {
+        let error = list_github_issues_with_runner(
+            "https://github.com/acme/app".to_string(),
+            "open".to_string(),
+            GhRunner::from_resolved(None),
+        )
+        .expect_err("missing");
+        assert_eq!(error_code(&error), "github_cli_missing");
+    }
+
+    #[test]
+    fn create_wrapper_maps_missing_discovered_cli() {
+        let error = create_github_issue_with_runner(
+            "https://github.com/acme/app".to_string(),
+            "title".to_string(),
+            "body".to_string(),
+            GhRunner::from_resolved(None),
+        )
+        .expect_err("missing");
+        assert_eq!(error_code(&error), "github_cli_missing");
+    }
+
+    #[test]
+    fn comments_wrapper_maps_missing_discovered_cli() {
+        let error = list_github_issue_comments_with_runner(
+            "https://github.com/acme/app".to_string(),
+            42,
+            GhRunner::from_resolved(None),
+        )
+        .expect_err("missing");
+        assert_eq!(error_code(&error), "github_cli_missing");
     }
 }

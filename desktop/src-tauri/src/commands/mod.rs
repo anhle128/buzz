@@ -116,6 +116,7 @@ pub use project_git_diff::*;
 pub use project_git_recipient_notes::*;
 pub use project_git_workflow::*;
 pub use project_github_ahead_behind::*;
+pub use project_github_issues::*;
 pub use project_github_repository_snapshot::*;
 pub use project_github_repository_state::*;
 pub use project_terminal::*;
