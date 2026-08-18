@@ -12,7 +12,9 @@ import {
 test("initial observer replay completes once after the queued EOSE barrier and resets", async () => {
   resetAgentObserverStore();
   const notifications = [];
-  const unsubscribe = subscribeAgentObserverStore((update) => notifications.push(update));
+  const unsubscribe = subscribeAgentObserverStore((update) =>
+    notifications.push(update),
+  );
 
   assert.equal(isAgentObserverInitialReplayComplete(), false);
   let releaseQueuedWork;

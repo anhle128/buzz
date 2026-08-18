@@ -222,9 +222,7 @@ export function isAgentObserverInitialReplayComplete(): boolean {
 }
 
 /** Test-only: append controlled work before the initial replay barrier. */
-export function _testEnqueueObserverStoreWork(
-  work: () => Promise<void>,
-): void {
+export function _testEnqueueObserverStoreWork(work: () => Promise<void>): void {
   eventProcessingQueue = eventProcessingQueue.then(work);
 }
 

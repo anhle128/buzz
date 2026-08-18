@@ -84,9 +84,18 @@ test("extractActionablePermission returns the admitted nonce channel and title",
 });
 
 test("extractActionablePermission rejects wrong method wrong kind non-actionable and missing envelope", () => {
-  assert.equal(extractActionablePermission(permissionRead({ method: "session/prompt" })), null);
-  assert.equal(extractActionablePermission(permissionRead({ kind: "acp_write" })), null);
-  assert.equal(extractActionablePermission(permissionRead({ actionable: false })), null);
+  assert.equal(
+    extractActionablePermission(permissionRead({ method: "session/prompt" })),
+    null,
+  );
+  assert.equal(
+    extractActionablePermission(permissionRead({ kind: "acp_write" })),
+    null,
+  );
+  assert.equal(
+    extractActionablePermission(permissionRead({ actionable: false })),
+    null,
+  );
   const missingEnvelope = permissionRead();
   delete missingEnvelope.authorization;
   assert.equal(extractActionablePermission(missingEnvelope), null);
@@ -94,65 +103,95 @@ test("extractActionablePermission rejects wrong method wrong kind non-actionable
 
 test("extractResolvedPermissionNonce reads terminal acp_write and non-actionable follow-up", () => {
   assert.equal(extractResolvedPermissionNonce(permissionWrite()), "nonce-1");
-  assert.equal(extractResolvedPermissionNonce(permissionRead({ actionable: false })), "nonce-1");
+  assert.equal(
+    extractResolvedPermissionNonce(permissionRead({ actionable: false })),
+    "nonce-1",
+  );
   assert.equal(extractResolvedPermissionNonce(permissionRead()), null);
 });
 
 test("shouldSuppressPermissionAlert requires the same normalized agent and matching channel scope", () => {
-  assert.equal(shouldSuppressPermissionAlert({
-    agentPubkey: AGENT,
-    channelId: CHANNEL,
-    openAgentSession: AGENT.toUpperCase(),
-    openAgentSessionChannel: null,
-    currentChannelId: CHANNEL,
-  }), true);
-  assert.equal(shouldSuppressPermissionAlert({
-    agentPubkey: AGENT,
-    channelId: null,
-    openAgentSession: AGENT,
-    openAgentSessionChannel: OTHER_CHANNEL,
-    currentChannelId: OTHER_CHANNEL,
-  }), true);
-  assert.equal(shouldSuppressPermissionAlert({
-    agentPubkey: AGENT,
-    channelId: CHANNEL,
-    openAgentSession: null,
-    openAgentSessionChannel: null,
-    currentChannelId: CHANNEL,
-  }), false);
-  assert.equal(shouldSuppressPermissionAlert({
-    agentPubkey: AGENT,
-    channelId: CHANNEL,
-    openAgentSession: OTHER_AGENT,
-    openAgentSessionChannel: CHANNEL,
-    currentChannelId: CHANNEL,
-  }), false);
-  assert.equal(shouldSuppressPermissionAlert({
-    agentPubkey: AGENT,
-    channelId: CHANNEL,
-    openAgentSession: AGENT,
-    openAgentSessionChannel: OTHER_CHANNEL,
-    currentChannelId: OTHER_CHANNEL,
-  }), false);
+  assert.equal(
+    shouldSuppressPermissionAlert({
+      agentPubkey: AGENT,
+      channelId: CHANNEL,
+      openAgentSession: AGENT.toUpperCase(),
+      openAgentSessionChannel: null,
+      currentChannelId: CHANNEL,
+    }),
+    true,
+  );
+  assert.equal(
+    shouldSuppressPermissionAlert({
+      agentPubkey: AGENT,
+      channelId: null,
+      openAgentSession: AGENT,
+      openAgentSessionChannel: OTHER_CHANNEL,
+      currentChannelId: OTHER_CHANNEL,
+    }),
+    true,
+  );
+  assert.equal(
+    shouldSuppressPermissionAlert({
+      agentPubkey: AGENT,
+      channelId: CHANNEL,
+      openAgentSession: null,
+      openAgentSessionChannel: null,
+      currentChannelId: CHANNEL,
+    }),
+    false,
+  );
+  assert.equal(
+    shouldSuppressPermissionAlert({
+      agentPubkey: AGENT,
+      channelId: CHANNEL,
+      openAgentSession: OTHER_AGENT,
+      openAgentSessionChannel: CHANNEL,
+      currentChannelId: CHANNEL,
+    }),
+    false,
+  );
+  assert.equal(
+    shouldSuppressPermissionAlert({
+      agentPubkey: AGENT,
+      channelId: CHANNEL,
+      openAgentSession: AGENT,
+      openAgentSessionChannel: OTHER_CHANNEL,
+      currentChannelId: OTHER_CHANNEL,
+    }),
+    false,
+  );
 });
 
 test("permissionAlertCopy uses pinned copy and strips duplicate channel hashes", () => {
-  assert.deepEqual(permissionAlertCopy({ agentName: "Ada", channelName: "#eng" }), {
-    title: "Ada needs permission in #eng",
-    body: "Open the process log to allow or deny this request.",
-  });
-  assert.deepEqual(permissionAlertCopy({ agentName: "  ", channelName: null }), {
-    title: "Agent needs permission",
-    body: "Open the process log to allow or deny this request.",
-  });
+  assert.deepEqual(
+    permissionAlertCopy({ agentName: "Ada", channelName: "#eng" }),
+    {
+      title: "Ada needs permission in #eng",
+      body: "Open the process log to allow or deny this request.",
+    },
+  );
+  assert.deepEqual(
+    permissionAlertCopy({ agentName: "  ", channelName: null }),
+    {
+      title: "Agent needs permission",
+      body: "Open the process log to allow or deny this request.",
+    },
+  );
 });
 
 test("applyPermissionAlertUpdate alerts concurrent unseen nonces once and suppresses same-batch resolution", () => {
   const concurrent = applyPermissionAlertUpdate({
-    events: [permissionRead({ nonce: "new-1", seq: 1 }), permissionRead({ nonce: "new-2", seq: 2 })],
+    events: [
+      permissionRead({ nonce: "new-1", seq: 1 }),
+      permissionRead({ nonce: "new-2", seq: 2 }),
+    ],
     seenNonces: new Set(["old-1"]),
   });
-  assert.deepEqual(concurrent.alerts.map((alert) => alert.requestNonce), ["new-1", "new-2"]);
+  assert.deepEqual(
+    concurrent.alerts.map((alert) => alert.requestNonce),
+    ["new-1", "new-2"],
+  );
   assert.equal(concurrent.nextSeenNonces.has("old-1"), true);
   const replay = applyPermissionAlertUpdate({
     events: [permissionRead({ nonce: "old-1" })],
@@ -176,7 +215,10 @@ test("store controller seeds initial replay before admitting later owned-agent u
     state,
     initialReplayComplete: false,
     agents: [{ pubkey: AGENT, transcript: [permissionItem("replayed")] }],
-    update: { agentPubkey: AGENT, events: [permissionRead({ nonce: "replayed" })] },
+    update: {
+      agentPubkey: AGENT,
+      events: [permissionRead({ nonce: "replayed" })],
+    },
   });
   assert.deepEqual(replayUpdate.alerts, []);
   assert.equal(replayUpdate.nextState.seenNonces.has("replayed"), false);
@@ -195,13 +237,19 @@ test("store controller seeds initial replay before admitting later owned-agent u
     agents: [{ pubkey: AGENT, transcript: [permissionItem("replayed")] }],
     update: { agentPubkey: AGENT, events: [permissionRead({ nonce: "live" })] },
   });
-  assert.deepEqual(live.alerts.map((alert) => alert.requestNonce), ["live"]);
+  assert.deepEqual(
+    live.alerts.map((alert) => alert.requestNonce),
+    ["live"],
+  );
 
   const outsider = applyPermissionAlertStoreNotification({
     state: live.nextState,
     initialReplayComplete: true,
     agents: [{ pubkey: AGENT, transcript: [permissionItem("replayed")] }],
-    update: { agentPubkey: OTHER_AGENT, events: [permissionRead({ nonce: "outsider" })] },
+    update: {
+      agentPubkey: OTHER_AGENT,
+      events: [permissionRead({ nonce: "outsider" })],
+    },
   });
   assert.deepEqual(outsider.alerts, []);
   assert.equal(outsider.nextState.seenNonces.has("outsider"), false);
@@ -209,9 +257,18 @@ test("store controller seeds initial replay before admitting later owned-agent u
 });
 
 test("selectPermissionAlertSurface keeps focused toast independent of desktopEnabled", () => {
-  assert.equal(selectPermissionAlertSurface({ focused: true, desktopEnabled: false }), "toast");
-  assert.equal(selectPermissionAlertSurface({ focused: false, desktopEnabled: true }), "os");
-  assert.equal(selectPermissionAlertSurface({ focused: false, desktopEnabled: false }), null);
+  assert.equal(
+    selectPermissionAlertSurface({ focused: true, desktopEnabled: false }),
+    "toast",
+  );
+  assert.equal(
+    selectPermissionAlertSurface({ focused: false, desktopEnabled: true }),
+    "os",
+  );
+  assert.equal(
+    selectPermissionAlertSurface({ focused: false, desktopEnabled: false }),
+    null,
+  );
 });
 
 test("startPermissionAlertStoreSubscription processes the current snapshot before live updates", () => {
