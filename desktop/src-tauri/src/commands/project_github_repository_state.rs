@@ -120,7 +120,7 @@ fn get_json<T: serde::de::DeserializeOwned>(
     })
 }
 
-fn combined_cli_diagnostic(stderr: &str, stdout: &str) -> String {
+pub(crate) fn combined_cli_diagnostic(stderr: &str, stdout: &str) -> String {
     match (stderr.trim().is_empty(), stdout.trim().is_empty()) {
         (true, true) => String::new(),
         (false, true) => stderr.to_string(),
@@ -160,7 +160,7 @@ fn list_branch_pages(
     Ok(branches)
 }
 
-fn remap_state_error(
+pub(crate) fn remap_state_error(
     error: ProjectPullRequestMergeError,
     diagnostic: &str,
 ) -> ProjectPullRequestMergeError {
