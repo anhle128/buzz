@@ -1,3 +1,5 @@
+import { parseProjectPullRequestMergeError } from "@/shared/api/projectGit";
+
 /**
  * Relay push-policy denial token for a repository with no `buzz-channel`
  * binding. Declared in Rust as `buzz-core::git_perms::
@@ -22,11 +24,30 @@ export function isNoChannelBindingError(message: string): boolean {
   );
 }
 
+/** Recovery reason for GitHub-hosted branch create/delete when G1 failed. */
+export function githubBranchActionReason(input: {
+  githubHosted: boolean;
+  error?: unknown;
+}): string | null {
+  if (!input.githubHosted || input.error == null) return null;
+  const parsed = parseProjectPullRequestMergeError(input.error);
+  if (parsed) {
+    return parsed.code === "github_cli_missing"
+      ? "Install GitHub CLI, then retry."
+      : parsed.message;
+  }
+  return input.error instanceof Error && input.error.message.trim()
+    ? input.error.message
+    : "Could not load GitHub branches.";
+}
+
 /** Map a thrown branch-operation error to user-facing dialog copy. */
 export function projectBranchErrorMessage(
   error: unknown,
   fallback: string,
 ): string {
+  const structured = parseProjectPullRequestMergeError(error);
+  if (structured) return structured.message;
   if (!(error instanceof Error)) return fallback;
   if (isNoChannelBindingError(error.message)) {
     return NO_CHANNEL_BINDING_COPY;

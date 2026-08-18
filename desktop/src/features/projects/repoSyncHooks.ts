@@ -12,6 +12,10 @@ import type {
   Repository as Project,
 } from "@/features/projects/hooks";
 import { isGitHubCloneUrl } from "@/features/projects/lib/projectGitError";
+import {
+  projectRepoSyncStatusEnabled,
+  shouldPublishPullRequestUpdateAfterPush,
+} from "@/features/projects/lib/projectGithubSync";
 import { useProjectRepoHost } from "@/features/projects/useProjectRepoHost";
 import { useFocusedRefetchInterval } from "@/shared/lib/useDocumentVisible";
 import { publishProjectPullRequestUpdate } from "./pullRequestMutations";
@@ -25,6 +29,7 @@ export function useProjectRepoSyncStatusQuery(
   reposDir?: string | null,
   branchName?: string | null,
   baseBranch?: string | null,
+  options?: { githubStateReady?: boolean },
 ) {
   const selectedBranch = branchName ?? project?.defaultBranch ?? null;
   const refetchInterval = useFocusedRefetchInterval(60_000);
@@ -32,7 +37,11 @@ export function useProjectRepoSyncStatusQuery(
   const host = useProjectRepoHost(project);
 
   return useQuery({
-    enabled: Boolean(host.kind === "buzz" && project?.cloneUrls[0]),
+    enabled: projectRepoSyncStatusEnabled({
+      cloneUrl: project?.cloneUrls[0],
+      buzzHost: host.kind === "buzz",
+      githubStateReady: options?.githubStateReady ?? false,
+    }),
     queryKey: [
       "project",
       project?.id ?? "none",
@@ -129,6 +138,7 @@ export function usePushProjectLocalRepositoryMutation(
         | { status: "skipped" | "unchanged" | "updated" }
         | { status: "failed"; error: string } = { status: "skipped" };
       if (
+        shouldPublishPullRequestUpdateAfterPush(project.cloneUrls[0]) &&
         pullRequest &&
         (pullRequest.status === "Open" || pullRequest.status === "Draft")
       ) {

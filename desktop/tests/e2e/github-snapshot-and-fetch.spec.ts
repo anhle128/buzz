@@ -50,9 +50,30 @@ test("GitHub remote source shows README instead of the hosted-elsewhere card", a
     page.getByRole("menuitem", { name: /Open on GitHub/ }),
   ).toBeVisible();
   await page.keyboard.press("Escape");
+  await expect
+    .poll(() => page.evaluate(() => window.__BUZZ_E2E_COMMANDS__ ?? []))
+    .toContain("get_project_repo_sync_status");
+  await page.evaluate(() => {
+    window.__BUZZ_E2E_COMMANDS__ = [];
+  });
+  await header.getByRole("button", { name: /^Fetch$/ }).click();
+  await expect
+    .poll(() => page.evaluate(() => window.__BUZZ_E2E_COMMANDS__ ?? []))
+    .toEqual(
+      expect.arrayContaining([
+        "get_github_repository_state",
+        "get_github_repository_snapshot",
+      ]),
+    );
+  const noCheckoutCommands = await page.evaluate(
+    () => window.__BUZZ_E2E_COMMANDS__ ?? [],
+  );
+  expect(noCheckoutCommands).not.toContain("get_project_repo_sync_status");
+  expect(noCheckoutCommands).not.toContain("get_github_ahead_behind");
   await header.getByRole("button").filter({ hasText: "develop" }).click();
-  await expect(page.getByTestId("project-create-branch")).toHaveCount(0);
-  await expect(page.getByTestId("project-delete-branch")).toHaveCount(0);
+  await expect(page.getByTestId("project-create-branch")).toBeEnabled();
+  await expect(page.getByTestId("project-delete-branch")).toBeVisible();
+  await expect(page.getByTestId("project-delete-branch")).toBeDisabled();
 });
 
 test("GitHub snapshot auth recovery does not show the empty GitHub-host card", async ({
@@ -123,11 +144,11 @@ test("local HEAD matching the GitHub tip shows 0 / 0 and Fetch calls GitHub comm
       expect.arrayContaining([
         "get_github_repository_state",
         "get_github_repository_snapshot",
-        "get_github_ahead_behind",
+        "get_project_repo_sync_status",
       ]),
     );
-  const commands = await page.evaluate(
+  const checkoutCommands = await page.evaluate(
     () => window.__BUZZ_E2E_COMMANDS__ ?? [],
   );
-  expect(commands).not.toContain("get_project_repo_sync_status");
+  expect(checkoutCommands).not.toContain("get_github_ahead_behind");
 });

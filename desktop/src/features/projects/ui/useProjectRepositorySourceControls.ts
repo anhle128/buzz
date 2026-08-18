@@ -9,10 +9,11 @@ import type {
   useRepoStateQuery,
 } from "@/features/projects/hooks";
 import { projectBranchCreationReason } from "@/features/projects/lib/projectBranches";
-import { githubAheadBehindCounts } from "@/features/projects/lib/projectGithubAheadBehind";
+import { githubBranchActionReason } from "@/features/projects/lib/projectBranchErrors";
+import { githubSyncCountDisplay } from "@/features/projects/lib/projectGithubSync";
 import type { useProjectRepoSyncStatusQuery } from "@/features/projects/repoSyncHooks";
-import { useGithubAheadBehindQuery } from "@/features/projects/repoSyncHooks";
 import type { useProjectRepoPresentation } from "@/features/projects/useProjectRepoHost";
+import { parseProjectPullRequestMergeError } from "@/shared/api/projectGit";
 import type { RepoSourceHeaderControls } from "./ProjectRepositorySource";
 import { pushPullTitle } from "./projectDetailHelpers";
 
@@ -75,20 +76,35 @@ export function useProjectRepositorySourceControls(
     repoSyncStatusQuery,
     selectedTag,
   } = input;
-  const activeRemoteSha =
-    repoStateQuery.data?.branches.find((item) => item.name === activeBranch)
-      ?.commit ?? null;
-  const localHeadSha =
-    localRepoSnapshotQuery.data?.snapshot.latestCommit?.hash ?? null;
-  const githubAheadBehindQuery = useGithubAheadBehindQuery({
-    projectId: project?.id,
-    cloneUrl: project?.cloneUrls[0],
-    branch: activeBranch,
-    localSha: localHeadSha,
-    remoteSha: activeRemoteSha,
-    enabled: githubHosted && repoStateQuery.isSuccess,
+  const hasCheckout = Boolean(
+    repoSyncStatusQuery.data?.localPath || localRepoSnapshotQuery.data,
+  );
+  const syncStatusReady =
+    repoSyncStatusQuery.isSuccess &&
+    (!githubHosted || repoStateQuery.isSuccess);
+  const githubSyncStateError =
+    githubHosted && parseProjectPullRequestMergeError(repoSyncStatusQuery.error)
+      ? repoSyncStatusQuery.error
+      : null;
+  const githubStateError = repoStateQuery.error ?? githubSyncStateError;
+  const githubBranchReason = githubBranchActionReason({
+    githubHosted,
+    error: githubStateError,
   });
-  const githubCounts = githubAheadBehindCounts(githubAheadBehindQuery.data);
+  const createBranchReason =
+    githubBranchReason ??
+    projectBranchCreationReason({
+      activeBranch,
+      activeBranchCommit,
+      localHead: repoSyncStatusQuery.data?.localHead,
+    });
+  const githubCounts = githubSyncCountDisplay({
+    githubHosted,
+    syncStatusReady,
+    localPath: repoSyncStatusQuery.data?.localPath,
+    aheadCount: repoSyncStatusQuery.data?.aheadCount,
+    behindCount: repoSyncStatusQuery.data?.behindCount,
+  });
   const handleFetchRepo = React.useCallback(async () => {
     const tasks = githubHosted
       ? [
@@ -97,10 +113,7 @@ export function useProjectRepositorySourceControls(
             ? []
             : [
                 repoSnapshotQuery.refetch(),
-                ...(githubAheadBehindQuery.isFetched ||
-                (localHeadSha && activeRemoteSha)
-                  ? [githubAheadBehindQuery.refetch()]
-                  : []),
+                ...(hasCheckout ? [repoSyncStatusQuery.refetch()] : []),
               ]),
         ]
       : [
@@ -124,21 +137,13 @@ export function useProjectRepositorySourceControls(
     }
     toast.success("Remote state refreshed.");
   }, [
-    activeRemoteSha,
-    githubAheadBehindQuery.isFetched,
-    githubAheadBehindQuery.refetch,
     githubHosted,
-    localHeadSha,
+    hasCheckout,
     repoSnapshotQuery.refetch,
     repoStateQuery.isError,
     repoStateQuery.refetch,
     repoSyncStatusQuery.refetch,
   ]);
-  const createBranchReason = projectBranchCreationReason({
-    activeBranch,
-    activeBranchCommit,
-    localHead: repoSyncStatusQuery.data?.localHead,
-  });
 
   return {
     branch: activeBranch ?? "",
@@ -147,17 +152,17 @@ export function useProjectRepositorySourceControls(
     tagOptions: input.tagOptions,
     onBranchChange: input.onBranchChange,
     onTagChange: input.onTagChange,
-    onCreateBranch: githubHosted
-      ? undefined
-      : () => branchActions.setCreateOpen(true),
-    createBranchDisabled: branchActions.createPending || !activeBranchCommit,
+    onCreateBranch: () => branchActions.setCreateOpen(true),
+    createBranchDisabled:
+      branchActions.createPending || Boolean(createBranchReason),
     createBranchTitle: createBranchReason ?? "Create a remote branch",
-    onDeleteBranch: githubHosted
-      ? undefined
-      : () => branchActions.setDeleteOpen(true),
+    onDeleteBranch: () => branchActions.setDeleteOpen(true),
     deleteBranchDisabled:
-      branchActions.deletePending || Boolean(deleteBranchReason),
-    deleteBranchTitle: deleteBranchReason ?? "Delete this remote branch",
+      branchActions.deletePending ||
+      Boolean(githubBranchReason) ||
+      Boolean(deleteBranchReason),
+    deleteBranchTitle:
+      githubBranchReason ?? deleteBranchReason ?? "Delete this remote branch",
     source: selectedTag ? "remote" : input.repoSource,
     onSourceChange: input.setRepoSource,
     localDisabled:
@@ -179,29 +184,29 @@ export function useProjectRepositorySourceControls(
           }
         : undefined,
     clonePending,
-    canPush: githubHosted
-      ? false
-      : !selectedTag && (repoSyncStatusQuery.data?.canPush ?? false),
-    onPush:
-      githubHosted || selectedTag
-        ? undefined
-        : () => {
-            void input.onPush();
-          },
+    canPush:
+      syncStatusReady &&
+      !selectedTag &&
+      (repoSyncStatusQuery.data?.canPush ?? false),
+    onPush: selectedTag
+      ? undefined
+      : () => {
+          void input.onPush();
+        },
     pushDisabled: pushPending || !repoSyncStatusQuery.data?.canPush,
     pushPending,
     pushTitle:
       repoSyncStatusQuery.data?.pushBlockReason ??
       pushPullTitle("Push", repoSyncStatusQuery.data?.aheadCount, "local"),
-    canPull: githubHosted
-      ? false
-      : !selectedTag && (repoSyncStatusQuery.data?.canPull ?? false),
-    onPull:
-      githubHosted || selectedTag
-        ? undefined
-        : () => {
-            void input.onPull();
-          },
+    canPull:
+      syncStatusReady &&
+      !selectedTag &&
+      (repoSyncStatusQuery.data?.canPull ?? false),
+    onPull: selectedTag
+      ? undefined
+      : () => {
+          void input.onPull();
+        },
     pullDisabled: pullPending || !repoSyncStatusQuery.data?.canPull,
     pullPending,
     pullTitle:
@@ -209,34 +214,43 @@ export function useProjectRepositorySourceControls(
       pushPullTitle("Pull", repoSyncStatusQuery.data?.behindCount, "remote"),
     aheadCount: githubHosted
       ? (githubCounts?.ahead ?? null)
-      : (repoSyncStatusQuery.data?.aheadCount ?? null),
+      : syncStatusReady
+        ? (repoSyncStatusQuery.data?.aheadCount ?? null)
+        : null,
     behindCount: githubHosted
       ? (githubCounts?.behind ?? null)
-      : (repoSyncStatusQuery.data?.behindCount ?? null),
+      : syncStatusReady
+        ? (repoSyncStatusQuery.data?.behindCount ?? null)
+        : null,
+    syncStatusReady,
     onFetch: () => {
       void handleFetchRepo();
     },
-    fetchPending: githubHosted
-      ? repoSnapshotQuery.isFetching ||
-        repoStateQuery.isFetching ||
-        githubAheadBehindQuery.isFetching
-      : repoSnapshotQuery.isFetching ||
-        repoStateQuery.isFetching ||
-        repoSyncStatusQuery.isFetching,
-    fetchTitle: githubHosted
-      ? "Refresh GitHub README, files, and compare"
-      : (repoSyncStatusQuery.data?.pullBlockReason ??
-        "Check for remote changes"),
+    fetchPending:
+      repoSnapshotQuery.isFetching ||
+      repoStateQuery.isFetching ||
+      ((!githubHosted || hasCheckout) && repoSyncStatusQuery.isFetching),
+    fetchTitle: hasCheckout
+      ? "Check for remote changes"
+      : githubHosted
+        ? "Refresh GitHub README and files"
+        : "Check for remote changes",
     showGithubStateRecovery:
       githubHosted &&
       (repoStateQuery.isError ||
+        githubSyncStateError != null ||
         (repoStateQuery.isSuccess && repoSnapshotQuery.isError)),
     stateError:
       repoStateQuery.error ??
+      githubSyncStateError ??
       (githubHosted ? repoSnapshotQuery.error : undefined),
     onRetryState: () => {
       if (githubHosted && repoStateQuery.isError) {
         void repoStateQuery.refetch();
+        return;
+      }
+      if (githubHosted && githubSyncStateError != null) {
+        void repoSyncStatusQuery.refetch();
         return;
       }
       if (githubHosted) {

@@ -77,6 +77,8 @@ export function CreatePullRequestDialog({
     repository,
     reposDir,
     defaultBranch || null,
+    undefined,
+    { githubStateReady: repoStateQuery.isSuccess },
   );
   const branchOptions = React.useMemo(() => {
     const names = [
@@ -100,6 +102,7 @@ export function CreatePullRequestDialog({
     reposDir,
     sourceBranch || null,
     targetBranch || null,
+    { githubStateReady: repoStateQuery.isSuccess },
   );
   const createMutation = useCreateProjectPullRequestMutation(repository);
 

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { ProjectPullRequestMergeError } from "../../../shared/api/projectGit.ts";
 import { projectCloneErrorPresentation } from "./projectGitError.ts";
 
 test("explains unsupported authenticated GitHub clones without exposing git output", () => {
@@ -46,4 +47,55 @@ test("uses a concise fallback", () => {
     description:
       "Try again. If the problem continues, contact the repository owner.",
   });
+});
+
+test("presents structured GitHub CLI and auth failures for clone", () => {
+  assert.deepEqual(
+    projectCloneErrorPresentation(
+      new ProjectPullRequestMergeError(
+        "github_cli_missing",
+        "Install the GitHub CLI to continue.",
+        null,
+      ),
+      "https://github.com/acme/app",
+    ),
+    {
+      title: "GitHub CLI is required",
+      description: "Install GitHub CLI, then retry.",
+    },
+  );
+  assert.deepEqual(
+    projectCloneErrorPresentation(
+      new ProjectPullRequestMergeError(
+        "github_auth_required",
+        "Authenticate GitHub CLI with: gh auth login --hostname github.com",
+        null,
+      ),
+      "https://github.com/acme/app",
+    ),
+    {
+      title: "GitHub authentication required",
+      description:
+        "Authenticate GitHub CLI with: gh auth login --hostname github.com",
+    },
+  );
+});
+
+test("does not use GitHub recovery copy for a Buzz clone URL", () => {
+  const owner = "ab".repeat(32);
+  assert.deepEqual(
+    projectCloneErrorPresentation(
+      new ProjectPullRequestMergeError(
+        "github_auth_required",
+        "Authenticate GitHub CLI with: gh auth login --hostname github.com",
+        null,
+      ),
+      `https://relay.example/git/${owner}/app`,
+    ),
+    {
+      title: "Repository access required",
+      description:
+        "Buzz could not authenticate with this repository. Check your access and try again.",
+    },
+  );
 });

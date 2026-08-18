@@ -3,7 +3,7 @@ use regex::Regex;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::ffi::OsString;
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -300,6 +300,10 @@ impl GhRunner {
         })
     }
 
+    /// Resolved GitHub CLI binary used by git's credential-helper command.
+    #[rustfmt::skip]
+    pub(crate) fn binary_path(&self) -> &Path { &self.binary }
+
     pub(crate) fn ensure_auth(&self) -> Result<(), ProjectPullRequestMergeError> {
         let output = self.run(&[
             OsString::from("auth"),
@@ -349,6 +353,7 @@ impl GhRunner {
         let mut command = Command::new(&self.binary);
         command
             .args(args)
+            .env_remove("NOSTR_PRIVATE_KEY")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -927,11 +932,9 @@ fn join_gh_readers_after_cleanup<T: Default, U: Default>(
     )
 }
 
+#[rustfmt::skip]
 fn missing_cli_error() -> ProjectPullRequestMergeError {
-    ProjectPullRequestMergeError::new(
-        "github_cli_missing",
-        "GitHub CLI is required. Install gh, then retry.",
-    )
+    ProjectPullRequestMergeError::new("github_cli_missing", "GitHub CLI is required. Install gh, then retry.")
 }
 
 fn read_pipe_bounded(pipe: Option<impl Read>, limit: usize) -> String {

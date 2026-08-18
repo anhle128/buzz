@@ -13,6 +13,9 @@ import {
   Trash2,
   UploadCloud,
 } from "lucide-react";
+import type { ReactNode } from "react";
+
+import { repoSyncPrimaryAction } from "@/features/projects/lib/projectGithubSync";
 
 import { Button } from "@/shared/ui/button";
 import {
@@ -60,10 +63,11 @@ export function RepositoryBranchDropdown({
   onDeleteBranch?: () => void;
 }) {
   const selectableBranches =
-    branchOptions.length > 0 ? branchOptions : [branch];
+    branchOptions.length > 0 ? branchOptions : branch ? [branch] : [];
+  const hasBranchActions = Boolean(onCreateBranch || onDeleteBranch);
   const selectedValue = selectedTag ? `tag:${selectedTag}` : `branch:${branch}`;
   const RefIcon = selectedTag ? Tag : GitBranch;
-  if (!branch) {
+  if (!branch && !hasBranchActions) {
     return (
       <span className="truncate font-mono text-sm font-semibold text-foreground">
         —
@@ -75,12 +79,15 @@ export function RepositoryBranchDropdown({
       <DropdownMenuTrigger asChild>
         <Button
           className={PROJECT_PICKER_TRIGGER_CLASS}
+          data-testid="project-branch-picker"
           size="sm"
           type="button"
           variant="outline"
         >
           <RefIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
-          <span className="truncate font-mono">{selectedTag ?? branch}</span>
+          <span className="truncate font-mono">
+            {selectedTag || branch || "—"}
+          </span>
           <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         </Button>
       </DropdownMenuTrigger>
@@ -151,7 +158,7 @@ export function RepositoryBranchDropdown({
                 title={deleteBranchTitle}
               >
                 <Trash2 className="h-4 w-4" />
-                Delete {branch}
+                {branch ? `Delete ${branch}` : "Delete branch"}
               </DropdownMenuItem>
             ) : null}
           </>
@@ -200,6 +207,8 @@ export type RepoSourceHeaderControls = {
   /** Commits the local checkout is ahead/behind the remote branch. */
   aheadCount?: number | null;
   behindCount?: number | null;
+  /** True only while the current sync result is usable for actions/counts. */
+  syncStatusReady?: boolean;
   /** Manual sync-status refresh (runs a git fetch under the hood). */
   onFetch?: () => void;
   fetchPending?: boolean;
@@ -306,38 +315,17 @@ export function RepoSyncActionButton({
 }: {
   controls: RepoSourceHeaderControls;
 }) {
-  if (controls.githubHosted) {
-    if (!controls.onFetch) return null;
-    return (
-      <div className="flex items-center gap-2">
-        {controls.aheadCount != null && controls.behindCount != null ? (
-          <span
-            className="font-mono text-2xs text-muted-foreground"
-            data-testid="repo-ahead-behind"
-          >
-            {controls.aheadCount} / {controls.behindCount}
-          </span>
-        ) : null}
-        <Button
-          className={PROJECT_PANEL_ACTION_BUTTON_CLASS}
-          disabled={controls.fetchPending}
-          onClick={controls.onFetch}
-          size="sm"
-          title={controls.fetchTitle ?? "Refresh GitHub repository"}
-          variant="ghost"
-        >
-          {controls.fetchPending ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : (
-            <RefreshCw className="h-4 w-4" />
-          )}
-          Fetch
-        </Button>
-      </div>
-    );
-  }
+  const action = repoSyncPrimaryAction({
+    githubHosted: Boolean(controls.githubHosted),
+    syncStatusReady: controls.syncStatusReady,
+    remoteKind: controls.remoteKind,
+    hasExternalUrl: Boolean(controls.externalUrl),
+    canPull: Boolean(controls.canPull && controls.onPull),
+    canPush: Boolean(controls.canPush && controls.onPush),
+    hasFetch: Boolean(controls.onFetch),
+  });
 
-  if (controls.remoteKind === "external") {
+  if (action === "open") {
     return controls.externalUrl ? (
       <Button
         asChild
@@ -354,12 +342,10 @@ export function RepoSyncActionButton({
     ) : null;
   }
 
-  const pull = controls.canPull && controls.onPull;
-  const push = controls.canPush && controls.onPush;
-
-  if (pull) {
+  let button: ReactNode;
+  if (action === "pull" && controls.onPull) {
     const count = controls.behindCount ?? 0;
-    return (
+    button = (
       <Button
         className={PROJECT_PANEL_ACTION_BUTTON_CLASS}
         disabled={controls.pullDisabled}
@@ -376,10 +362,8 @@ export function RepoSyncActionButton({
         Pull{count > 0 ? ` ${count}` : ""}
       </Button>
     );
-  }
-
-  if (push) {
-    return (
+  } else if (action === "push" && controls.onPush) {
+    button = (
       <Button
         className={PROJECT_PANEL_ACTION_BUTTON_CLASS}
         disabled={controls.pushDisabled}
@@ -396,24 +380,45 @@ export function RepoSyncActionButton({
         Push
       </Button>
     );
+  } else if (action === "fetch" && controls.onFetch) {
+    button = (
+      <Button
+        className={PROJECT_PANEL_ACTION_BUTTON_CLASS}
+        disabled={controls.fetchPending}
+        onClick={controls.onFetch}
+        size="sm"
+        title={controls.fetchTitle ?? "Check for remote changes"}
+        variant="ghost"
+      >
+        {controls.fetchPending ? (
+          <Loader2 className="h-4 w-4 animate-spin" />
+        ) : (
+          <RefreshCw className="h-4 w-4" />
+        )}
+        Fetch
+      </Button>
+    );
+  } else {
+    return null;
   }
 
-  if (!controls.onFetch) return null;
-  return (
-    <Button
-      className={PROJECT_PANEL_ACTION_BUTTON_CLASS}
-      disabled={controls.fetchPending}
-      onClick={controls.onFetch}
-      size="sm"
-      title={controls.fetchTitle ?? "Check for remote changes"}
-      variant="ghost"
-    >
-      {controls.fetchPending ? (
-        <Loader2 className="h-4 w-4 animate-spin" />
-      ) : (
-        <RefreshCw className="h-4 w-4" />
-      )}
-      Fetch
-    </Button>
+  const counts =
+    controls.githubHosted &&
+    controls.aheadCount != null &&
+    controls.behindCount != null ? (
+      <span
+        className="font-mono text-2xs text-muted-foreground"
+        data-testid="repo-ahead-behind"
+      >
+        {controls.aheadCount} / {controls.behindCount}
+      </span>
+    ) : null;
+  return counts ? (
+    <div className="flex items-center gap-2">
+      {counts}
+      {button}
+    </div>
+  ) : (
+    button
   );
 }

@@ -311,7 +311,7 @@ export async function getProjectRepoSyncStatus(input: {
   branchName?: string | null;
   baseBranch?: string | null;
 }): Promise<ProjectRepoSyncStatus> {
-  const status = await invokeTauri<RawProjectRepoSyncStatus>(
+  const status = await invokeProjectGitCommand<RawProjectRepoSyncStatus>(
     "get_project_repo_sync_status",
     {
       reposDir: input.reposDir ?? null,
@@ -385,7 +385,7 @@ export async function pushProjectLocalRepository(input: {
   branchName?: string | null;
   baseBranch?: string | null;
 }): Promise<ProjectRepoPushResult> {
-  const result = await invokeTauri<RawProjectRepoPushResult>(
+  const result = await invokeProjectGitCommand<RawProjectRepoPushResult>(
     "push_project_local_repository",
     {
       reposDir: input.reposDir ?? null,
@@ -410,7 +410,7 @@ export async function pullProjectLocalRepository(input: {
   cloneUrl: string;
   branchName?: string | null;
 }): Promise<ProjectRepoPullResult> {
-  const result = await invokeTauri<RawProjectRepoPullResult>(
+  const result = await invokeProjectGitCommand<RawProjectRepoPullResult>(
     "pull_project_local_repository",
     {
       reposDir: input.reposDir ?? null,
@@ -431,12 +431,15 @@ export async function cloneProjectRepository(input: {
   cloneUrl: string;
   defaultBranch?: string | null;
 }): Promise<ProjectRepoCloneResult> {
-  return invokeTauri<ProjectRepoCloneResult>("clone_project_repository", {
-    reposDir: input.reposDir ?? null,
-    projectDtag: input.projectDtag,
-    cloneUrl: input.cloneUrl,
-    defaultBranch: input.defaultBranch ?? null,
-  });
+  return invokeProjectGitCommand<ProjectRepoCloneResult>(
+    "clone_project_repository",
+    {
+      reposDir: input.reposDir ?? null,
+      projectDtag: input.projectDtag,
+      cloneUrl: input.cloneUrl,
+      defaultBranch: input.defaultBranch ?? null,
+    },
+  );
 }
 
 export async function createProjectRemoteBranch(input: {
@@ -445,7 +448,7 @@ export async function createProjectRemoteBranch(input: {
   expectedCommit: string;
   newBranch: string;
 }): Promise<ProjectRepoBranchResult> {
-  return invokeTauri<RawProjectRepoBranchResult>(
+  return invokeProjectGitCommand<RawProjectRepoBranchResult>(
     "create_project_remote_branch",
     {
       cloneUrl: input.cloneUrl,
@@ -461,7 +464,7 @@ export async function deleteProjectRemoteBranch(input: {
   branch: string;
   expectedCommit: string;
 }): Promise<ProjectRepoBranchResult> {
-  return invokeTauri<RawProjectRepoBranchResult>(
+  return invokeProjectGitCommand<RawProjectRepoBranchResult>(
     "delete_project_remote_branch",
     {
       cloneUrl: input.cloneUrl,
@@ -688,6 +691,17 @@ export function parseProjectPullRequestMergeError(
     candidate.message,
     recovery,
   );
+}
+
+async function invokeProjectGitCommand<T>(
+  command: string,
+  args: Record<string, unknown>,
+): Promise<T> {
+  try {
+    return await invokeTauri<T>(command, args);
+  } catch (error) {
+    throw parseProjectPullRequestMergeError(error) ?? error;
+  }
 }
 
 export async function mergeProjectPullRequest(input: {

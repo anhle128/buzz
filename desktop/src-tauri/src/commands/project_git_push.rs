@@ -1,4 +1,5 @@
-use super::project_git::{compare_local_remote_status, ProjectRepoPushResult};
+use super::project_git::ProjectRepoPushResult;
+use super::project_git_compare::compare_local_remote_status;
 use super::project_git_exec::{run_git, GitAuthConfig};
 
 pub(crate) fn push_project_local_repository_blocking(
@@ -14,7 +15,7 @@ pub(crate) fn push_project_local_repository_blocking(
         branch_name.as_deref(),
         base_branch.as_deref(),
         auth,
-    );
+    )?;
     if !status.can_push {
         return Err(status
             .push_block_reason
@@ -58,8 +59,54 @@ pub(crate) fn push_project_local_repository_blocking(
 #[cfg(test)]
 mod tests {
     use super::push_project_local_repository_blocking;
-    use crate::commands::project_git::compare_local_remote_status;
+    use crate::commands::project_git_compare::{
+        compare_local_remote_status, compare_local_remote_status_with_policy,
+    };
     use crate::commands::project_git_exec::{build_test_git_auth_config, run_git};
+
+    fn create_synced_checkout(
+        root: &tempfile::TempDir,
+        auth: &crate::commands::project_git_exec::GitAuthConfig,
+    ) -> (std::path::PathBuf, std::path::PathBuf) {
+        let remote = root.path().join("remote.git");
+        let checkout = root.path().join("checkout");
+        let remote_path = remote.to_str().expect("remote path");
+        let checkout_path = checkout.to_str().expect("checkout path");
+
+        run_git(&["init", "--bare", "--", remote_path], None, auth).expect("initialize remote");
+        run_git(&["init", "--", checkout_path], None, auth).expect("initialize checkout");
+        std::fs::write(checkout.join("README.md"), "synced commit\n").expect("write fixture");
+        run_git(&["add", "README.md"], Some(&checkout), auth).expect("stage fixture");
+        run_git(
+            &[
+                "-c",
+                "user.name=Buzz Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-m",
+                "Synced commit",
+            ],
+            Some(&checkout),
+            auth,
+        )
+        .expect("commit fixture");
+        run_git(&["branch", "-M", "main"], Some(&checkout), auth).expect("rename branch");
+        run_git(
+            &["remote", "add", "origin", remote_path],
+            Some(&checkout),
+            auth,
+        )
+        .expect("add remote");
+        run_git(
+            &["push", "--set-upstream", "origin", "main"],
+            Some(&checkout),
+            auth,
+        )
+        .expect("push fixture");
+
+        (checkout, remote)
+    }
 
     #[test]
     fn first_push_aligns_legacy_master_checkout_to_main() {
@@ -102,7 +149,8 @@ mod tests {
         )
         .expect("add remote");
 
-        let status = compare_local_remote_status(&checkout, remote_path, Some("main"), None, &auth);
+        let status = compare_local_remote_status(&checkout, remote_path, Some("main"), None, &auth)
+            .expect("compare first-publish status");
         assert_eq!(status.local_branches, ["master", "space"]);
 
         let result = push_project_local_repository_blocking(
@@ -132,5 +180,95 @@ mod tests {
             &auth,
         )
         .is_ok());
+    }
+
+    #[test]
+    fn sync_status_propagates_remote_fetch_failures() {
+        let auth = build_test_git_auth_config().expect("build test git config");
+        let root = tempfile::tempdir().expect("create test directory");
+        let checkout = root.path().join("checkout");
+        let checkout_path = checkout.to_str().expect("checkout path");
+        let missing_remote = root.path().join("missing.git");
+        let missing_remote_path = missing_remote.to_str().expect("missing remote path");
+
+        run_git(&["init", "--", checkout_path], None, &auth).expect("initialize checkout");
+        std::fs::write(checkout.join("README.md"), "local commit\n").expect("write fixture");
+        run_git(&["add", "README.md"], Some(&checkout), &auth).expect("stage fixture");
+        run_git(
+            &[
+                "-c",
+                "user.name=Buzz Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-m",
+                "Local commit",
+            ],
+            Some(&checkout),
+            &auth,
+        )
+        .expect("commit fixture");
+        run_git(&["branch", "-M", "main"], Some(&checkout), &auth).expect("rename branch");
+        run_git(
+            &["remote", "add", "origin", missing_remote_path],
+            Some(&checkout),
+            &auth,
+        )
+        .expect("add missing remote");
+
+        let error = match compare_local_remote_status_with_policy(
+            &checkout,
+            missing_remote_path,
+            Some("main"),
+            None,
+            &auth,
+            true,
+        ) {
+            Ok(_) => panic!("an unreachable remote must fail sync status"),
+            Err(error) => error,
+        };
+
+        assert!(!error.trim().is_empty());
+    }
+
+    #[test]
+    fn strict_sync_propagates_status_calculation_failures() {
+        let auth = build_test_git_auth_config().expect("build test git config");
+        let root = tempfile::tempdir().expect("create test directory");
+        let (checkout, remote) = create_synced_checkout(&root, &auth);
+        std::fs::write(checkout.join(".git/index"), "broken index\n").expect("corrupt test index");
+
+        let result = compare_local_remote_status_with_policy(
+            &checkout,
+            remote.to_str().expect("remote path"),
+            Some("main"),
+            None,
+            &auth,
+            true,
+        );
+
+        assert!(result.is_err(), "strict sync must not invent clean status");
+    }
+
+    #[test]
+    fn buzz_sync_preserves_cached_status_when_fetch_fails() {
+        let auth = build_test_git_auth_config().expect("build test git config");
+        let root = tempfile::tempdir().expect("create test directory");
+        let (checkout, remote) = create_synced_checkout(&root, &auth);
+        let unavailable_remote = root.path().join("remote-unavailable.git");
+        std::fs::rename(&remote, &unavailable_remote).expect("make remote unavailable");
+
+        let status = compare_local_remote_status_with_policy(
+            &checkout,
+            remote.to_str().expect("remote path"),
+            Some("main"),
+            None,
+            &auth,
+            false,
+        )
+        .expect("Buzz sync keeps using its cached remote state");
+
+        assert_eq!(status.ahead_count, 0);
+        assert_eq!(status.behind_count, 0);
     }
 }
