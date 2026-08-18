@@ -37,6 +37,39 @@ import { deliverPermissionAlert } from "./pendingPermissionAlertDelivery";
 import { useObserverIngestionAgents } from "./useAgentObserverIngestion";
 import { useOpenAgentActivity } from "./useOpenAgentActivity";
 
+/** Track permission toasts and dismiss unresolved ones when their owner unmounts. */
+export function usePermissionAlertToastTracker(
+  dismissToast: (nonce: string) => void = toast.dismiss,
+): {
+  dismiss: (nonce: string) => void;
+  track: (nonce: string) => void;
+} {
+  const trackedNonces = React.useRef(new Set<string>());
+
+  React.useEffect(() => {
+    const mountedNonces = trackedNonces.current;
+    return () => {
+      for (const nonce of mountedNonces) {
+        dismissToast(nonce);
+      }
+      mountedNonces.clear();
+    };
+  }, [dismissToast]);
+
+  return React.useMemo(
+    () => ({
+      dismiss: (nonce: string) => {
+        trackedNonces.current.delete(nonce);
+        dismissToast(nonce);
+      },
+      track: (nonce: string) => {
+        trackedNonces.current.add(nonce);
+      },
+    }),
+    [dismissToast],
+  );
+}
+
 /** Deliver app-level owner permission alerts from the observer store. */
 export function usePendingPermissionAlerts({
   enabled,
@@ -61,6 +94,7 @@ export function usePendingPermissionAlerts({
   const { openAgentSessionChannelId, openAgentSessionPubkey } =
     useChannelPanelHistoryState();
   const [alertState] = React.useState(createPermissionAlertStoreState);
+  const permissionToastTracker = usePermissionAlertToastTracker();
 
   const handleStoreUpdate = React.useEffectEvent(
     (update?: AgentObserverStoreUpdate) => {
@@ -84,7 +118,7 @@ export function usePendingPermissionAlerts({
       }
 
       for (const nonce of applied.dismissNonces) {
-        toast.dismiss(nonce);
+        permissionToastTracker.dismiss(nonce);
       }
 
       if (!update) {
@@ -131,6 +165,7 @@ export function usePendingPermissionAlerts({
           },
           {
             showToast: (alertToast) => {
+              permissionToastTracker.track(alertToast.id);
               // Sonner has no toast-body onClick; map the delivery click
               // through the action button (same pattern as other alerts).
               toast(alertToast.title, {
