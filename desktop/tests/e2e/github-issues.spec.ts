@@ -39,6 +39,18 @@ test("GitHub Issues lists metadata, loads read-only detail, and creates #N", asy
   page,
 }) => {
   await openGithubIssues(page);
+  await expect(
+    page.getByTestId("project-github-issue-filter-open"),
+  ).toHaveAttribute("aria-selected", "true");
+  await page.getByTestId("project-github-issue-filter-closed").click();
+  await expect(
+    page.getByText("No closed issues.", { exact: true }),
+  ).toBeVisible();
+  await page.getByTestId("project-github-issue-filter-open").click();
+  await expect(
+    page.getByTestId("project-github-issue-row").first(),
+  ).toContainText("#42");
+
   const row = page.getByTestId("project-github-issue-row").first();
   await expect(row).toContainText("#42");
   await expect(row).toContainText("Open");
@@ -59,6 +71,11 @@ test("GitHub Issues lists metadata, loads read-only detail, and creates #N", asy
   await expect(page.getByTestId("issue-discussed-in")).toHaveCount(0);
   await expect(page.getByTestId("project-issue-assign")).toHaveCount(0);
 
+  await page.getByTestId("project-github-issue-filter-closed").click();
+  await expect(
+    page.getByText("No closed issues.", { exact: true }),
+  ).toBeVisible();
+
   await page.getByRole("button", { name: "New issue" }).click();
   await page.getByTestId("create-issue-title").fill("New GitHub bug");
   await page.getByTestId("create-issue-body").fill("Created from Buzz");
@@ -67,6 +84,9 @@ test("GitHub Issues lists metadata, loads read-only detail, and creates #N", asy
     timeout: 10_000,
   });
   await expect(page.getByText("#43", { exact: true })).toBeVisible();
+  await expect(
+    page.getByTestId("project-github-issue-filter-open"),
+  ).toHaveAttribute("aria-selected", "true");
 
   const commands = await page.evaluate(
     () => window.__BUZZ_E2E_COMMANDS__ ?? [],

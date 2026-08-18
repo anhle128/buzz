@@ -11652,6 +11652,9 @@ export function maybeInstallE2eTauriMocks() {
           throw window.__BUZZ_E2E_GITHUB_ISSUES_ERROR__;
         }
         const input = payload as { state?: string };
+        if (input.state === "closed") {
+          return { issues: [], has_more: false };
+        }
         if (input.state !== "open")
           throw new Error("Expected GitHub state=open");
         return {

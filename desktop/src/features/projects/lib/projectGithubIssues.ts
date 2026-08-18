@@ -13,6 +13,9 @@ import { isGitHubCloneUrl } from "./projectGitError";
 /** Host-routed issue list consumed by the repository Issues tab. */
 export type ProjectIssuesResult = { issues: ProjectIssue[]; hasMore: boolean };
 
+/** GitHub Issues tab filter. Buzz lists stay unfiltered. */
+export type GithubIssueListState = "open" | "closed";
+
 /** Convert a positive safe GitHub issue number into its decimal selection id. */
 export function githubIssueId(number: number): string {
   if (!Number.isSafeInteger(number) || number <= 0) {
@@ -73,14 +76,15 @@ export async function fetchProjectIssuesWith(
   loaders: {
     loadGithub: (input: {
       cloneUrl: string;
-      state: "open";
+      state: GithubIssueListState;
     }) => Promise<GithubIssueListDto>;
     loadBuzz: () => Promise<ProjectIssue[]>;
   },
+  state: GithubIssueListState = "open",
 ): Promise<ProjectIssuesResult> {
   const cloneUrl = project.cloneUrls[0] ?? "";
   if (isGitHubCloneUrl(cloneUrl)) {
-    const page = await loaders.loadGithub({ cloneUrl, state: "open" });
+    const page = await loaders.loadGithub({ cloneUrl, state });
     return {
       issues: page.issues.map((issue) =>
         mapGithubIssueToProjectIssue(issue, project.repoAddress),

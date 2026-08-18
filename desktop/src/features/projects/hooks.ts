@@ -27,7 +27,10 @@ import {
   KIND_TEXT_NOTE,
 } from "@/shared/constants/kinds";
 import { isGitHubCloneUrl } from "@/features/projects/lib/projectGitError";
-import { fetchProjectIssuesWith } from "@/features/projects/lib/projectGithubIssues";
+import {
+  fetchProjectIssuesWith,
+  type GithubIssueListState,
+} from "@/features/projects/lib/projectGithubIssues";
 import { fetchProjectRepoSnapshotWith } from "@/features/projects/lib/projectGithubSnapshot";
 import { fetchRepoState } from "@/features/projects/lib/projectRepoState";
 export type { RepoState } from "@/features/projects/lib/projectRepoState";
@@ -767,16 +770,26 @@ export function useProjectLocalRepositoriesQuery(reposDir?: string | null) {
   });
 }
 
-export function useProjectIssuesQuery(project: Repository | null | undefined) {
+export function useProjectIssuesQuery(
+  project: Repository | null | undefined,
+  listState: GithubIssueListState = "open",
+) {
+  const githubHosted = isGitHubCloneUrl(project?.cloneUrls[0]);
   return useQuery({
     enabled: Boolean(project),
-    queryKey: ["project", project?.id ?? "none", "issues"],
+    queryKey: githubHosted
+      ? ["project", project?.id ?? "none", "issues", listState]
+      : ["project", project?.id ?? "none", "issues"],
     queryFn: () => {
       if (!project) throw new Error("No project selected.");
-      return fetchProjectIssuesWith(project, {
-        loadGithub: listGithubIssues,
-        loadBuzz: () => fetchBuzzProjectIssues(project),
-      });
+      return fetchProjectIssuesWith(
+        project,
+        {
+          loadGithub: listGithubIssues,
+          loadBuzz: () => fetchBuzzProjectIssues(project),
+        },
+        listState,
+      );
     },
     staleTime: 30_000,
   });

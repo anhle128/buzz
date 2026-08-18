@@ -127,6 +127,31 @@ test("host routing invokes only GitHub for github.com", async () => {
   assert.equal(result.hasMore, true);
 });
 
+test("host routing forwards closed state only to GitHub", async () => {
+  let received = null;
+  await fetchProjectIssuesWith(
+    {
+      id: "p1",
+      repoAddress: REPO_ADDRESS,
+      cloneUrls: ["https://github.com/acme/app"],
+    },
+    {
+      loadGithub: async (input) => {
+        received = input;
+        return { issues: [], has_more: false };
+      },
+      loadBuzz: async () => {
+        throw new Error("Buzz loader must not run");
+      },
+    },
+    "closed",
+  );
+  assert.deepEqual(received, {
+    cloneUrl: "https://github.com/acme/app",
+    state: "closed",
+  });
+});
+
 test("host routing invokes only Nostr for a Buzz clone URL", async () => {
   const calls = { github: 0, buzz: 0 };
   const result = await fetchProjectIssuesWith(
