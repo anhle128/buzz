@@ -288,6 +288,6 @@ Buzz-hosted repositories still list and create kind:1618 only.
 
 ## Follow-up slices (not this spec)
 
-- **P3:** show GitHub `reviewDecision` and required checks in the Checks / review chrome.
+- **Checks + reviews:** [2026-08-18-github-pull-request-checks-and-reviews-design.md](./2026-08-18-github-pull-request-checks-and-reviews-design.md) — required checks, `reviewDecision`, and GitHub Approve / Request changes.
 - **P4 adapt:** merge the listed GitHub `#N` (no find-or-create, no kind:1631).
 - **P5:** review comments and posting comments.
