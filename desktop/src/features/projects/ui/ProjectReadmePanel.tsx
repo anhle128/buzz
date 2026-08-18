@@ -35,12 +35,12 @@ export function findReadmeFile(files: ProjectRepoFile[]) {
   const readmes = files.filter((file) =>
     /^readme(?:\.(?:md|markdown|mdx|txt))?$/i.test(baseName(file.path)),
   );
+  const previewFiles = files.filter((file) => Boolean(file.previewContent));
 
   return (
     readmes.find((file) => !file.path.includes("/")) ??
     readmes[0] ??
-    files.find((file) => Boolean(file.previewContent)) ??
-    null
+    (previewFiles.length === 1 ? previewFiles[0] : null)
   );
 }
 

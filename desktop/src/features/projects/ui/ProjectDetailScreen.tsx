@@ -418,11 +418,15 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
     const tasks = githubHosted
       ? [
           repoStateQuery.refetch(),
-          ...(repoStateQuery.isError ? [] : [repoSnapshotQuery.refetch()]),
-          ...(githubAheadBehindQuery.isFetched ||
-          (localHeadSha && activeRemoteSha)
-            ? [githubAheadBehindQuery.refetch()]
-            : []),
+          ...(repoStateQuery.isError
+            ? []
+            : [
+                repoSnapshotQuery.refetch(),
+                ...(githubAheadBehindQuery.isFetched ||
+                (localHeadSha && activeRemoteSha)
+                  ? [githubAheadBehindQuery.refetch()]
+                  : []),
+              ]),
         ]
       : [
           repoSnapshotQuery.refetch(),
@@ -1058,7 +1062,12 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
                 selectedIssueId={selectedIssueId}
                 selectedPullRequestId={selectedPullRequestId}
                 snapshot={repoSnapshotQuery.data}
-                snapshotError={repoSnapshotQuery.error}
+                snapshotError={
+                  repoSnapshotQuery.error ??
+                  (githubHosted && repoStateQuery.isError
+                    ? repoStateQuery.error
+                    : undefined)
+                }
                 snapshotLoading={
                   repoSnapshotQuery.isLoading ||
                   (githubHosted && repoStateQuery.isPending)

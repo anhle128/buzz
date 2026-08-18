@@ -26,6 +26,7 @@ import {
   type ViewerGitIdentity,
 } from "@/features/projects/lib/projectContributorMatching";
 import { repositoryDiscussionQuery } from "@/features/projects/lib/discussionChannels";
+import { isGitHubCloneUrl } from "@/features/projects/lib/projectGitError";
 import { githubSplashHost } from "@/features/projects/lib/projectGithubRemoteView";
 import type { ProjectRepoHost } from "@/features/projects/lib/projectRepoHost";
 import {
@@ -212,13 +213,16 @@ export function WorkspaceTabs({
   // "missing" git result is re-classified with the repository's channel
   // binding and the viewer's memberships before it reaches the UI copy.
   const memberChannelIds = useMemberChannelIds();
+  const githubHosted = isGitHubCloneUrl(project.cloneUrls[0]);
   const unavailableReason =
     gitDataState === "unavailable" && !splashHost
-      ? refineRepoUnavailableReason({
-          reason: projectRepoUnavailableReason(displayedSnapshotError),
-          repositoryChannelId: project.channelId,
-          memberChannelIds,
-        })
+      ? githubHosted
+        ? projectRepoUnavailableReason(displayedSnapshotError)
+        : refineRepoUnavailableReason({
+            reason: projectRepoUnavailableReason(displayedSnapshotError),
+            repositoryChannelId: project.channelId,
+            memberChannelIds,
+          })
       : undefined;
   const repositoryLoaded =
     gitDataState === "available" || gitDataState === "empty";
