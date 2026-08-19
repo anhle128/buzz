@@ -39,6 +39,18 @@ test("GitHub Issues lists metadata, loads read-only detail, and creates #N", asy
   page,
 }) => {
   await openGithubIssues(page);
+  await expect(
+    page.getByTestId("project-github-issue-filter-open"),
+  ).toHaveAttribute("aria-selected", "true");
+  await page.getByTestId("project-github-issue-filter-closed").click();
+  await expect(
+    page.getByText("No closed issues.", { exact: true }),
+  ).toBeVisible();
+  await page.getByTestId("project-github-issue-filter-open").click();
+  await expect(
+    page.getByTestId("project-github-issue-row").first(),
+  ).toContainText("#42");
+
   const row = page.getByTestId("project-github-issue-row").first();
   await expect(row).toContainText("#42");
   await expect(row).toContainText("Open");
@@ -53,11 +65,19 @@ test("GitHub Issues lists metadata, loads read-only detail, and creates #N", asy
   await expect(comments.nth(0)).toContainText("API-order first comment.");
   await expect(comments.nth(1)).toContainText("API-order second comment.");
   await expect(page.getByText("grace", { exact: true })).toBeVisible();
-  await expect(page.getByTestId("project-issue-comment-composer")).toHaveCount(
+  const composer = page.getByTestId("project-issue-comment-composer");
+  await expect(composer).toBeVisible();
+  await expect(page.getByTestId("message-insert-mention")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Attach file" })).toHaveCount(
     0,
   );
   await expect(page.getByTestId("issue-discussed-in")).toHaveCount(0);
   await expect(page.getByTestId("project-issue-assign")).toHaveCount(0);
+
+  await page.getByTestId("project-github-issue-filter-closed").click();
+  await expect(
+    page.getByText("No closed issues.", { exact: true }),
+  ).toBeVisible();
 
   await page.getByRole("button", { name: "New issue" }).click();
   await page.getByTestId("create-issue-title").fill("New GitHub bug");
@@ -67,6 +87,9 @@ test("GitHub Issues lists metadata, loads read-only detail, and creates #N", asy
     timeout: 10_000,
   });
   await expect(page.getByText("#43", { exact: true })).toBeVisible();
+  await expect(
+    page.getByTestId("project-github-issue-filter-open"),
+  ).toHaveAttribute("aria-selected", "true");
 
   const commands = await page.evaluate(
     () => window.__BUZZ_E2E_COMMANDS__ ?? [],
@@ -124,9 +147,9 @@ test("GitHub comment failure keeps the issue body and retries only comments", as
   await expect(
     page.getByText("Could not load GitHub issues", { exact: true }),
   ).toHaveCount(0);
-  await expect(page.getByTestId("project-issue-comment-composer")).toHaveCount(
-    0,
-  );
+  await expect(
+    page.getByTestId("project-issue-comment-composer"),
+  ).toBeVisible();
   const before = await page.evaluate(() => window.__BUZZ_E2E_COMMANDS__ ?? []);
   const listCallsBefore = before.filter(
     (command) => command === "list_github_issues",
@@ -134,7 +157,10 @@ test("GitHub comment failure keeps the issue body and retries only comments", as
   const commentCallsBefore = before.filter(
     (command) => command === "list_github_issue_comments",
   ).length;
-  await page.getByRole("button", { name: "Retry", exact: true }).click();
+  await page
+    .locator('[aria-labelledby="github-issue-comments-recovery-title"]')
+    .getByRole("button", { name: "Retry", exact: true })
+    .click();
   await expect(
     page.getByText("Could not load GitHub comments", { exact: true }),
   ).toBeVisible();
@@ -145,4 +171,30 @@ test("GitHub comment failure keeps the issue body and retries only comments", as
   expect(
     after.filter((command) => command === "list_github_issue_comments").length,
   ).toBe(commentCallsBefore + 1);
+});
+
+test("GitHub user failure disables self-assignment and keeps recovery visible", async ({
+  page,
+}) => {
+  await enableProjectsFeature(page);
+  await page.addInitScript(() => {
+    window.__BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__ =
+      "https://github.com/acme/app";
+    window.__BUZZ_E2E_GITHUB_USER_ERROR__ = {
+      code: "github_auth_required",
+      message: "GitHub authentication required.",
+    };
+  });
+  await installMockBridge(page);
+  await openBuzzProject(page);
+  await page.getByRole("tab", { name: "Issues", exact: true }).click();
+  const row = page.getByTestId("project-github-issue-row").first();
+  await row.getByRole("button", { name: "#42", exact: true }).click();
+
+  await expect(
+    page.getByRole("status", { name: "GitHub authentication required" }),
+  ).toBeVisible();
+  await expect(
+    page.getByTestId("project-github-issue-assign-me"),
+  ).toBeDisabled();
 });

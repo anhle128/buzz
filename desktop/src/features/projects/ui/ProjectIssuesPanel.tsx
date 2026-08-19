@@ -16,6 +16,8 @@ import {
 } from "@/features/profile/lib/identity";
 import { entityDiscussionQuery } from "@/features/projects/lib/discussionChannels";
 import { isGitHubCloneUrl } from "@/features/projects/lib/projectGitError";
+import type { GithubIssueListState } from "@/features/projects/lib/projectGithubIssues";
+import { selectedGithubIssueAfterListLoad } from "@/features/projects/lib/projectGithubIssueWrites";
 import { issueShareLink } from "@/features/projects/lib/projectShareLinks";
 import { relativeTime } from "@/features/projects/lib/projectsViewHelpers";
 import { useIdentityQuery } from "@/shared/api/hooks";
@@ -30,6 +32,7 @@ import {
 } from "./ProjectFeedRow";
 import { DiscussedInChannels } from "./DiscussionChannels";
 import { GitHubIssueDetail, GitHubIssueRow } from "./GitHubProjectIssues";
+import { GitHubIssueStateFilter } from "./GitHubIssueStateFilter";
 import { GitHubRepoStateRecovery } from "./GitHubRepoStateRecovery";
 import { ProjectIssueCommentTimeline } from "./ProjectIssueCommentTimeline";
 import { ProjectOriginReference } from "./ProjectOriginReference";
@@ -378,28 +381,62 @@ function IssueMetaRail({
 }
 
 export function ProjectIssuesPanel({
+  githubIssueListState,
+  onGithubIssueListStateChange,
   onSelectedIssueIdChange,
   profiles,
   project,
   selectedIssueId,
 }: {
+  githubIssueListState: GithubIssueListState;
+  onGithubIssueListStateChange: (state: GithubIssueListState) => void;
   onSelectedIssueIdChange: (id: string | null) => void;
   profiles?: UserProfileLookup;
   project: Project;
   selectedIssueId: string | null;
 }) {
-  const issuesQuery = useProjectIssuesQuery(project);
+  const issuesQuery = useProjectIssuesQuery(project, githubIssueListState);
   const issues = issuesQuery.data?.issues ?? [];
   const githubHosted = isGitHubCloneUrl(project.cloneUrls[0]);
   const selectedIssue =
     issues.find((issue) => issue.id === selectedIssueId) ?? null;
+  const hasMoreNote =
+    githubHosted && issuesQuery.data?.hasMore
+      ? githubIssueListState === "closed"
+        ? "More closed issues exist on GitHub."
+        : "More open issues exist on GitHub."
+      : null;
+  const emptyCopy = githubHosted
+    ? githubIssueListState === "closed"
+      ? "No closed issues."
+      : "No open issues."
+    : "No issues yet.";
 
+  React.useEffect(() => {
+    if (!githubHosted) return;
+    const nextSelectedIssueId = selectedGithubIssueAfterListLoad({
+      selectedIssueId,
+      issueIds: (issuesQuery.data?.issues ?? []).map((issue) => issue.id),
+      isSuccess: issuesQuery.isSuccess,
+      isFetching: issuesQuery.isFetching,
+    });
+    if (nextSelectedIssueId !== selectedIssueId) {
+      onSelectedIssueIdChange(nextSelectedIssueId);
+    }
+  }, [
+    githubHosted,
+    issuesQuery.data,
+    issuesQuery.isFetching,
+    issuesQuery.isSuccess,
+    onSelectedIssueIdChange,
+    selectedIssueId,
+  ]);
+
+  let body: React.ReactNode;
   if (issuesQuery.isLoading) {
-    return <p className="p-4 text-sm text-muted-foreground">Loading issues…</p>;
-  }
-
-  if (githubHosted && issuesQuery.isError) {
-    return (
+    body = <p className="p-4 text-sm text-muted-foreground">Loading issues…</p>;
+  } else if (githubHosted && issuesQuery.isError) {
+    body = (
       <div className="p-4">
         <GitHubRepoStateRecovery
           error={issuesQuery.error}
@@ -409,30 +446,27 @@ export function ProjectIssuesPanel({
         />
       </div>
     );
-  }
-
-  if (issuesQuery.isError) {
-    return (
+  } else if (issuesQuery.isError) {
+    body = (
       <p className="p-4 text-sm text-muted-foreground">
         Could not load issues for this repository.
       </p>
     );
-  }
-
-  if (issues.length === 0) {
-    return (
+  } else if (issues.length === 0) {
+    body = (
       <div className="space-y-2 p-4 text-sm text-muted-foreground">
-        <p>{githubHosted ? "No open issues." : "No issues yet."}</p>
-        {githubHosted && issuesQuery.data?.hasMore ? (
-          <p>More open issues exist on GitHub.</p>
-        ) : null}
+        <p>{emptyCopy}</p>
+        {hasMoreNote ? <p>{hasMoreNote}</p> : null}
       </div>
     );
-  }
-
-  if (selectedIssue) {
-    return githubHosted ? (
-      <GitHubIssueDetail issue={selectedIssue} project={project} />
+  } else if (selectedIssue) {
+    body = githubHosted ? (
+      <GitHubIssueDetail
+        issue={selectedIssue}
+        onListStateChange={onGithubIssueListStateChange}
+        onSelectedIssueIdChange={onSelectedIssueIdChange}
+        project={project}
+      />
     ) : (
       <ProjectIssueDetail
         issue={selectedIssue}
@@ -440,10 +474,8 @@ export function ProjectIssuesPanel({
         project={project}
       />
     );
-  }
-
-  if (githubHosted) {
-    return (
+  } else if (githubHosted) {
+    body = (
       <div>
         <div className="divide-y divide-border/50">
           {issues.map((issue) => (
@@ -454,25 +486,37 @@ export function ProjectIssuesPanel({
             />
           ))}
         </div>
-        {issuesQuery.data?.hasMore ? (
+        {hasMoreNote ? (
           <p className="border-t border-border/50 p-4 text-xs text-muted-foreground">
-            More open issues exist on GitHub.
+            {hasMoreNote}
           </p>
         ) : null}
+      </div>
+    );
+  } else {
+    body = (
+      <div className="divide-y divide-border/50">
+        {issues.map((issue) => (
+          <IssueRow
+            issue={issue}
+            key={issue.id}
+            onOpen={() => onSelectedIssueIdChange(issue.id)}
+            profiles={profiles}
+          />
+        ))}
       </div>
     );
   }
 
   return (
-    <div className="divide-y divide-border/50">
-      {issues.map((issue) => (
-        <IssueRow
-          issue={issue}
-          key={issue.id}
-          onOpen={() => onSelectedIssueIdChange(issue.id)}
-          profiles={profiles}
+    <div>
+      {githubHosted ? (
+        <GitHubIssueStateFilter
+          onChange={onGithubIssueListStateChange}
+          value={githubIssueListState}
         />
-      ))}
+      ) : null}
+      {body}
     </div>
   );
 }

@@ -60,7 +60,11 @@ import {
 } from "@/features/projects/lib/projectBranches";
 import { githubRemoteSnapshotEnabled } from "@/features/projects/lib/projectGithubSnapshot";
 import { isGitHubCloneUrl } from "@/features/projects/lib/projectGitError";
-import { issueIdentityPubkeys } from "@/features/projects/lib/projectGithubIssues";
+import {
+  type GithubIssueListState,
+  issueIdentityPubkeys,
+} from "@/features/projects/lib/projectGithubIssues";
+import { nextGithubIssueListState } from "@/features/projects/lib/projectGithubIssueWrites";
 import { githubRepositoryStateUnresolved } from "@/features/projects/lib/projectRepoState";
 import { normalizeRepositoryUrl } from "@/features/projects/lib/projectsViewHelpers";
 import {
@@ -197,6 +201,12 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
   const [selectedIssueId, setSelectedIssueId] = React.useState<string | null>(
     issueId ?? null,
   );
+  const [githubIssueListState, setGithubIssueListState] =
+    React.useState<GithubIssueListState>("open");
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a new repository must reset the GitHub Open/Closed filter.
+  React.useEffect(() => {
+    setGithubIssueListState("open");
+  }, [repository?.id]);
   // biome-ignore lint/correctness/useExhaustiveDependencies: the transient request ID deliberately reapplies an unchanged entity selection.
   React.useEffect(() => {
     setSelectedPullRequestId(pullRequestId ?? null);
@@ -243,7 +253,7 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
     },
     [],
   );
-  const issuesQuery = useProjectIssuesQuery(repository);
+  const issuesQuery = useProjectIssuesQuery(repository, githubIssueListState);
   const selectedBranchPullRequest = React.useMemo(() => {
     const projectRepositories = new Set(
       (repository?.cloneUrls ?? []).map(normalizeRepositoryUrl),
@@ -573,10 +583,10 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
     async ({ body, title }: CreateIssueDialogInput) => {
       const issueId = await createIssueMutation.mutateAsync({ body, title });
       toast.success("Issue created.");
-      await issuesQuery.refetch();
+      setGithubIssueListState(nextGithubIssueListState("create"));
       setSelectedIssueId(issueId);
     },
-    [createIssueMutation, issuesQuery],
+    [createIssueMutation],
   );
   const handleUpdatePullRequest = React.useCallback(async () => {
     const commit = repoSyncStatusQuery.data?.remoteHead;
@@ -881,6 +891,8 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
                 }}
                 terminalTitle={projectTerminalLabel(hasLocalCheckout)}
                 onSelectedCommitHashChange={handleSelectedCommitHashChange}
+                githubIssueListState={githubIssueListState}
+                onGithubIssueListStateChange={setGithubIssueListState}
                 onSelectedIssueIdChange={handleSelectedIssueIdChange}
                 onSelectedPullRequestIdChange={
                   handleSelectedPullRequestIdChange

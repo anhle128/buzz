@@ -27,6 +27,7 @@ import {
 } from "@/features/projects/lib/projectContributorMatching";
 import { repositoryDiscussionQuery } from "@/features/projects/lib/discussionChannels";
 import { isGitHubCloneUrl } from "@/features/projects/lib/projectGitError";
+import type { GithubIssueListState } from "@/features/projects/lib/projectGithubIssues";
 import { githubSplashHost } from "@/features/projects/lib/projectGithubRemoteView";
 import type { ProjectRepoHost } from "@/features/projects/lib/projectRepoHost";
 import {
@@ -120,6 +121,8 @@ export function WorkspaceTabs({
   pullRequests,
   pullRequestsError,
   pullRequestsLoading,
+  githubIssueListState,
+  onGithubIssueListStateChange,
   onSelectedCommitHashChange,
   onSelectedIssueIdChange,
   onSelectedPullRequestIdChange,
@@ -163,6 +166,8 @@ export function WorkspaceTabs({
   pullRequests: ProjectPullRequest[];
   pullRequestsError: unknown;
   pullRequestsLoading: boolean;
+  githubIssueListState: GithubIssueListState;
+  onGithubIssueListStateChange: (state: GithubIssueListState) => void;
   onSelectedCommitHashChange: (hash: string | null) => void;
   onSelectedIssueIdChange: (id: string | null) => void;
   onSelectedPullRequestIdChange: (id: string | null) => void;
@@ -602,6 +607,8 @@ export function WorkspaceTabs({
           value="issues"
         >
           <ProjectIssuesPanel
+            githubIssueListState={githubIssueListState}
+            onGithubIssueListStateChange={onGithubIssueListStateChange}
             onSelectedIssueIdChange={onSelectedIssueIdChange}
             profiles={profiles}
             project={project}

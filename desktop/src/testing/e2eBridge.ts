@@ -1275,8 +1275,12 @@ declare global {
       code: string;
       message: string;
     };
-    /** Created GitHub issue DTOs retained for later list calls. */
-    __BUZZ_E2E_GITHUB_CREATED_ISSUES__?: Array<Record<string, unknown>>;
+    /** Structured error thrown by GitHub issue write mock commands. */
+    __BUZZ_E2E_GITHUB_ISSUE_WRITE_ERROR__?: { code: string; message: string };
+    /** Structured error thrown by the authenticated GitHub user mock command. */
+    __BUZZ_E2E_GITHUB_USER_ERROR__?: { code: string; message: string };
+    /** Shared in-memory GitHub issue store for list, create, and writes. */
+    __BUZZ_E2E_GITHUB_ISSUE_STORE__?: E2eGithubIssueStore;
     /** Overrides the first mock repository owner for delegated-owner tests. */
     __BUZZ_E2E_PROJECT_OWNER_OVERRIDE__?: string;
     __BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__?: string;
@@ -10255,6 +10259,132 @@ function disconnectMockSocket(id: number) {
   sendWsClose(socket.handler);
 }
 
+type E2eGithubIssueUser = { login: string; avatar_url: string };
+
+type E2eGithubIssueDto = {
+  number: number;
+  title: string;
+  body: string;
+  state: "open" | "closed";
+  html_url: string;
+  comments: number;
+  created_at: number;
+  updated_at: number;
+  user: E2eGithubIssueUser;
+  labels: string[];
+  assignees: E2eGithubIssueUser[];
+};
+
+type E2eGithubIssueCommentDto = {
+  id: number;
+  body: string;
+  html_url: string;
+  created_at: number;
+  user: E2eGithubIssueUser;
+};
+
+type E2eGithubIssueStore = {
+  issues: E2eGithubIssueDto[];
+  commentsByNumber: Record<number, E2eGithubIssueCommentDto[]>;
+  labels: Array<{ name: string; color: string }>;
+  assignees: E2eGithubIssueUser[];
+  authenticatedUser: E2eGithubIssueUser;
+};
+
+function createDefaultE2eGithubIssueStore(): E2eGithubIssueStore {
+  return {
+    issues: [
+      {
+        number: 42,
+        title: "Broken login",
+        body: "Repro steps",
+        state: "open",
+        html_url: "https://github.com/acme/app/issues/42",
+        comments: 2,
+        created_at: 1_704_166_645,
+        updated_at: 1_704_253_045,
+        user: { login: "ada", avatar_url: "" },
+        labels: ["bug"],
+        assignees: [{ login: "linus", avatar_url: "" }],
+      },
+    ],
+    commentsByNumber: {
+      42: [
+        {
+          id: 2,
+          body: "API-order first comment.",
+          html_url: "https://github.com/acme/app/issues/42#issuecomment-2",
+          created_at: 1_704_253_100,
+          user: { login: "grace", avatar_url: "" },
+        },
+        {
+          id: 10,
+          body: "API-order second comment.",
+          html_url: "https://github.com/acme/app/issues/42#issuecomment-10",
+          created_at: 1_704_253_100,
+          user: { login: "linus", avatar_url: "" },
+        },
+      ],
+    },
+    labels: [
+      { name: "bug", color: "d73a4a" },
+      { name: "docs", color: "0075ca" },
+    ],
+    assignees: [
+      { login: "linus", avatar_url: "" },
+      { login: "ada", avatar_url: "" },
+    ],
+    authenticatedUser: { login: "ada", avatar_url: "" },
+  };
+}
+
+function e2eGithubIssueStore(): E2eGithubIssueStore {
+  window.__BUZZ_E2E_GITHUB_ISSUE_STORE__ ??= createDefaultE2eGithubIssueStore();
+  return window.__BUZZ_E2E_GITHUB_ISSUE_STORE__;
+}
+
+function cloneE2eGithubIssueUser(user: E2eGithubIssueUser): E2eGithubIssueUser {
+  return { ...user };
+}
+
+function cloneE2eGithubIssue(issue: E2eGithubIssueDto): E2eGithubIssueDto {
+  return {
+    ...issue,
+    user: cloneE2eGithubIssueUser(issue.user),
+    labels: [...issue.labels],
+    assignees: issue.assignees.map(cloneE2eGithubIssueUser),
+  };
+}
+
+function cloneE2eGithubIssueComment(
+  comment: E2eGithubIssueCommentDto,
+): E2eGithubIssueCommentDto {
+  return {
+    ...comment,
+    user: cloneE2eGithubIssueUser(comment.user),
+  };
+}
+
+function throwIfGithubIssueWriteError() {
+  if (window.__BUZZ_E2E_GITHUB_ISSUE_WRITE_ERROR__) {
+    throw window.__BUZZ_E2E_GITHUB_ISSUE_WRITE_ERROR__;
+  }
+}
+
+function e2eGithubIssueByNumber(
+  store: E2eGithubIssueStore,
+  number: number,
+): E2eGithubIssueDto {
+  const issue = store.issues.find((item) => item.number === number);
+  if (!issue) {
+    throw {
+      code: "github_issue_unavailable",
+      message: "Issue not found.",
+    };
+  }
+  return issue;
+}
+
 export function maybeInstallE2eTauriMocks() {
   if (installed) {
     return;
@@ -10311,7 +10441,7 @@ export function maybeInstallE2eTauriMocks() {
   window.__BUZZ_E2E_COMMANDS__ = [];
   window.__BUZZ_E2E_COMMAND_PAYLOADS__ = [];
   window.__BUZZ_E2E_COMMAND_LOG__ = [];
-  window.__BUZZ_E2E_GITHUB_CREATED_ISSUES__ = [];
+  window.__BUZZ_E2E_GITHUB_ISSUE_STORE__ ??= createDefaultE2eGithubIssueStore();
   mockMediaProxyPort = config.mock?.mediaProxyInitiallyUnavailable
     ? 0
     : MOCK_MEDIA_PROXY_PORT;
@@ -11652,25 +11782,10 @@ export function maybeInstallE2eTauriMocks() {
           throw window.__BUZZ_E2E_GITHUB_ISSUES_ERROR__;
         }
         const input = payload as { state?: string };
-        if (input.state !== "open")
-          throw new Error("Expected GitHub state=open");
         return {
-          issues: [
-            {
-              number: 42,
-              title: "Broken login",
-              body: "Repro steps",
-              state: "open",
-              html_url: "https://github.com/acme/app/issues/42",
-              comments: 2,
-              created_at: 1_704_166_645,
-              updated_at: 1_704_253_045,
-              user: { login: "ada", avatar_url: "" },
-              labels: ["bug"],
-              assignees: [{ login: "linus", avatar_url: "" }],
-            },
-            ...(window.__BUZZ_E2E_GITHUB_CREATED_ISSUES__ ?? []),
-          ],
+          issues: e2eGithubIssueStore()
+            .issues.filter((issue) => issue.state === input.state)
+            .map(cloneE2eGithubIssue),
           has_more: false,
         };
       }
@@ -11678,13 +11793,17 @@ export function maybeInstallE2eTauriMocks() {
         if (window.__BUZZ_E2E_GITHUB_ISSUES_ERROR__) {
           throw window.__BUZZ_E2E_GITHUB_ISSUES_ERROR__;
         }
+        throwIfGithubIssueWriteError();
         const input = payload as { title?: string; body?: string };
-        const created = {
-          number: 43,
+        const store = e2eGithubIssueStore();
+        const number =
+          Math.max(0, ...store.issues.map((issue) => issue.number)) + 1;
+        const created: E2eGithubIssueDto = {
+          number,
           title: input.title ?? "Untitled",
           body: input.body ?? "",
           state: "open",
-          html_url: "https://github.com/acme/app/issues/43",
+          html_url: `https://github.com/acme/app/issues/${number}`,
           comments: 0,
           created_at: 1_704_253_100,
           updated_at: 1_704_253_100,
@@ -11692,31 +11811,111 @@ export function maybeInstallE2eTauriMocks() {
           labels: [],
           assignees: [],
         };
-        window.__BUZZ_E2E_GITHUB_CREATED_ISSUES__ = [
-          ...(window.__BUZZ_E2E_GITHUB_CREATED_ISSUES__ ?? []),
-          created,
-        ];
-        return created;
+        store.issues.push(created);
+        return cloneE2eGithubIssue(created);
       }
       case "list_github_issue_comments": {
         if (window.__BUZZ_E2E_GITHUB_ISSUE_COMMENTS_ERROR__) {
           throw window.__BUZZ_E2E_GITHUB_ISSUE_COMMENTS_ERROR__;
         }
-        return [
-          {
-            id: 2,
-            body: "API-order first comment.",
-            created_at: 1_704_253_100,
-            user: { login: "grace", avatar_url: "" },
-          },
-          {
-            id: 10,
-            body: "API-order second comment.",
-            created_at: 1_704_253_100,
-            user: { login: "linus", avatar_url: "" },
-          },
-        ];
+        const input = payload as { number?: number };
+        return (
+          e2eGithubIssueStore().commentsByNumber[input.number ?? 0] ?? []
+        ).map(cloneE2eGithubIssueComment);
       }
+      case "update_github_issue_state": {
+        throwIfGithubIssueWriteError();
+        const input = payload as { number?: number; state?: string };
+        const issue = e2eGithubIssueByNumber(
+          e2eGithubIssueStore(),
+          input.number ?? 0,
+        );
+        issue.state = input.state === "closed" ? "closed" : "open";
+        return cloneE2eGithubIssue(issue);
+      }
+      case "create_github_issue_comment": {
+        throwIfGithubIssueWriteError();
+        const input = payload as { number?: number; body?: string };
+        const store = e2eGithubIssueStore();
+        const number = input.number ?? 0;
+        const issue = e2eGithubIssueByNumber(store, number);
+        const comments = store.commentsByNumber[number] ?? [];
+        const id = Math.max(0, ...comments.map((comment) => comment.id)) + 1;
+        const comment: E2eGithubIssueCommentDto = {
+          id,
+          body: input.body ?? "",
+          html_url: `https://github.com/acme/app/issues/${number}#issuecomment-${id}`,
+          created_at: 1_704_253_100,
+          user: { ...store.authenticatedUser },
+        };
+        store.commentsByNumber[number] = [...comments, comment];
+        issue.comments = store.commentsByNumber[number].length;
+        return cloneE2eGithubIssueComment(comment);
+      }
+      case "list_github_repo_labels":
+        return e2eGithubIssueStore().labels.map((label) => ({ ...label }));
+      case "add_github_issue_labels": {
+        throwIfGithubIssueWriteError();
+        const input = payload as { number?: number; name?: string };
+        const issue = e2eGithubIssueByNumber(
+          e2eGithubIssueStore(),
+          input.number ?? 0,
+        );
+        const name = input.name ?? "";
+        if (name && !issue.labels.includes(name)) {
+          issue.labels = [...issue.labels, name];
+        }
+        return cloneE2eGithubIssue(issue);
+      }
+      case "remove_github_issue_label": {
+        throwIfGithubIssueWriteError();
+        const input = payload as { number?: number; name?: string };
+        const issue = e2eGithubIssueByNumber(
+          e2eGithubIssueStore(),
+          input.number ?? 0,
+        );
+        issue.labels = issue.labels.filter((label) => label !== input.name);
+        return cloneE2eGithubIssue(issue);
+      }
+      case "list_github_repo_assignees":
+        return e2eGithubIssueStore().assignees.map(cloneE2eGithubIssueUser);
+      case "add_github_issue_assignees": {
+        throwIfGithubIssueWriteError();
+        const input = payload as { number?: number; login?: string };
+        const store = e2eGithubIssueStore();
+        const issue = e2eGithubIssueByNumber(store, input.number ?? 0);
+        const login = input.login ?? "";
+        if (
+          login &&
+          !issue.assignees.some((assignee) => assignee.login === login)
+        ) {
+          const user = store.assignees.find(
+            (assignee) => assignee.login === login,
+          ) ?? {
+            login,
+            avatar_url: "",
+          };
+          issue.assignees = [...issue.assignees, user];
+        }
+        return cloneE2eGithubIssue(issue);
+      }
+      case "remove_github_issue_assignee": {
+        throwIfGithubIssueWriteError();
+        const input = payload as { number?: number; login?: string };
+        const issue = e2eGithubIssueByNumber(
+          e2eGithubIssueStore(),
+          input.number ?? 0,
+        );
+        issue.assignees = issue.assignees.filter(
+          (assignee) => assignee.login !== input.login,
+        );
+        return cloneE2eGithubIssue(issue);
+      }
+      case "get_github_authenticated_user":
+        if (window.__BUZZ_E2E_GITHUB_USER_ERROR__) {
+          throw window.__BUZZ_E2E_GITHUB_USER_ERROR__;
+        }
+        return cloneE2eGithubIssueUser(e2eGithubIssueStore().authenticatedUser);
       case "get_project_repo_snapshot":
         return {
           latest_commit: {

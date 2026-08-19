@@ -81,6 +81,7 @@ test("GitHub comment mapper keeps login and avatar without pubkey conversion", (
     mapGithubCommentToProjectIssueComment({
       id: 9,
       body: "I can reproduce this.",
+      html_url: "https://github.com/acme/app/issues/42#issuecomment-9",
       created_at: 1_704_253_100,
       user: {
         login: "grace",
@@ -125,6 +126,31 @@ test("host routing invokes only GitHub for github.com", async () => {
   assert.equal(calls.buzz, 0);
   assert.equal(result.issues[0].id, "42");
   assert.equal(result.hasMore, true);
+});
+
+test("host routing forwards closed state only to GitHub", async () => {
+  let received = null;
+  await fetchProjectIssuesWith(
+    {
+      id: "p1",
+      repoAddress: REPO_ADDRESS,
+      cloneUrls: ["https://github.com/acme/app"],
+    },
+    {
+      loadGithub: async (input) => {
+        received = input;
+        return { issues: [], has_more: false };
+      },
+      loadBuzz: async () => {
+        throw new Error("Buzz loader must not run");
+      },
+    },
+    "closed",
+  );
+  assert.deepEqual(received, {
+    cloneUrl: "https://github.com/acme/app",
+    state: "closed",
+  });
 });
 
 test("host routing invokes only Nostr for a Buzz clone URL", async () => {
@@ -176,6 +202,7 @@ test("identity collection drops GitHub logins and keeps lowercase Nostr pubkeys"
         ...mapGithubCommentToProjectIssueComment({
           id: 1,
           body: "x",
+          html_url: "https://github.com/acme/app/issues/42#issuecomment-1",
           created_at: 1,
           user: { login: "x", avatar_url: "" },
         }),
