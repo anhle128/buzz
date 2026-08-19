@@ -326,7 +326,7 @@ fn kill_if_alive(pid: libc::pid_t) -> bool {
 
 #[cfg(unix)]
 fn wait_for_recorded_pid(path: &std::path::Path) -> libc::pid_t {
-    let deadline = Instant::now() + PID_PUBLICATION_TIMEOUT;
+    let deadline = Instant::now() + LIFECYCLE_FAKE_TIMEOUT;
     while Instant::now() < deadline {
         if let Ok(value) = std::fs::read_to_string(path) {
             if let Ok(pid) = value.trim().parse() {

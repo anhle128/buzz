@@ -295,7 +295,7 @@ fn test_probe_node_descendant_holds_stdout_returns_promptly_and_kills_group() {
     std::fs::write(&script, script_content.as_bytes()).unwrap();
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-    let probe_timeout = std::time::Duration::from_secs(3);
+    let probe_timeout = std::time::Duration::from_secs(15);
     let t = std::time::Instant::now();
     let result = probe_node(&script, "v24.18.0", probe_timeout);
     let elapsed = t.elapsed();

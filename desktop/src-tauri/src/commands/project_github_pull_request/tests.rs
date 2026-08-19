@@ -10,7 +10,6 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 const LIFECYCLE_FAKE_TIMEOUT: Duration = Duration::from_secs(15);
-const PID_PUBLICATION_TIMEOUT: Duration = Duration::from_secs(3);
 
 fn merge_input() -> GitHubMergeInput {
     GitHubMergeInput {

@@ -227,8 +227,7 @@ fn effective_agent_command_explicit_override_wins() {
 
 #[test]
 fn record_agent_command_own_runtime_wins_over_persona() {
-    // A record with its own materialized runtime never consults the
-    // persona list — the unified-model resolution.
+    // A record with its own runtime never consults the persona list.
     let personas = vec![persona_with_runtime("p1", Some("goose"))];
     let record = record_with(Some("claude"), Some("p1"), None);
     assert_eq!(record_agent_command(&record, &personas), "claude-agent-acp");
@@ -254,8 +253,6 @@ fn record_agent_command_bare_record_defaults() {
     let record = record_with(None, None, None);
     assert_eq!(record_agent_command(&record, &[]), default_agent_command());
 }
-
-// ── try_record_agent_command ─────────────────────────────────────────────────
 
 /// When the record carries a dangling (unknown) runtime id, `try_record_agent_command`
 /// must return `Err` containing "DANGLING_HARNESS_ID" — NEVER the buzz-agent default.

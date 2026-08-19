@@ -37,6 +37,7 @@ fn user_env_wins_over_structured_fields() {
         runtime_pid: None,
         backend: Default::default(),
         backend_agent_id: None,
+        provider_policy_pending: false,
         provider_binary_path: None,
         team_id: None,
         persona_team_dir: None,
@@ -65,6 +66,7 @@ fn user_env_wins_over_structured_fields() {
         definition_parallelism: None,
         relay_mesh: None,
         permission_policy: None,
+        effort_level: None,
     };
 
     let runtime = known_acp_runtime_exact("buzz-agent");

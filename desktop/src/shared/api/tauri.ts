@@ -102,6 +102,7 @@ type RawSearchResponse = {
 
 type RawRelayAgent = {
   pubkey: string;
+  owner_pubkey?: string | null;
   name: string;
   agent_type: string;
   channels: string[];
@@ -607,10 +608,10 @@ export async function createAuthEvent(input: {
   const eventJson = await invokeTauri<string>("create_auth_event", input);
   return JSON.parse(eventJson) as RelayEvent;
 }
-
 function fromRawRelayAgent(agent: RawRelayAgent): RelayAgent {
   return {
     pubkey: agent.pubkey,
+    ownerPubkey: agent.owner_pubkey ?? null,
     name: agent.name,
     agentType: agent.agent_type,
     channels: agent.channels,
@@ -1043,8 +1044,7 @@ export async function applyCommunity(
   });
 }
 
-// Validate a candidate repos dir without mutating the filesystem. Rejects
-// with a human-readable reason; resolves for a valid or empty path.
+// Validate a candidate repos dir without mutation and reject it with a readable reason.
 export async function validateReposDir(dir: string): Promise<void> {
   await invokeTauri("validate_repos_dir", { dir });
 }

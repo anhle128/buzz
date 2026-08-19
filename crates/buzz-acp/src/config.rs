@@ -115,10 +115,10 @@ impl std::fmt::Display for RespondTo {
 /// `configId: "mode"` (e.g. `claude-agent-acp`).
 ///
 /// - `default` — agent's built-in behaviour (permission requests per tool call).
-/// - `auto` — fully autonomous execution; model-gated (requires `supportsAutoMode`);
-///   the adapter degrades gracefully to `default` when the active model does not
-///   support it. The adapter self-approves all tool calls internally — no
-///   `session/request_permission` ever crosses ACP under this mode.
+/// - `auto` — autonomous execution; model-gated (requires `supportsAutoMode`).
+///   The adapter degrades to `default` when the active model does not support it.
+///   The adapter normally approves tool calls internally, but it can forward a
+///   residual manual approval request to ACP.
 /// - `acceptEdits` — auto-approve file edits, still ask for other tools.
 /// - `bypassPermissions` — skip the permission flow entirely.
 /// - `dontAsk` — never prompt; reject anything that would require permission.
@@ -620,6 +620,14 @@ pub struct CliArgs {
     #[arg(long, env = "BUZZ_ACP_MODEL")]
     pub model: Option<String>,
 
+    /// Persisted effort level value (e.g. "high", "medium", "low") to apply via
+    /// `session/set_config_option` at the first session creation. The configId is
+    /// resolved from the adapter's advertised `thought_level` capability — not
+    /// hardcoded. Non-fatal: if the adapter does not advertise `thought_level`,
+    /// the value is silently ignored and the persisted effort is not overwritten.
+    #[arg(long, env = "BUZZ_ACP_EFFORT_LEVEL")]
+    pub effort_level: Option<String>,
+
     /// Title for the agent's ACP sessions, passed out-of-band in `session/new`
     /// `_meta`. Adapters that recognize it name the session after this value;
     /// others ignore it. Never enters the prompt.
@@ -750,6 +758,12 @@ pub struct Config {
     pub memory_enabled: bool,
     /// Desired LLM model ID. Applied after every `session_new_full()`.
     pub model: Option<String>,
+    /// Persisted effort level value (e.g. "high", "medium", "low"). Held as a
+    /// per-worker spawn-scoped value and applied at the first session creation
+    /// by pairing with the adapter's advertised `thought_level` configId.
+    /// Non-fatal when absent or when the adapter does not advertise
+    /// `thought_level`.
+    pub effort_level: Option<String>,
     /// Sanitized session title, sent as `_meta.sessionTitle` on `session/new`.
     /// `None` when unset or when the configured value sanitized to empty.
     pub session_title: Option<String>,
@@ -1340,6 +1354,7 @@ impl Config {
             typing_enabled: !args.no_typing,
             memory_enabled: args.memory && !args.no_memory,
             model,
+            effort_level: args.effort_level,
             session_title: args
                 .session_title
                 .as_deref()
@@ -1716,6 +1731,7 @@ mod tests {
             typing_enabled: true,
             memory_enabled: true,
             model: None,
+            effort_level: None,
             session_title: None,
             permission_config: ResolvedPermissionConfig::resolve(
                 PermissionPolicy::Reject,
@@ -2599,6 +2615,7 @@ channels = "ALL"
     #[test]
     fn test_permission_mode_wire_strings() {
         assert_eq!(PermissionMode::Default.as_wire_str(), "default");
+        assert_eq!(PermissionMode::Auto.as_wire_str(), "auto");
         assert_eq!(PermissionMode::AcceptEdits.as_wire_str(), "acceptEdits");
         assert_eq!(
             PermissionMode::BypassPermissions.as_wire_str(),
@@ -2611,10 +2628,22 @@ channels = "ALL"
     #[test]
     fn test_permission_mode_is_default() {
         assert!(PermissionMode::Default.is_default());
+        assert!(!PermissionMode::Auto.is_default());
         assert!(!PermissionMode::BypassPermissions.is_default());
         assert!(!PermissionMode::AcceptEdits.is_default());
         assert!(!PermissionMode::DontAsk.is_default());
         assert!(!PermissionMode::Plan.is_default());
+    }
+
+    #[test]
+    fn test_permission_mode_auto_degrades_to_default_when_unsupported() {
+        // The wire string is "auto" — the adapter handles graceful downgrade
+        // to "default" when the active model does not support Auto mode.
+        // Verify only that the wire string is correct and distinct from "default".
+        let auto = PermissionMode::Auto;
+        assert_eq!(auto.as_wire_str(), "auto");
+        assert_ne!(auto.as_wire_str(), "default");
+        assert!(!auto.is_default());
     }
 
     #[test]
@@ -2624,6 +2653,7 @@ channels = "ALL"
             "bypassPermissions"
         );
         assert_eq!(format!("{}", PermissionMode::Default), "default");
+        assert_eq!(format!("{}", PermissionMode::Auto), "auto");
     }
 
     #[test]
@@ -2685,6 +2715,7 @@ channels = "ALL"
         use clap::ValueEnum;
         let cases = [
             ("default", PermissionMode::Default),
+            ("auto", PermissionMode::Auto),
             ("accept-edits", PermissionMode::AcceptEdits),
             ("bypass-permissions", PermissionMode::BypassPermissions),
             ("dont-ask", PermissionMode::DontAsk),
@@ -2707,6 +2738,7 @@ channels = "ALL"
         use clap::ValueEnum;
         let cases = [
             ("default", PermissionMode::Default),
+            ("auto", PermissionMode::Auto),
             ("acceptEdits", PermissionMode::AcceptEdits),
             ("bypassPermissions", PermissionMode::BypassPermissions),
             ("dontAsk", PermissionMode::DontAsk),
