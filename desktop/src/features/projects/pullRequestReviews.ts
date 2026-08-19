@@ -14,6 +14,7 @@ import {
   KIND_GIT_STATUS_OPEN,
   KIND_TEXT_NOTE,
 } from "@/shared/constants/kinds";
+import { requireBuzzPullRequestEventId } from "@/features/projects/lib/projectGithubPulls";
 import type { Repository as Project } from "./hooks";
 import {
   nextProjectPullRequestStatusCreatedAt,
@@ -52,6 +53,7 @@ async function updateProjectPullRequestStatus({
   signAsManagedOwner: boolean;
   status: ProjectPullRequestLifecycleStatus;
 }): Promise<void> {
+  requireBuzzPullRequestEventId(pullRequest.id);
   const createdAt = nextProjectPullRequestStatusCreatedAt(
     pullRequest,
     Math.floor(Date.now() / 1_000),
@@ -107,6 +109,7 @@ async function requestProjectPullRequestReview({
   reviewerLabel: string;
   signAsManagedOwner: boolean;
 }): Promise<void> {
+  requireBuzzPullRequestEventId(pullRequest.id);
   if (reviewers.length === 0) {
     throw new Error("Select at least one reviewer.");
   }
@@ -202,6 +205,7 @@ async function submitProjectPullRequestReview({
   project: Project;
   pullRequest: ProjectPullRequest;
 }): Promise<void> {
+  requireBuzzPullRequestEventId(pullRequest.id);
   if (!pullRequest.commit) {
     throw new Error("The pull request has no commit to review.");
   }

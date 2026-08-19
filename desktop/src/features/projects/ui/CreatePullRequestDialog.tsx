@@ -139,7 +139,8 @@ export function CreatePullRequestDialog({
     (sourceSyncQuery.data?.remoteBranch === sourceBranch
       ? sourceSyncQuery.data.remoteHead
       : null);
-  const hasOpenPullRequest = (pullRequestsQuery.data ?? []).some(
+  const pullRequests = pullRequestsQuery.data?.pullRequests ?? [];
+  const hasOpenPullRequest = pullRequests.some(
     (pullRequest) =>
       (pullRequest.status === "Open" || pullRequest.status === "Draft") &&
       pullRequest.branchName === sourceBranch &&

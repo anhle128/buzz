@@ -1,6 +1,7 @@
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import {
+  createGithubPullRequest,
   mergeProjectPullRequest,
   publishProjectPullRequestMergedStatus,
 } from "@/shared/api/projectGit";
@@ -11,6 +12,11 @@ import {
   KIND_GIT_PR_UPDATE,
   KIND_GIT_PULL_REQUEST,
 } from "@/shared/constants/kinds";
+import { isGitHubCloneUrl } from "@/features/projects/lib/projectGitError";
+import {
+  githubPullRequestId,
+  requireBuzzPullRequestEventId,
+} from "@/features/projects/lib/projectGithubPulls";
 import { normalizePubkey } from "@/shared/lib/pubkey";
 import type { ProjectPullRequest, Repository as Project } from "./hooks";
 import { nextProjectPullRequestStatusCreatedAt } from "./projectPullRequests.mjs";
@@ -146,6 +152,7 @@ export async function publishProjectPullRequestUpdate({
   project: Project;
   pullRequest: ProjectPullRequest;
 }): Promise<boolean> {
+  requireBuzzPullRequestEventId(pullRequest.id);
   if (pullRequest.commit?.toLowerCase() === commit.toLowerCase()) return false;
   const identity = await getIdentity();
   if (
@@ -182,16 +189,69 @@ export async function publishProjectPullRequestMerged(
   });
 }
 
+/** Route pull-request creation to exactly one backend for the repository host. */
+export async function createProjectPullRequestWith(
+  project: Project,
+  input: CreateProjectPullRequestInput,
+  loaders: {
+    createGithub: (input: {
+      cloneUrl: string;
+      title: string;
+      body: string;
+      head: string;
+      base: string;
+    }) => Promise<{ number: number }>;
+    publishBuzz: typeof publishProjectPullRequest;
+  },
+): Promise<string> {
+  const cloneUrl = project.cloneUrls[0] ?? "";
+  if (isGitHubCloneUrl(cloneUrl)) {
+    const pull = await loaders.createGithub({
+      cloneUrl,
+      title: input.title,
+      body: input.body,
+      head: input.branch,
+      base: input.targetBranch,
+    });
+    return githubPullRequestId(pull.number);
+  }
+  return loaders.publishBuzz(project, input);
+}
+
+/** Query keys invalidated after a host-routed pull-request create. */
+export function projectPullRequestInvalidationKeys(
+  project: Pick<Project, "id" | "cloneUrls">,
+): readonly unknown[][] {
+  if (isGitHubCloneUrl(project.cloneUrls[0])) {
+    return [["project", project.id, "pull-requests"]];
+  }
+  return [
+    ["project", project.id, "pull-requests"],
+    ["projects", "work-items"],
+    ["projects", "activity-summaries"],
+  ];
+}
+
 export function useCreateProjectPullRequestMutation(
   project: Project | null | undefined,
 ) {
-  const invalidate = useProjectPullRequestWriteInvalidation(project);
+  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (input: CreateProjectPullRequestInput) => {
       if (!project) throw new Error("No project selected.");
-      return publishProjectPullRequest(project, input);
+      return createProjectPullRequestWith(project, input, {
+        createGithub: createGithubPullRequest,
+        publishBuzz: publishProjectPullRequest,
+      });
     },
-    onSuccess: invalidate,
+    onSuccess: async () => {
+      if (!project) return;
+      await Promise.all(
+        projectPullRequestInvalidationKeys(project).map((queryKey) =>
+          queryClient.invalidateQueries({ queryKey }),
+        ),
+      );
+    },
   });
 }
 
@@ -233,6 +293,7 @@ export function useMergeProjectPullRequestMutation(
       pullRequest: ProjectPullRequest;
     }) => {
       if (!project?.cloneUrls[0]) throw new Error("No project selected.");
+      requireBuzzPullRequestEventId(pullRequest.id);
       if (!pullRequest.branchName || !pullRequest.commit) {
         throw new Error("Pull request branch information is incomplete.");
       }
