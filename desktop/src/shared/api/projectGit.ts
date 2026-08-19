@@ -615,6 +615,89 @@ export async function listGithubIssueComments(input: {
   }
 }
 
+/** GitHub login identity returned by the native pull-request commands. */
+export type GithubPullRequestUserDto = { login: string; avatar_url: string };
+
+/** Nested repository identity on a GitHub pull-request head or base. */
+export type GithubPullRequestRepoDto = { full_name: string };
+
+/** Bounded GitHub pull request returned by the native commands. */
+export type GithubPullRequestDto = {
+  number: number;
+  title: string;
+  body: string;
+  html_url: string;
+  draft: boolean;
+  comments: number;
+  created_at: number;
+  updated_at: number;
+  user: GithubPullRequestUserDto;
+  head: { ref: string; sha: string; repo: GithubPullRequestRepoDto };
+  base: { ref: string; repo: GithubPullRequestRepoDto };
+};
+
+/** One bounded GitHub pull-request page. */
+export type GithubPullRequestListDto = {
+  pulls: GithubPullRequestDto[];
+  has_more: boolean;
+};
+
+/** One read-only GitHub pull-request conversation comment. */
+export type GithubPullRequestCommentDto = {
+  id: number;
+  body: string;
+  html_url: string;
+  created_at: number;
+  user: GithubPullRequestUserDto;
+};
+
+/** List the first open GitHub pull-request page for a github.com clone URL. */
+export async function listGithubPullRequests(input: {
+  cloneUrl: string;
+}): Promise<GithubPullRequestListDto> {
+  try {
+    return await invokeTauri<GithubPullRequestListDto>(
+      "list_github_pull_requests",
+      input,
+    );
+  } catch (error) {
+    throw parseProjectPullRequestMergeError(error) ?? error;
+  }
+}
+
+/** Create one ready GitHub pull request for a github.com clone URL. */
+export async function createGithubPullRequest(input: {
+  cloneUrl: string;
+  title: string;
+  body: string;
+  head: string;
+  base: string;
+}): Promise<GithubPullRequestDto> {
+  try {
+    return await invokeTauri<GithubPullRequestDto>(
+      "create_github_pull_request",
+      input,
+    );
+  } catch (error) {
+    throw parseProjectPullRequestMergeError(error) ?? error;
+  }
+}
+
+/** List the first read-only conversation comment page for one GitHub pull request. */
+export async function listGithubPullRequestComments(input: {
+  cloneUrl: string;
+  number: number;
+}): Promise<GithubPullRequestCommentDto[]> {
+  try {
+    return await invokeTauri<GithubPullRequestCommentDto[]>(
+      "list_github_pull_request_comments",
+      input,
+    );
+  } catch (error) {
+    throw parseProjectPullRequestMergeError(error) ?? error;
+  }
+}
+
 type RawProjectRepoMergeResult = {
   message: string;
   merge_commit: string;

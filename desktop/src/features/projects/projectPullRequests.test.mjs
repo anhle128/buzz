@@ -835,3 +835,12 @@ test("survives malformed value-less tags", () => {
   assert.deepEqual(pullRequest.labels, []);
   assert.deepEqual(pullRequest.recipients, []);
 });
+
+test("Nostr pull requests expose neutral GitHub extension fields", () => {
+  const pullRequest = eventToProjectPullRequest(pullRequestEvent());
+  assert.equal(pullRequest.authorAvatarUrl, null);
+  assert.equal(pullRequest.headRepoFullName, null);
+  assert.equal(pullRequest.htmlUrl, null);
+  assert.equal(pullRequest.commentCount, 0);
+  assert.equal(pullRequest.status, "Open");
+});
