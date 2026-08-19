@@ -172,3 +172,29 @@ test("GitHub comment failure keeps the issue body and retries only comments", as
     after.filter((command) => command === "list_github_issue_comments").length,
   ).toBe(commentCallsBefore + 1);
 });
+
+test("GitHub user failure disables self-assignment and keeps recovery visible", async ({
+  page,
+}) => {
+  await enableProjectsFeature(page);
+  await page.addInitScript(() => {
+    window.__BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__ =
+      "https://github.com/acme/app";
+    window.__BUZZ_E2E_GITHUB_USER_ERROR__ = {
+      code: "github_auth_required",
+      message: "GitHub authentication required.",
+    };
+  });
+  await installMockBridge(page);
+  await openBuzzProject(page);
+  await page.getByRole("tab", { name: "Issues", exact: true }).click();
+  const row = page.getByTestId("project-github-issue-row").first();
+  await row.getByRole("button", { name: "#42", exact: true }).click();
+
+  await expect(
+    page.getByRole("status", { name: "GitHub authentication required" }),
+  ).toBeVisible();
+  await expect(
+    page.getByTestId("project-github-issue-assign-me"),
+  ).toBeDisabled();
+});

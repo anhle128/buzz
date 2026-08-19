@@ -18,6 +18,7 @@ import {
   type GithubIssueListState,
 } from "./projectGithubIssues";
 
+/** GitHub issue write that determines the destination list filter. */
 export type GithubIssueWriteAction = "close" | "reopen" | "create";
 
 const GITHUB_WRITE_TARGET_ERROR =

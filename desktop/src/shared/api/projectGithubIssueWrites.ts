@@ -10,16 +10,35 @@ import {
 /** One repository label from the GitHub catalog. */
 export type GithubRepoLabelDto = { name: string; color: string };
 
+function requireGithubIssueNumber(number: number): number {
+  if (!Number.isSafeInteger(number) || number <= 0) {
+    throw new Error("GitHub issue number must be a positive safe integer.");
+  }
+  return number;
+}
+
+function requireGithubIssueWriteValue(value: string, field: string): string {
+  const normalized = value.trim();
+  if (!normalized) {
+    throw new Error(`${field} is required.`);
+  }
+  return normalized;
+}
+
 /** Close or reopen one GitHub issue for a github.com clone URL. */
 export async function updateGithubIssueState(input: {
   cloneUrl: string;
   number: number;
   state: "open" | "closed";
 }): Promise<GithubIssueDto> {
+  const request = {
+    ...input,
+    number: requireGithubIssueNumber(input.number),
+  };
   try {
     return await invokeTauri<GithubIssueDto>(
       "update_github_issue_state",
-      input,
+      request,
     );
   } catch (error) {
     throw parseProjectPullRequestMergeError(error) ?? error;
@@ -32,10 +51,15 @@ export async function createGithubIssueComment(input: {
   number: number;
   body: string;
 }): Promise<GithubIssueCommentDto> {
+  const request = {
+    ...input,
+    number: requireGithubIssueNumber(input.number),
+    body: requireGithubIssueWriteValue(input.body, "Comment body"),
+  };
   try {
     return await invokeTauri<GithubIssueCommentDto>(
       "create_github_issue_comment",
-      input,
+      request,
     );
   } catch (error) {
     throw parseProjectPullRequestMergeError(error) ?? error;
@@ -62,8 +86,16 @@ export async function addGithubIssueLabels(input: {
   number: number;
   name: string;
 }): Promise<GithubIssueDto> {
+  const request = {
+    ...input,
+    number: requireGithubIssueNumber(input.number),
+    name: requireGithubIssueWriteValue(input.name, "Label name"),
+  };
   try {
-    return await invokeTauri<GithubIssueDto>("add_github_issue_labels", input);
+    return await invokeTauri<GithubIssueDto>(
+      "add_github_issue_labels",
+      request,
+    );
   } catch (error) {
     throw parseProjectPullRequestMergeError(error) ?? error;
   }
@@ -75,10 +107,15 @@ export async function removeGithubIssueLabel(input: {
   number: number;
   name: string;
 }): Promise<GithubIssueDto> {
+  const request = {
+    ...input,
+    number: requireGithubIssueNumber(input.number),
+    name: requireGithubIssueWriteValue(input.name, "Label name"),
+  };
   try {
     return await invokeTauri<GithubIssueDto>(
       "remove_github_issue_label",
-      input,
+      request,
     );
   } catch (error) {
     throw parseProjectPullRequestMergeError(error) ?? error;
@@ -105,10 +142,15 @@ export async function addGithubIssueAssignees(input: {
   number: number;
   login: string;
 }): Promise<GithubIssueDto> {
+  const request = {
+    ...input,
+    number: requireGithubIssueNumber(input.number),
+    login: requireGithubIssueWriteValue(input.login, "Assignee login"),
+  };
   try {
     return await invokeTauri<GithubIssueDto>(
       "add_github_issue_assignees",
-      input,
+      request,
     );
   } catch (error) {
     throw parseProjectPullRequestMergeError(error) ?? error;
@@ -121,10 +163,15 @@ export async function removeGithubIssueAssignee(input: {
   number: number;
   login: string;
 }): Promise<GithubIssueDto> {
+  const request = {
+    ...input,
+    number: requireGithubIssueNumber(input.number),
+    login: requireGithubIssueWriteValue(input.login, "Assignee login"),
+  };
   try {
     return await invokeTauri<GithubIssueDto>(
       "remove_github_issue_assignee",
-      input,
+      request,
     );
   } catch (error) {
     throw parseProjectPullRequestMergeError(error) ?? error;

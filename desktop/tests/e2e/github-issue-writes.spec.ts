@@ -141,3 +141,44 @@ test("GitHub close failure keeps Open selected and shows Close failed.", async (
   ).toHaveAttribute("aria-selected", "true");
   await expect(page.getByTestId("project-github-issue-close")).toBeVisible();
 });
+
+test("GitHub comment failure preserves the exact draft text", async ({
+  page,
+}) => {
+  await openGithubIssues(page);
+  await page.getByRole("button", { name: "#42", exact: true }).click();
+  await page.evaluate(() => {
+    window.__BUZZ_E2E_GITHUB_ISSUE_WRITE_ERROR__ = {
+      code: "github_issues_failed",
+      message: "Comment failed.",
+    };
+  });
+
+  const input = page.getByTestId("project-github-issue-comment-input");
+  await input.fill("  Keep this exact draft  ");
+  await page.getByTestId("project-github-issue-comment-submit").click();
+
+  await expect(
+    page.getByText("Comment failed.", { exact: true }),
+  ).toBeVisible();
+  await expect(input).toHaveValue("  Keep this exact draft  ");
+});
+
+test("GitHub comment drafts do not carry into a different issue", async ({
+  page,
+}) => {
+  await openGithubIssues(page);
+  await page.getByRole("button", { name: "#42", exact: true }).click();
+  await page
+    .getByTestId("project-github-issue-comment-input")
+    .fill("Draft for issue 42");
+
+  await page.getByRole("button", { name: "New issue" }).click();
+  await page.getByTestId("create-issue-title").fill("Second GitHub issue");
+  await page.getByTestId("create-issue-submit").click();
+
+  await expect(page.getByText("#43", { exact: true })).toBeVisible();
+  await expect(
+    page.getByTestId("project-github-issue-comment-input"),
+  ).toHaveValue("");
+});

@@ -164,6 +164,7 @@ export function GitHubIssueDetail({
           )}
           <GitHubIssueCommentComposer
             issue={issue}
+            key={issue.id}
             onSelectedIssueIdChange={onSelectedIssueIdChange}
             project={project}
           />

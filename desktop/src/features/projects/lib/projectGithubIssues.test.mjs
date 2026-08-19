@@ -81,6 +81,7 @@ test("GitHub comment mapper keeps login and avatar without pubkey conversion", (
     mapGithubCommentToProjectIssueComment({
       id: 9,
       body: "I can reproduce this.",
+      html_url: "https://github.com/acme/app/issues/42#issuecomment-9",
       created_at: 1_704_253_100,
       user: {
         login: "grace",
@@ -201,6 +202,7 @@ test("identity collection drops GitHub logins and keeps lowercase Nostr pubkeys"
         ...mapGithubCommentToProjectIssueComment({
           id: 1,
           body: "x",
+          html_url: "https://github.com/acme/app/issues/42#issuecomment-1",
           created_at: 1,
           user: { login: "x", avatar_url: "" },
         }),

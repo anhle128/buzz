@@ -131,7 +131,18 @@ export function GitHubIssueAssignees({
         ))}
       </div>
       <div className="flex flex-wrap items-center gap-1.5">
-        {userQuery.isSuccess && authenticatedLogin ? (
+        {userQuery.isError ? (
+          <Button
+            data-testid="project-github-issue-assign-me"
+            disabled
+            size="xs"
+            title="Could not load GitHub user"
+            type="button"
+            variant="ghost"
+          >
+            Assign me
+          </Button>
+        ) : userQuery.isSuccess && authenticatedLogin ? (
           viewerAssigned ? (
             <Button
               data-testid="project-github-issue-unassign-me"

@@ -1277,6 +1277,8 @@ declare global {
     };
     /** Structured error thrown by GitHub issue write mock commands. */
     __BUZZ_E2E_GITHUB_ISSUE_WRITE_ERROR__?: { code: string; message: string };
+    /** Structured error thrown by the authenticated GitHub user mock command. */
+    __BUZZ_E2E_GITHUB_USER_ERROR__?: { code: string; message: string };
     /** Shared in-memory GitHub issue store for list, create, and writes. */
     __BUZZ_E2E_GITHUB_ISSUE_STORE__?: E2eGithubIssueStore;
     /** Overrides the first mock repository owner for delegated-owner tests. */
@@ -10341,6 +10343,28 @@ function e2eGithubIssueStore(): E2eGithubIssueStore {
   return window.__BUZZ_E2E_GITHUB_ISSUE_STORE__;
 }
 
+function cloneE2eGithubIssueUser(user: E2eGithubIssueUser): E2eGithubIssueUser {
+  return { ...user };
+}
+
+function cloneE2eGithubIssue(issue: E2eGithubIssueDto): E2eGithubIssueDto {
+  return {
+    ...issue,
+    user: cloneE2eGithubIssueUser(issue.user),
+    labels: [...issue.labels],
+    assignees: issue.assignees.map(cloneE2eGithubIssueUser),
+  };
+}
+
+function cloneE2eGithubIssueComment(
+  comment: E2eGithubIssueCommentDto,
+): E2eGithubIssueCommentDto {
+  return {
+    ...comment,
+    user: cloneE2eGithubIssueUser(comment.user),
+  };
+}
+
 function throwIfGithubIssueWriteError() {
   if (window.__BUZZ_E2E_GITHUB_ISSUE_WRITE_ERROR__) {
     throw window.__BUZZ_E2E_GITHUB_ISSUE_WRITE_ERROR__;
@@ -11759,9 +11783,9 @@ export function maybeInstallE2eTauriMocks() {
         }
         const input = payload as { state?: string };
         return {
-          issues: e2eGithubIssueStore().issues.filter(
-            (issue) => issue.state === input.state,
-          ),
+          issues: e2eGithubIssueStore()
+            .issues.filter((issue) => issue.state === input.state)
+            .map(cloneE2eGithubIssue),
           has_more: false,
         };
       }
@@ -11788,14 +11812,16 @@ export function maybeInstallE2eTauriMocks() {
           assignees: [],
         };
         store.issues.push(created);
-        return created;
+        return cloneE2eGithubIssue(created);
       }
       case "list_github_issue_comments": {
         if (window.__BUZZ_E2E_GITHUB_ISSUE_COMMENTS_ERROR__) {
           throw window.__BUZZ_E2E_GITHUB_ISSUE_COMMENTS_ERROR__;
         }
         const input = payload as { number?: number };
-        return e2eGithubIssueStore().commentsByNumber[input.number ?? 0] ?? [];
+        return (
+          e2eGithubIssueStore().commentsByNumber[input.number ?? 0] ?? []
+        ).map(cloneE2eGithubIssueComment);
       }
       case "update_github_issue_state": {
         throwIfGithubIssueWriteError();
@@ -11805,7 +11831,7 @@ export function maybeInstallE2eTauriMocks() {
           input.number ?? 0,
         );
         issue.state = input.state === "closed" ? "closed" : "open";
-        return { ...issue };
+        return cloneE2eGithubIssue(issue);
       }
       case "create_github_issue_comment": {
         throwIfGithubIssueWriteError();
@@ -11824,10 +11850,10 @@ export function maybeInstallE2eTauriMocks() {
         };
         store.commentsByNumber[number] = [...comments, comment];
         issue.comments = store.commentsByNumber[number].length;
-        return comment;
+        return cloneE2eGithubIssueComment(comment);
       }
       case "list_github_repo_labels":
-        return e2eGithubIssueStore().labels;
+        return e2eGithubIssueStore().labels.map((label) => ({ ...label }));
       case "add_github_issue_labels": {
         throwIfGithubIssueWriteError();
         const input = payload as { number?: number; name?: string };
@@ -11839,7 +11865,7 @@ export function maybeInstallE2eTauriMocks() {
         if (name && !issue.labels.includes(name)) {
           issue.labels = [...issue.labels, name];
         }
-        return { ...issue };
+        return cloneE2eGithubIssue(issue);
       }
       case "remove_github_issue_label": {
         throwIfGithubIssueWriteError();
@@ -11849,10 +11875,10 @@ export function maybeInstallE2eTauriMocks() {
           input.number ?? 0,
         );
         issue.labels = issue.labels.filter((label) => label !== input.name);
-        return { ...issue };
+        return cloneE2eGithubIssue(issue);
       }
       case "list_github_repo_assignees":
-        return e2eGithubIssueStore().assignees;
+        return e2eGithubIssueStore().assignees.map(cloneE2eGithubIssueUser);
       case "add_github_issue_assignees": {
         throwIfGithubIssueWriteError();
         const input = payload as { number?: number; login?: string };
@@ -11871,7 +11897,7 @@ export function maybeInstallE2eTauriMocks() {
           };
           issue.assignees = [...issue.assignees, user];
         }
-        return { ...issue };
+        return cloneE2eGithubIssue(issue);
       }
       case "remove_github_issue_assignee": {
         throwIfGithubIssueWriteError();
@@ -11883,10 +11909,13 @@ export function maybeInstallE2eTauriMocks() {
         issue.assignees = issue.assignees.filter(
           (assignee) => assignee.login !== input.login,
         );
-        return { ...issue };
+        return cloneE2eGithubIssue(issue);
       }
       case "get_github_authenticated_user":
-        return e2eGithubIssueStore().authenticatedUser;
+        if (window.__BUZZ_E2E_GITHUB_USER_ERROR__) {
+          throw window.__BUZZ_E2E_GITHUB_USER_ERROR__;
+        }
+        return cloneE2eGithubIssueUser(e2eGithubIssueStore().authenticatedUser);
       case "get_project_repo_snapshot":
         return {
           latest_commit: {
