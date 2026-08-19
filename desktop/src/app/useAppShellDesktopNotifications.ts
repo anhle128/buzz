@@ -1,9 +1,10 @@
 import * as React from "react";
 
 import {
+  executeDesktopNotificationAction,
   shouldBounceForChannelNotification,
-  toSearchHit,
 } from "@/app/AppShell.helpers";
+import { useOpenAgentActivity } from "@/features/agents/useOpenAgentActivity";
 import { getThreadReference } from "@/features/messages/lib/threading";
 import { useCommunityJoinAlerts } from "@/features/community-members/useCommunityJoinAlerts";
 import { hasMentionForEvent } from "@/features/notifications/lib/shouldNotify";
@@ -13,6 +14,7 @@ import {
   requestDockBounce,
   revealDesktopAppWindow,
   sendDesktopNotification,
+  type DesktopNotificationTarget,
 } from "@/features/notifications/lib/desktop";
 import {
   formatNotificationTitle,
@@ -52,6 +54,8 @@ export function useAppShellDesktopNotifications({
   useCommunityJoinAlerts({
     enabled: enabled && notificationSettings.desktopEnabled,
   });
+
+  const { openAgentActivity } = useOpenAgentActivity();
 
   const handleChannelNotification = React.useEffectEvent(
     (_channelId: string, event: RelayEvent) => {
@@ -150,24 +154,14 @@ export function useAppShellDesktopNotifications({
   );
 
   const handleDesktopNotificationAction = React.useEffectEvent(
-    async (
-      target: import("@/features/notifications/lib/desktop").DesktopNotificationTarget,
-    ) => {
-      await revealDesktopAppWindow();
-
-      if (!target.channelId) {
-        void goHome();
-        return;
-      }
-
-      const anchor = toSearchHit(target);
-      if (!anchor) {
-        await goChannel(target.channelId);
-        return;
-      }
-
-      await openSearchHit(anchor);
-    },
+    (target: DesktopNotificationTarget) =>
+      executeDesktopNotificationAction(target, {
+        revealDesktopAppWindow,
+        openAgentActivity,
+        goHome,
+        goChannel,
+        openSearchHit,
+      }),
   );
 
   React.useEffect(() => {

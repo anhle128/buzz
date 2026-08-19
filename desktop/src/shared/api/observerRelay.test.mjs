@@ -60,3 +60,20 @@ test("subscribeToAgentObserverFrames since is at least 300s before now", () => {
 
   mock.reset();
 });
+
+test("subscribeToAgentObserverFrames forwards initial subscription readiness", () => {
+  const readiness = [];
+  mock.method(relayClient, "subscribeLive", (_filter, _onEvent, onReady) => {
+    onReady?.("eose");
+    return async () => {};
+  });
+
+  subscribeToAgentObserverFrames(
+    "owner-pubkey",
+    () => {},
+    (value) => readiness.push(value),
+  );
+
+  assert.deepEqual(readiness, ["eose"]);
+  mock.reset();
+});

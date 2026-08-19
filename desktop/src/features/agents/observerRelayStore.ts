@@ -198,6 +198,38 @@ let unsubscribeRelay: (() => Promise<void>) | null = null;
 let startPromise: Promise<void> | null = null;
 let eventProcessingQueue: Promise<void> = Promise.resolve();
 let generation = 0;
+let initialReplayComplete = false;
+
+function queueInitialObserverReplayComplete(
+  activeGeneration: number,
+): Promise<void> {
+  if (initialReplayComplete) {
+    return eventProcessingQueue;
+  }
+  eventProcessingQueue = eventProcessingQueue.then(() => {
+    if (activeGeneration !== generation || initialReplayComplete) {
+      return;
+    }
+    initialReplayComplete = true;
+    notifyListeners();
+  });
+  return eventProcessingQueue;
+}
+
+/** Return whether the first observer subscription replay reached EOSE. */
+export function isAgentObserverInitialReplayComplete(): boolean {
+  return initialReplayComplete;
+}
+
+/** Test-only: append controlled work before the initial replay barrier. */
+export function _testEnqueueObserverStoreWork(work: () => Promise<void>): void {
+  eventProcessingQueue = eventProcessingQueue.then(work);
+}
+
+/** Test-only: queue and await initial replay completion. */
+export function _testQueueInitialObserverReplayComplete(): Promise<void> {
+  return queueInitialObserverReplayComplete(generation);
+}
 
 function notifyListeners(update?: AgentObserverStoreUpdate) {
   for (const listener of listeners) {
@@ -580,6 +612,11 @@ export function ensureRelayObserverSubscription() {
             );
           });
       },
+      (readiness) => {
+        if (readiness === "eose") {
+          void queueInitialObserverReplayComplete(activeGeneration);
+        }
+      },
     );
     if (activeGeneration !== generation) {
       await unsubscribe();
@@ -887,6 +924,7 @@ export function resetAgentObserverStore() {
   onSessionConfigCaptured = null;
   connectionState = "idle";
   errorMessage = null;
+  initialReplayComplete = false;
   notifyListeners();
   void unsubscribe?.();
 }

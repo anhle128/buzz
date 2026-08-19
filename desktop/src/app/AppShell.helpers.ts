@@ -141,6 +141,69 @@ export function toSearchHit(
   };
 }
 
+/** Navigation action resolved from a desktop notification click target. */
+export type DesktopNotificationAction =
+  | { type: "agent-activity"; agentPubkey: string; channelId: string | null }
+  | { type: "home" }
+  | { type: "channel"; channelId: string }
+  | { type: "search-hit"; hit: SearchHit };
+
+/** Dependencies required to execute one desktop notification click. */
+export type DesktopNotificationActionDependencies = {
+  revealDesktopAppWindow: () => Promise<void>;
+  openAgentActivity: (
+    pubkey: string,
+    options: { channelId: string | null },
+  ) => unknown;
+  goHome: () => Promise<unknown>;
+  goChannel: (channelId: string) => Promise<unknown>;
+  openSearchHit: (hit: SearchHit) => Promise<unknown>;
+};
+
+/** Resolve a desktop notification target to one navigation action. */
+export function resolveDesktopNotificationAction(
+  target: DesktopNotificationTarget,
+): DesktopNotificationAction {
+  if (target.agentPubkey) {
+    return {
+      type: "agent-activity",
+      agentPubkey: target.agentPubkey,
+      channelId: target.channelId,
+    };
+  }
+  if (!target.channelId) {
+    return { type: "home" };
+  }
+  const hit = toSearchHit(target);
+  return hit
+    ? { type: "search-hit", hit }
+    : { type: "channel", channelId: target.channelId };
+}
+
+/** Reveal Buzz and execute exactly one resolved notification action. */
+export async function executeDesktopNotificationAction(
+  target: DesktopNotificationTarget,
+  dependencies: DesktopNotificationActionDependencies,
+): Promise<void> {
+  await dependencies.revealDesktopAppWindow();
+  const action = resolveDesktopNotificationAction(target);
+  if (action.type === "agent-activity") {
+    dependencies.openAgentActivity(action.agentPubkey, {
+      channelId: action.channelId,
+    });
+    return;
+  }
+  if (action.type === "home") {
+    await dependencies.goHome();
+    return;
+  }
+  if (action.type === "channel") {
+    await dependencies.goChannel(action.channelId);
+    return;
+  }
+  await dependencies.openSearchHit(action.hit);
+}
+
 export function deriveShellRoute(pathname: string): {
   selectedChannelId: string | null;
   selectedView: AppView;
