@@ -213,7 +213,7 @@ export function GitHubPullRequestsPanel({
   isFetching: boolean;
   isLoading: boolean;
   isSuccess: boolean;
-  onRetry: () => void | Promise<unknown>;
+  onRetry: () => unknown;
   onSelectedPullRequestIdChange: (id: string | null) => void;
   pullRequests: ProjectPullRequest[];
   selectedPullRequestId: string | null;

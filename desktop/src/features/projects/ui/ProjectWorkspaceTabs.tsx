@@ -30,6 +30,7 @@ import { isGitHubCloneUrl } from "@/features/projects/lib/projectGitError";
 import type { GithubIssueListState } from "@/features/projects/lib/projectGithubIssues";
 import {
   githubPullRequestConversationCount,
+  pullRequestHeadBelongsToRepository,
   useGithubPullRequestCommentsQuery,
 } from "@/features/projects/lib/projectGithubPulls";
 import { githubSplashHost } from "@/features/projects/lib/projectGithubRemoteView";
@@ -231,7 +232,7 @@ export function WorkspaceTabs({
   pullRequestsHasMore: boolean;
   pullRequestsLoading: boolean;
   pullRequestsSuccess: boolean;
-  onRetryPullRequests: () => void | Promise<unknown>;
+  onRetryPullRequests: () => unknown;
   githubIssueListState: GithubIssueListState;
   onGithubIssueListStateChange: (state: GithubIssueListState) => void;
   onSelectedCommitHashChange: (hash: string | null) => void;
@@ -309,6 +310,10 @@ export function WorkspaceTabs({
     pullRequests.find(
       (pullRequest) => pullRequest.id === selectedPullRequestId,
     ) ?? null;
+  const selectedPullRequestBranch = selectedPullRequest?.branchName ?? null;
+  const selectedPullRequestHeadBelongs = selectedPullRequest
+    ? pullRequestHeadBelongsToRepository(selectedPullRequest, project)
+    : false;
   const selectedCommitPullRequest = React.useMemo(
     () =>
       pullRequests.find(
@@ -349,15 +354,20 @@ export function WorkspaceTabs({
       setSelectedTab((currentTab) =>
         currentTab.startsWith("pr-") ? currentTab : "pr-conversation",
       );
-      if (selectedPullRequest?.branchName) {
-        onBranchChange(selectedPullRequest.branchName);
+      if (selectedPullRequestBranch && selectedPullRequestHeadBelongs) {
+        onBranchChange(selectedPullRequestBranch);
       }
     } else {
       setSelectedTab((currentTab) =>
         currentTab.startsWith("pr-") ? "prs" : currentTab,
       );
     }
-  }, [isPullRequestSelected, onBranchChange, selectedPullRequest?.branchName]);
+  }, [
+    isPullRequestSelected,
+    onBranchChange,
+    selectedPullRequestBranch,
+    selectedPullRequestHeadBelongs,
+  ]);
 
   React.useEffect(() => {
     if (githubHosted && selectedTab === "pr-files") {

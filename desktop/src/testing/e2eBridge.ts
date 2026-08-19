@@ -1281,8 +1281,11 @@ declare global {
     __BUZZ_E2E_GITHUB_USER_ERROR__?: { code: string; message: string };
     /** Shared in-memory GitHub issue store for list, create, and writes. */
     __BUZZ_E2E_GITHUB_ISSUE_STORE__?: E2eGithubIssueStore;
+    /** Structured error thrown by the GitHub pull-list mock command. */
     __BUZZ_E2E_GITHUB_PULLS_ERROR__?: { code: string; message: string };
+    /** Structured error thrown by the GitHub pull-comment mock command. */
     __BUZZ_E2E_GITHUB_PULL_COMMENTS_ERROR__?: { code: string; message: string };
+    /** Shared in-memory GitHub pull-request store for list, create, and comments. */
     __BUZZ_E2E_GITHUB_PULL_STORE__?: E2eGithubPullStore;
     /** Overrides the first mock repository owner for delegated-owner tests. */
     __BUZZ_E2E_PROJECT_OWNER_OVERRIDE__?: string;

@@ -183,11 +183,12 @@ export function githubRepoFullNameFromCloneUrl(
   if (ssh) return `${ssh[1]}/${ssh[2]}`;
   try {
     const url = new URL(cloneUrl);
+    const isHttps = url.protocol === "https:" && url.username === "";
+    const isSsh = url.protocol === "ssh:" && url.username === "git";
     if (
-      url.protocol !== "https:" ||
+      (!isHttps && !isSsh) ||
       url.hostname.toLowerCase() !== "github.com" ||
       url.port !== "" ||
-      url.username !== "" ||
       url.password !== "" ||
       url.search !== "" ||
       url.hash !== ""
@@ -202,6 +203,38 @@ export function githubRepoFullNameFromCloneUrl(
   } catch {
     return null;
   }
+}
+
+/** Whether a pull-request head belongs to the selected repository. */
+export function pullRequestHeadBelongsToRepository(
+  pullRequest: Pick<ProjectPullRequest, "headRepoFullName">,
+  repository: Pick<Repository, "cloneUrls">,
+): boolean {
+  const cloneUrl = repository.cloneUrls[0] ?? "";
+  if (!isGitHubCloneUrl(cloneUrl)) return true;
+  const targetRepo = githubRepoFullNameFromCloneUrl(cloneUrl);
+  const headRepo = pullRequest.headRepoFullName?.trim();
+  return Boolean(
+    targetRepo &&
+      headRepo &&
+      targetRepo.toLowerCase() === headRepo.toLowerCase(),
+  );
+}
+
+/** Find an open same-repository pull request for one head/base branch pair. */
+export function hasOpenPullRequestForBranches(
+  pullRequests: readonly ProjectPullRequest[],
+  repository: Pick<Repository, "cloneUrls" | "defaultBranch">,
+  head: string,
+  base: string,
+): boolean {
+  return pullRequests.some(
+    (pullRequest) =>
+      pullRequestHeadBelongsToRepository(pullRequest, repository) &&
+      (pullRequest.status === "Open" || pullRequest.status === "Draft") &&
+      pullRequest.branchName === head &&
+      (pullRequest.targetBranch ?? repository.defaultBranch) === base,
+  );
 }
 
 /** Conversation badge: list count until comments load, then the greater value. */

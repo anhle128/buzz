@@ -178,6 +178,14 @@ test("pullRequestShareLink accepts only a canonical GitHub pull URL", () => {
     }),
     "https://github.com/acme/app/pull/42",
   );
+  assert.equal(
+    pullRequestShareLink({
+      ...base,
+      cloneUrls: ["ssh://git@github.com/acme/app.git"],
+      htmlUrl: "https://github.com/acme/app/pull/42",
+    }),
+    "https://github.com/acme/app/pull/42",
+  );
   for (const htmlUrl of [
     "https://evil.example/acme/app/pull/42",
     "https://github.com/acme/app/pull/42?x=1",

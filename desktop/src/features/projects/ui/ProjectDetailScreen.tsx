@@ -64,7 +64,10 @@ import {
   type GithubIssueListState,
   issueIdentityPubkeys,
 } from "@/features/projects/lib/projectGithubIssues";
-import { pullRequestIdentityPubkeys } from "@/features/projects/lib/projectGithubPulls";
+import {
+  pullRequestHeadBelongsToRepository,
+  pullRequestIdentityPubkeys,
+} from "@/features/projects/lib/projectGithubPulls";
 import { nextGithubIssueListState } from "@/features/projects/lib/projectGithubIssueWrites";
 import { githubRepositoryStateUnresolved } from "@/features/projects/lib/projectRepoState";
 import { normalizeRepositoryUrl } from "@/features/projects/lib/projectsViewHelpers";
@@ -164,6 +167,15 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
   );
   // GitHub pending/error must not fall back to the announcement default ("main").
   const githubHosted = isGitHubCloneUrl(repository?.cloneUrls[0]);
+  const repositoryPullRequests = React.useMemo(
+    () =>
+      repository
+        ? pullRequests.filter((pullRequest) =>
+            pullRequestHeadBelongsToRepository(pullRequest, repository),
+          )
+        : [],
+    [pullRequests, repository],
+  );
   const githubStateUnresolved = githubRepositoryStateUnresolved(
     githubHosted,
     repoStateQuery,
@@ -184,7 +196,9 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
       projectId: repository?.id ?? projectId,
       referencedBranches: githubStateUnresolved
         ? []
-        : pullRequests.map((pullRequest) => pullRequest.branchName ?? null),
+        : repositoryPullRequests.map(
+            (pullRequest) => pullRequest.branchName ?? null,
+          ),
     });
   const repoTags = githubStateUnresolved
     ? []
@@ -261,7 +275,7 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
     const projectRepositories = new Set(
       (repository?.cloneUrls ?? []).map(normalizeRepositoryUrl),
     );
-    const matches = pullRequests.filter(
+    const matches = repositoryPullRequests.filter(
       (pullRequest) =>
         pullRequest.branchName === activeBranch &&
         pullRequest.cloneUrls.some((cloneUrl) =>
@@ -269,7 +283,7 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
         ),
     );
     return matches.length === 1 ? matches[0] : null;
-  }, [activeBranch, pullRequests, repository?.cloneUrls]);
+  }, [activeBranch, repository?.cloneUrls, repositoryPullRequests]);
   const openBranchPullRequest =
     selectedBranchPullRequest?.status === "Open" ||
     selectedBranchPullRequest?.status === "Draft"
@@ -365,7 +379,7 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
       activeBranch,
       branches: managedBranches,
       defaultBranch,
-      hasOpenPullRequest: pullRequests.some(
+      hasOpenPullRequest: repositoryPullRequests.some(
         (pullRequest) =>
           pullRequest.branchName === activeBranch &&
           (pullRequest.status === "Open" || pullRequest.status === "Draft"),

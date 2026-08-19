@@ -3,6 +3,7 @@ import { test } from "node:test";
 
 import {
   fetchProjectPullRequestsWith,
+  hasOpenPullRequestForBranches,
   githubRepoFullNameFromCloneUrl,
   githubPullRequestBranchLabel,
   githubPullRequestCommentsRequest,
@@ -12,6 +13,7 @@ import {
   mapGithubPullRequestToProjectPullRequest,
   parseGithubPullRequestNumber,
   pullRequestDisplayNumber,
+  pullRequestHeadBelongsToRepository,
   pullRequestIdentityPubkeys,
   requireBuzzPullRequestEventId,
   selectedGithubPullRequestAfterListLoad,
@@ -261,8 +263,62 @@ test("fork heads render owner:branch and empty head repos stay same-repo", () =>
     "acme/app",
   );
   assert.equal(
+    githubRepoFullNameFromCloneUrl("ssh://git@github.com/acme/app.git"),
+    "acme/app",
+  );
+  assert.equal(
     githubRepoFullNameFromCloneUrl("https://github.com/acme/app/extra"),
     null,
+  );
+});
+
+test("only target-repository heads participate in branch workflows", () => {
+  const repository = {
+    cloneUrls: ["https://github.com/acme/app"],
+    defaultBranch: "develop",
+  };
+  const same = mapGithubPullRequestToProjectPullRequest(dto, {
+    repoAddress: REPO_ADDRESS,
+    cloneUrl: repository.cloneUrls[0],
+  });
+  const fork = mapGithubPullRequestToProjectPullRequest(
+    {
+      ...dto,
+      head: { ...dto.head, repo: { full_name: "other/app" } },
+    },
+    { repoAddress: REPO_ADDRESS, cloneUrl: repository.cloneUrls[0] },
+  );
+  const deletedFork = { ...fork, headRepoFullName: null };
+
+  assert.equal(pullRequestHeadBelongsToRepository(same, repository), true);
+  assert.equal(
+    pullRequestHeadBelongsToRepository(
+      { ...same, headRepoFullName: "ACME/APP" },
+      repository,
+    ),
+    true,
+  );
+  assert.equal(pullRequestHeadBelongsToRepository(fork, repository), false);
+  assert.equal(
+    pullRequestHeadBelongsToRepository(deletedFork, repository),
+    false,
+  );
+  assert.equal(
+    hasOpenPullRequestForBranches([fork], repository, "feature", "develop"),
+    false,
+  );
+  assert.equal(
+    hasOpenPullRequestForBranches([same], repository, "feature", "develop"),
+    true,
+  );
+  assert.equal(
+    pullRequestHeadBelongsToRepository(
+      { ...same, headRepoFullName: null },
+      {
+        cloneUrls: [`https://relay.example/git/${"ab".repeat(32)}/app`],
+      },
+    ),
+    true,
   );
 });
 
