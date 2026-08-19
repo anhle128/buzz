@@ -42,6 +42,7 @@ It does not yet create branch channels or reuse `merge_github_pull_request` for 
 - Trim `head` and `base`, reject either when empty, and reject `head == base` after trim before running `gh`.
 - Preserve the body supplied to the native command, including an empty body.
 - Create is same-repo only: `head` is a branch name, never `owner:branch` and never `head_repo`.
+- Reject a create `head` containing `:` before running `gh`; Git ref names cannot contain `:`, and this prevents the GitHub `owner:branch` cross-repository form at the native boundary.
 - Do not send reviewers or `draft` on create.
 - On GitHub create success, invalidate only `["project", project.id, "pull-requests"]`.
 - On Buzz create success, preserve the current pull-requests, work-items, and activity-summaries invalidations.
@@ -56,6 +57,7 @@ It does not yet create branch channels or reuse `merge_github_pull_request` for 
 - Check GitHub errors before empty-success rendering.
 - GitHub empty-success copy is `No open pull requests.` and the existing Buzz empty/error copy stays unchanged.
 - Hide Merge, review writes, reviewers, Request changes, the composer, Discussed in channels, origin reference, and Files changed on GitHub rows.
+- Hide the Nostr-only Update PR action and disable remote and local pull-request diff queries on GitHub rows.
 - If `selectedTab === "pr-files"` on a GitHub-hosted repo, snap to `pr-conversation`.
 - Commits tab shows one `head.sha` row and a badge of `1`.
 - Checks tab keeps `No checks have been reported for this pull request yet.`
@@ -95,12 +97,7 @@ It does not yet create branch channels or reuse `merge_github_pull_request` for 
 - `head == base` comparison is case-sensitive after trim.
 - The create dialog already trims title and body; the native command still trims title and preserves the body it receives.
 - Register the three commands immediately after `list_github_issue_comments` in `invoke.rs`.
-
-## Open Questions
-
-- Should a deleted-fork PR with empty `head.repo.full_name` show `owner:branch`?
-- Provisional default: no.
-- Show `head → base` when `head.repo.full_name` is empty, and only prefix `owner:` when the full name is non-empty and differs from the target repo case-insensitively.
+- A deleted-fork PR with empty `head.repo.full_name` shows `head → base`; only prefix `owner:` when the full name is non-empty and differs from the target repo case-insensitively.
 
 ## File Map
 
@@ -119,14 +116,17 @@ It does not yet create branch channels or reuse `merge_github_pull_request` for 
 | `desktop/src/features/projects/lib/projectShareLinks.test.mjs` | Protect GitHub URL validation and the existing Buzz deep link |
 | `desktop/src/features/projects/hooks.ts` | Route `useProjectPullRequestsQuery` and retain the current Nostr loader |
 | `desktop/src/features/projects/pullRequestMutations.ts` | Route create, select the correct invalidation set, and refuse non-hex ids on Nostr writes |
+| `desktop/src/features/projects/pullRequestReviews.ts` | Refuse decimal GitHub ids on lifecycle, review-request, approval, and request-changes fallbacks |
 | Create `desktop/src/features/projects/pullRequestMutations.github.test.mjs` | Prove GitHub never calls the Buzz publisher and invalidates only pull-requests |
 | `desktop/src/features/projects/ui/CreatePullRequestDialog.tsx` | Read `data.pullRequests` for the duplicate-open check |
 | `desktop/src/features/projects/ui/ProjectDetailScreen.tsx` | Read the new query shape and filter profile lookup to 64-hex identities |
 | `desktop/src/features/projects/ui/ProjectWorkspaceTabList.tsx` | Hide Files changed and use `commentCount` for the conversation badge |
 | `desktop/src/features/projects/ui/ProjectWorkspaceTabs.tsx` | Branch GitHub list/detail chrome, snap `pr-files` to conversation, and skip Files changed |
 | Create `desktop/src/features/projects/ui/GitHubProjectPullRequests.tsx` | Render GitHub list rows, read-only detail, login identities, and comment states |
+| Create `desktop/src/features/projects/ui/GitHubProjectPullRequests.test.mjs` | Render the GitHub row/detail/tab contract before implementing the components |
 | `desktop/src/testing/e2eBridge.ts` | Stub list/create/comments and structured pull errors |
 | Create `desktop/tests/e2e/github-pull-requests.spec.ts` | Exercise list, detail comments, create, hidden write controls, and auth recovery |
+| `desktop/tests/e2e/project-pr-review.spec.ts` | Remove obsolete GitHub-hosted kind:1618 merge UI scenarios while retaining Buzz-hosted review/merge coverage and unrelated GitHub clone coverage |
 | `desktop/playwright.config.ts` | Add the new spec to the smoke project |
 
 ---
@@ -141,7 +141,7 @@ It does not yet create branch channels or reuse `merge_github_pull_request` for 
 **Interfaces:**
 
 - Consumes: `GitHubRepoRef::{parse, slug, owner, repo}`, `GhRunner::{ensure_auth, from_resolved, run_with_limit}`, `combined_cli_diagnostic`, `redact_diagnostic`, and `ProjectPullRequestMergeError`
-- Produces: `GitHubPullRequestUserDto`, `GitHubPullRequestDto`, `GitHubPullRequestListDto`, `list_github_pull_requests_with`, `is_pull_html_url`, and `remap_pulls_error`
+- Produces: public DTOs `GitHubPullRequestUserDto`, `GitHubPullRequestRepoDto`, `GitHubPullRequestHeadDto`, `GitHubPullRequestBaseDto`, `GitHubPullRequestDto`, and `GitHubPullRequestListDto`, plus module-private `list_github_pull_requests_with`, `is_pull_html_url`, and `remap_pulls_error`
 
 - [ ] **Step 1: Run impact checks before touching existing symbols**
 
@@ -195,13 +195,13 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn fake_gh(output: &serde_json::Value, status: i32, stderr: &str) -> (tempfile::TempDir, PathBuf) {
+    fn fake_gh_raw(output: &str, status: i32, stderr: &str) -> (tempfile::TempDir, PathBuf) {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().expect("create fake gh directory");
         let path = dir.path().join("gh");
         let script = format!(
             "#!/bin/sh\nset -eu\nroot=${{0%/gh}}\nprintf '%s\\n' \"$*\" >> \"$root/calls\"\ncase \"$*\" in\n  *auth*status*) exit 0 ;;\n  *) printf '%s' '{}' ; printf '%s' '{}' >&2; exit {} ;;\nesac\n",
-            output.to_string(),
+            output,
             stderr,
             status,
         );
@@ -210,6 +210,11 @@ mod tests {
         permissions.set_mode(0o700);
         std::fs::set_permissions(&path, permissions).expect("chmod fake gh");
         (dir, path)
+    }
+
+    #[cfg(unix)]
+    fn fake_gh(output: &serde_json::Value, status: i32, stderr: &str) -> (tempfile::TempDir, PathBuf) {
+        fake_gh_raw(&output.to_string(), status, stderr)
     }
 
     #[cfg(unix)]
@@ -294,6 +299,16 @@ mod tests {
             &format!("https://relay.example/git/{}/app", "ab".repeat(32)),
         )
         .expect_err("reject Buzz URL");
+        assert_eq!(error_code(&error), "github_pulls_failed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn malformed_or_truncated_json_is_an_error_not_an_empty_list() {
+        let (_dir, path) = fake_gh_raw("[{", 0, "");
+        let gh = GhRunner::from_resolved(Some(path)).expect("runner");
+        let error = list_github_pull_requests_with(&gh, "https://github.com/acme/app")
+            .expect_err("malformed response");
         assert_eq!(error_code(&error), "github_pulls_failed");
     }
 
@@ -423,7 +438,7 @@ pub struct GitHubPullRequestListDto {
 }
 
 #[derive(Clone, Copy)]
-pub(crate) enum PullsNotFound {
+enum PullsNotFound {
     Repo,
     PullRequest,
 }
@@ -522,7 +537,7 @@ Implement URL validation with `url::Url`.
 Require HTTPS, host `github.com`, no username/password/query/fragment, no non-default port, exactly four path segments, case-insensitive owner/repo equality, literal `pull`, and a matching positive number.
 
 ```rust
-pub(crate) fn is_pull_html_url(repo: &GitHubRepoRef, raw: &str, number: u64) -> bool {
+fn is_pull_html_url(repo: &GitHubRepoRef, raw: &str, number: u64) -> bool {
     if number == 0 || raw != raw.trim() || raw.contains('\\') || raw.contains('%') {
         return false;
     }
@@ -596,7 +611,7 @@ fn map_pull(repo: &GitHubRepoRef, item: GitHubPullRequestWire) -> Option<GitHubP
     })
 }
 
-pub(crate) fn remap_pulls_error(
+fn remap_pulls_error(
     error: ProjectPullRequestMergeError,
     diagnostic: &str,
     not_found: PullsNotFound,
@@ -634,7 +649,7 @@ pub(crate) fn remap_pulls_error(
     ProjectPullRequestMergeError::new("github_pulls_failed", message)
 }
 
-pub(crate) fn list_github_pull_requests_with(
+fn list_github_pull_requests_with(
     gh: &GhRunner,
     clone_url: &str,
 ) -> Result<GitHubPullRequestListDto, ProjectPullRequestMergeError> {
@@ -686,7 +701,7 @@ git commit -s -m "feat(projects): map GitHub pull requests from gh api"
 **Interfaces:**
 
 - Consumes: `github_api_json`, `map_pull`, `remap_pulls_error`, `GitHubRepoRef`, and `GhRunner` from Task 1
-- Produces: `GitHubPullRequestCommentDto`, `is_pull_comment_html_url`, `create_github_pull_request_with`, and `list_github_pull_request_comments_with`
+- Produces: public DTO `GitHubPullRequestCommentDto` plus module-private `is_pull_comment_html_url`, `create_github_pull_request_with`, and `list_github_pull_request_comments_with`
 
 - [ ] **Step 1: Write failing create and comment tests**
 
@@ -717,9 +732,27 @@ fn create_rejects_empty_or_equal_branches_before_running_gh() {
     let empty_head = create_github_pull_request_with(&gh, "https://github.com/acme/app", "Title", "", "  ", "develop")
         .expect_err("empty head");
     assert_eq!(error_code(&empty_head), "github_pulls_failed");
+    let empty_base = create_github_pull_request_with(&gh, "https://github.com/acme/app", "Title", "", "feature", "  ")
+        .expect_err("empty base");
+    assert_eq!(error_code(&empty_base), "github_pulls_failed");
     let same = create_github_pull_request_with(&gh, "https://github.com/acme/app", "Title", "", "develop", "develop")
         .expect_err("same");
     assert_eq!(error_code(&same), "github_pulls_failed");
+}
+
+#[test]
+fn create_rejects_cross_repository_head_before_running_gh() {
+    let gh = GhRunner::from_resolved(Some(std::path::PathBuf::from("/bin/false"))).expect("runner");
+    let error = create_github_pull_request_with(
+        &gh,
+        "https://github.com/acme/app",
+        "Title",
+        "",
+        "fork-owner:feature",
+        "develop",
+    )
+    .expect_err("cross-repository head");
+    assert_eq!(error_code(&error), "github_pulls_failed");
 }
 
 #[cfg(unix)]
@@ -880,7 +913,7 @@ struct GitHubPullRequestCommentWire {
     user: Option<GitHubPullRequestUserWire>,
 }
 
-pub(crate) fn is_pull_comment_html_url(
+fn is_pull_comment_html_url(
     repo: &GitHubRepoRef,
     raw: &str,
     number: u64,
@@ -935,7 +968,7 @@ fn pull_json_input(
     Ok(file)
 }
 
-pub(crate) fn create_github_pull_request_with(
+fn create_github_pull_request_with(
     gh: &GhRunner,
     clone_url: &str,
     title: &str,
@@ -962,6 +995,12 @@ pub(crate) fn create_github_pull_request_with(
         return Err(ProjectPullRequestMergeError::new(
             "github_pulls_failed",
             "Pull request branches are required.",
+        ));
+    }
+    if head.contains(':') {
+        return Err(ProjectPullRequestMergeError::new(
+            "github_pulls_failed",
+            "The compare branch must belong to this repository.",
         ));
     }
     if head == base {
@@ -992,7 +1031,7 @@ pub(crate) fn create_github_pull_request_with(
     })
 }
 
-pub(crate) fn list_github_pull_request_comments_with(
+fn list_github_pull_request_comments_with(
     gh: &GhRunner,
     clone_url: &str,
     number: u64,
@@ -1073,11 +1112,12 @@ git commit -s -m "feat(projects): create GitHub pull requests and list comments"
 **Interfaces:**
 
 - Consumes: the three injected-runner functions from Tasks 1 and 2 and `GhRunner::discover`
-- Produces: Tauri commands `list_github_pull_requests`, `create_github_pull_request`, and `list_github_pull_request_comments`
+- Produces: public Tauri commands `list_github_pull_requests`, `create_github_pull_request`, and `list_github_pull_request_comments`, with module-private injected-runner wrappers
 
 - [ ] **Step 1: Run impact checks**
 
-Run GitNexus upstream impact for `get_github_repository_state`, the `tauri::generate_handler!` registration in `invoke.rs`, and `commands` module re-exports.
+Run GitNexus upstream impact for `get_github_repository_state` and `desktop_invoke_handler`.
+The module declaration and re-export are not indexed function symbols; verify their scope with the final `detect_changes` result.
 
 - [ ] **Step 2: Write failing discovery-wrapper tests**
 
@@ -1129,7 +1169,7 @@ Expected: compilation fails because `list_github_pull_requests_with_runner` does
 - [ ] **Step 4: Implement wrappers, commands, and registration**
 
 ```rust
-pub(crate) fn list_github_pull_requests_with_runner(
+fn list_github_pull_requests_with_runner(
     clone_url: String,
     gh: Result<GhRunner, ProjectPullRequestMergeError>,
 ) -> Result<GitHubPullRequestListDto, ProjectPullRequestMergeError> {
@@ -1137,7 +1177,7 @@ pub(crate) fn list_github_pull_requests_with_runner(
     list_github_pull_requests_with(&gh, &clone_url)
 }
 
-pub(crate) fn create_github_pull_request_with_runner(
+fn create_github_pull_request_with_runner(
     clone_url: String,
     title: String,
     body: String,
@@ -1149,7 +1189,7 @@ pub(crate) fn create_github_pull_request_with_runner(
     create_github_pull_request_with(&gh, &clone_url, &title, &body, &head, &base)
 }
 
-pub(crate) fn list_github_pull_request_comments_with_runner(
+fn list_github_pull_request_comments_with_runner(
     clone_url: String,
     number: u64,
     gh: Result<GhRunner, ProjectPullRequestMergeError>,
@@ -1255,6 +1295,7 @@ git commit -s -m "feat(projects): expose GitHub pull request Tauri commands"
 - [ ] **Step 1: Run impact checks**
 
 Run GitNexus upstream impact for `eventToProjectPullRequest`, `pullRequestShareLink`, and `parseProjectPullRequestMergeError`.
+Also run upstream impact for the `ProjectPullRequest` type before adding required fields to its declaration.
 
 - [ ] **Step 2: Write mapper, routing, declaration-default, identity, number, comment, and share tests before production changes**
 
@@ -1279,7 +1320,9 @@ import { test } from "node:test";
 
 import {
   fetchProjectPullRequestsWith,
+  githubRepoFullNameFromCloneUrl,
   githubPullRequestBranchLabel,
+  githubPullRequestCommentsRequest,
   githubPullRequestConversationCount,
   githubPullRequestId,
   mapGithubCommentToProjectPullRequestComment,
@@ -1287,6 +1330,8 @@ import {
   parseGithubPullRequestNumber,
   pullRequestDisplayNumber,
   pullRequestIdentityPubkeys,
+  requireBuzzPullRequestEventId,
+  selectedGithubPullRequestAfterListLoad,
 } from "./projectGithubPulls.ts";
 
 const REPO_ADDRESS = `30617:${"a".repeat(64)}:app`;
@@ -1340,6 +1385,24 @@ test("GitHub draft maps to Draft and never to Open", () => {
     { repoAddress: REPO_ADDRESS, cloneUrl: "https://github.com/acme/app" },
   );
   assert.equal(pullRequest.status, "Draft");
+});
+
+test("GitHub pull ids reject non-positive, fractional, and unsafe numbers", () => {
+  assert.equal(githubPullRequestId(42), "42");
+  for (const number of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+    assert.throws(
+      () => githubPullRequestId(number),
+      /GitHub returned an invalid pull request number/,
+    );
+    assert.throws(
+      () =>
+        mapGithubPullRequestToProjectPullRequest(
+          { ...dto, number },
+          { repoAddress: REPO_ADDRESS, cloneUrl: "https://github.com/acme/app" },
+        ),
+      /GitHub returned an invalid pull request number/,
+    );
+  }
 });
 
 test("GitHub comment mapper keeps login and avatar without pubkey conversion", () => {
@@ -1433,6 +1496,14 @@ test("GitHub pull number parser accepts only positive safe decimal integers", ()
   assert.equal(githubPullRequestId(42), "42");
 });
 
+test("Nostr-only writes reject GitHub decimal ids", () => {
+  assert.equal(requireBuzzPullRequestEventId("e".repeat(64)), "e".repeat(64));
+  assert.throws(
+    () => requireBuzzPullRequestEventId("42"),
+    /cannot be mutated through Nostr/,
+  );
+});
+
 test("identity collection drops GitHub logins and keeps lowercase Nostr pubkeys", () => {
   const github = mapGithubPullRequestToProjectPullRequest(dto, {
     repoAddress: REPO_ADDRESS,
@@ -1486,6 +1557,14 @@ test("fork heads render owner:branch and empty head repos stay same-repo", () =>
     { repoAddress: REPO_ADDRESS, cloneUrl: "https://github.com/acme/app" },
   );
   assert.equal(githubPullRequestBranchLabel(deleted), "feature → develop");
+  assert.equal(
+    githubRepoFullNameFromCloneUrl("git@github.com:acme/app.git"),
+    "acme/app",
+  );
+  assert.equal(
+    githubRepoFullNameFromCloneUrl("https://github.com/acme/app/extra"),
+    null,
+  );
 });
 
 test("conversation badge uses the greater of list count and loaded comments", () => {
@@ -1498,7 +1577,11 @@ Add these share-link cases to `projectShareLinks.test.mjs`.
 
 ```js
 test("pullRequestShareLink accepts only a canonical GitHub pull URL", () => {
-  const base = { id: "42", repoAddress: REPO_ADDRESS };
+  const base = {
+    id: "42",
+    repoAddress: REPO_ADDRESS,
+    cloneUrls: ["https://github.com/acme/app"],
+  };
   assert.equal(
     pullRequestShareLink({
       ...base,
@@ -1512,6 +1595,8 @@ test("pullRequestShareLink accepts only a canonical GitHub pull URL", () => {
     "https://github.com/acme/app/pull/42#x",
     "https://github.com/acme/app/pull/42/",
     "https://github.com/acme/app/issues/42",
+    "https://github.com/acme/app/pull/43",
+    "https://github.com/acme/other/pull/42",
   ]) {
     assert.equal(pullRequestShareLink({ ...base, htmlUrl }), null, htmlUrl);
   }
@@ -1627,23 +1712,24 @@ export async function listGithubPullRequestComments(input: {
 Add these fields to `ProjectPullRequest` in `projectPullRequests.d.mts`.
 
 ```ts
+/** GitHub author avatar; null for Nostr pull requests. */
 authorAvatarUrl: string | null;
+/** GitHub head repository full name; null for Nostr and deleted-fork heads. */
 headRepoFullName: string | null;
+/** Validated canonical GitHub URL; null for Nostr pull requests. */
 htmlUrl: string | null;
+/** Backend-reported conversation count before lazy comments load. */
 commentCount: number;
 ```
 
-Add `authorAvatarUrl?: string | null` to `ProjectPullRequestComment`.
-Populate neutral values in `eventToProjectPullRequest`.
+Add documented field `authorAvatarUrl?: string | null` to `ProjectPullRequestComment` with the comment `/** GitHub comment avatar; null or absent for Nostr comments. */`.
+Insert these four properties in the object returned by `eventToProjectPullRequest` without changing the existing property expressions.
 
 ```js
-return {
-  // existing fields stay unchanged
-  authorAvatarUrl: null,
-  headRepoFullName: null,
-  htmlUrl: null,
-  commentCount: comments.length,
-};
+authorAvatarUrl: null,
+headRepoFullName: null,
+htmlUrl: null,
+commentCount: comments.length,
 ```
 
 Set `authorAvatarUrl: null` on each Nostr comment object.
@@ -1826,13 +1912,27 @@ export function githubPullRequestBranchLabel(
   return `${owner}:${head} → ${base}`;
 }
 
-function githubRepoFullNameFromCloneUrl(cloneUrl: string): string | null {
+/** Parse the target owner/repository from a supported github.com clone URL. */
+export function githubRepoFullNameFromCloneUrl(cloneUrl: string): string | null {
   const ssh = cloneUrl.match(/^git@github\.com:([^/]+)\/(.+?)(?:\.git)?$/i);
   if (ssh) return `${ssh[1]}/${ssh[2]}`;
   try {
     const url = new URL(cloneUrl);
-    if (url.hostname.toLowerCase() !== "github.com") return null;
-    const [owner, repo] = url.pathname.replace(/^\//, "").replace(/\.git$/, "").split("/");
+    if (
+      url.protocol !== "https:" ||
+      url.hostname.toLowerCase() !== "github.com" ||
+      url.port !== "" ||
+      url.username !== "" ||
+      url.password !== "" ||
+      url.search !== "" ||
+      url.hash !== ""
+    ) {
+      return null;
+    }
+    const segments = url.pathname.split("/").filter(Boolean);
+    if (segments.length !== 2) return null;
+    const [owner, rawRepo] = segments;
+    const repo = rawRepo?.replace(/\.git$/, "");
     return owner && repo ? `${owner}/${repo}` : null;
   } catch {
     return null;
@@ -1920,11 +2020,6 @@ export function useGithubPullRequestCommentsQuery(
 Add tests for `githubPullRequestCommentsRequest` and `selectedGithubPullRequestAfterListLoad` in the same test file.
 
 ```js
-import {
-  githubPullRequestCommentsRequest,
-  selectedGithubPullRequestAfterListLoad,
-} from "./projectGithubPulls.ts";
-
 test("comment request is enabled only for GitHub numeric ids", () => {
   assert.deepEqual(
     githubPullRequestCommentsRequest(
@@ -1970,8 +2065,15 @@ test("selection survives refetch and clears when the number is absent", () => {
 
 - [ ] **Step 7: Implement strict GitHub URL sharing**
 
+Import `githubRepoFullNameFromCloneUrl` from `./projectGithubPulls` in `projectShareLinks.ts` and use that one parser for both fork labels and share-link repository binding.
+
 ```ts
-function isSafeGitHubPullUrl(raw: string): boolean {
+import { githubRepoFullNameFromCloneUrl } from "./projectGithubPulls";
+
+function isSafeGitHubPullUrl(
+  raw: string,
+  pullRequest: Pick<ProjectPullRequest, "cloneUrls" | "id">,
+): boolean {
   try {
     if (
       raw !== raw.trim() ||
@@ -1998,12 +2100,17 @@ function isSafeGitHubPullUrl(raw: string): boolean {
     const [owner, repo, segment, number, ...rest] = url.pathname
       .split("/")
       .filter(Boolean);
+    const targetRepo = githubRepoFullNameFromCloneUrl(
+      pullRequest.cloneUrls[0] ?? "",
+    );
     return (
       rest.length === 0 &&
       segment === "pull" &&
       /^[A-Za-z0-9-]+$/.test(owner ?? "") &&
       /^[A-Za-z0-9._-]+$/.test(repo ?? "") &&
       /^[1-9][0-9]*$/.test(number ?? "") &&
+      number === pullRequest.id &&
+      targetRepo?.toLowerCase() === `${owner}/${repo}`.toLowerCase() &&
       raw === `https://github.com/${owner}/${repo}/pull/${number}`
     );
   } catch {
@@ -2014,7 +2121,10 @@ function isSafeGitHubPullUrl(raw: string): boolean {
 export function pullRequestShareLink(
   pullRequest: ProjectPullRequest,
 ): string | null {
-  if (pullRequest.htmlUrl && isSafeGitHubPullUrl(pullRequest.htmlUrl)) {
+  if (
+    pullRequest.htmlUrl &&
+    isSafeGitHubPullUrl(pullRequest.htmlUrl, pullRequest)
+  ) {
     return pullRequest.htmlUrl;
   }
   const coordinate = repositoryCoordinate(pullRequest.repoAddress);
@@ -2067,6 +2177,7 @@ git commit -s -m "feat(projects): map GitHub pull requests onto ProjectPullReque
 
 - Modify: `desktop/src/features/projects/hooks.ts`
 - Modify: `desktop/src/features/projects/pullRequestMutations.ts`
+- Modify: `desktop/src/features/projects/pullRequestReviews.ts`
 - Create: `desktop/src/features/projects/pullRequestMutations.github.test.mjs`
 - Modify: `desktop/src/features/projects/ui/CreatePullRequestDialog.tsx`
 - Modify: `desktop/src/features/projects/ui/ProjectDetailScreen.tsx`
@@ -2078,7 +2189,7 @@ git commit -s -m "feat(projects): map GitHub pull requests onto ProjectPullReque
 
 - [ ] **Step 1: Run impact checks**
 
-Run GitNexus upstream impact for `fetchProjectPullRequests`, `useProjectPullRequestsQuery`, `publishProjectPullRequest`, `useCreateProjectPullRequestMutation`, `useMergeProjectPullRequestMutation`, `CreatePullRequestDialog`, and `ProjectDetailScreen`.
+Run GitNexus upstream impact for `fetchProjectPullRequests`, `useProjectPullRequestsQuery`, `createProjectPullRequestComment`, `publishProjectPullRequest`, `useCreateProjectPullRequestMutation`, `useMergeProjectPullRequestMutation`, `updateProjectPullRequestStatus`, `requestProjectPullRequestReview`, `submitProjectPullRequestReview`, `CreatePullRequestDialog`, and `ProjectDetailScreen`.
 
 - [ ] **Step 2: Write failing create-routing and invalidation tests**
 
@@ -2089,6 +2200,7 @@ import { test } from "node:test";
 import {
   createProjectPullRequestWith,
   projectPullRequestInvalidationKeys,
+  publishProjectPullRequestUpdate,
 } from "./pullRequestMutations.ts";
 
 const REPO_ADDRESS = `30617:${"a".repeat(64)}:app`;
@@ -2201,6 +2313,25 @@ test("Buzz create preserves all existing invalidations", () => {
     ],
   );
 });
+
+test("a decimal GitHub id is rejected before a Nostr update reaches identity or signing", async () => {
+  await assert.rejects(
+    publishProjectPullRequestUpdate({
+      commit: "e".repeat(40),
+      mergeBase: null,
+      project: {
+        owner: "a".repeat(64),
+        repoAddress: REPO_ADDRESS,
+        cloneUrls: ["https://github.com/acme/app"],
+      },
+      pullRequest: {
+        id: "42",
+        commit: "d".repeat(40),
+      },
+    }),
+    /cannot be mutated through Nostr/,
+  );
+});
 ```
 
 - [ ] **Step 3: Run and verify RED**
@@ -2241,6 +2372,7 @@ Do not add more than a few lines; `hooks.ts` is already 947 lines.
 In `pullRequestMutations.ts`:
 
 ```ts
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { createGithubPullRequest } from "@/shared/api/projectGit";
 import { isGitHubCloneUrl } from "@/features/projects/lib/projectGitError";
 import {
@@ -2248,6 +2380,7 @@ import {
   requireBuzzPullRequestEventId,
 } from "@/features/projects/lib/projectGithubPulls";
 
+/** Route pull-request creation to exactly one backend for the repository host. */
 export async function createProjectPullRequestWith(
   project: Project,
   input: CreateProjectPullRequestInput,
@@ -2276,6 +2409,7 @@ export async function createProjectPullRequestWith(
   return loaders.publishBuzz(project, input);
 }
 
+/** Query keys invalidated after a host-routed pull-request create. */
 export function projectPullRequestInvalidationKeys(
   project: Pick<Project, "id" | "cloneUrls">,
 ): readonly unknown[][] {
@@ -2313,7 +2447,15 @@ export function useCreateProjectPullRequestMutation(
 }
 ```
 
-At the start of `publishProjectPullRequestUpdate` and in `useMergeProjectPullRequestMutation` before `mergeProjectPullRequest`, call `requireBuzzPullRequestEventId(pullRequest.id)`.
+At the first executable line of `publishProjectPullRequestUpdate`, call `requireBuzzPullRequestEventId(pullRequest.id)` before the unchanged-commit early return or `getIdentity`.
+In `useMergeProjectPullRequestMutation`, call `requireBuzzPullRequestEventId(pullRequest.id)` before branch validation and before `mergeProjectPullRequest`.
+Import `requireBuzzPullRequestEventId` into `hooks.ts` and call it at the first executable line of `createProjectPullRequestComment`, before body validation, identity normalization, signing, or publishing.
+Import the same helper into `pullRequestReviews.ts` and call it at the first executable line of `updateProjectPullRequestStatus`, `requestProjectPullRequestReview`, and `submitProjectPullRequestReview`.
+These guards are defensive write isolation; the GitHub detail path still must not mount any of those mutations.
+
+```ts
+requireBuzzPullRequestEventId(pullRequest.id);
+```
 
 In `CreatePullRequestDialog.tsx` replace the array read.
 
@@ -2327,14 +2469,53 @@ const hasOpenPullRequest = pullRequests.some(
 );
 ```
 
-In `ProjectDetailScreen.tsx` introduce one local array immediately after the query and replace every `pullRequestsQuery.data` array use.
+In `ProjectDetailScreen.tsx` introduce one stable local array immediately after the query and replace every `pullRequestsQuery.data` array use.
 
 ```ts
-const pullRequests = pullRequestsQuery.data?.pullRequests ?? [];
+const pullRequests = React.useMemo(
+  () => pullRequestsQuery.data?.pullRequests ?? [],
+  [pullRequestsQuery.data?.pullRequests],
+);
 ```
 
 Use `pullRequests` for branch options, selected-branch matching, `hasOpenPullRequest`, `selectedPullRequest`, and the `pullRequests={pullRequests}` prop.
 Replace the people-pubkey flatMap with `pullRequestIdentityPubkeys(pullRequests)`.
+Replace memo dependency entries that used `pullRequestsQuery.data` with `pullRequests`.
+In `handlePullRequestCreated`, keep calling `pullRequestsQuery.refetch()` but replace the whole `pullRequestsQuery` dependency with the stable `pullRequestsQuery.refetch` method.
+Do not add any React Query result object to a dependency array.
+
+Keep GitHub rows out of Nostr-only update and diff paths in `ProjectDetailScreen.tsx`.
+
+```ts
+const repoDiffQuery = useProjectRepoDiffQuery(
+  repository,
+  activeBranch,
+  activeRepoPullRequest,
+  repoSource === "remote" && !githubHosted,
+);
+const localRepoDiffQuery = useProjectLocalRepoDiffQuery(
+  repository,
+  activeCommunity?.reposDir,
+  activeBranch,
+  activeRepoPullRequest,
+  repoSource === "local" && Boolean(activeRepoPullRequest) && !githubHosted,
+);
+```
+
+Gate `updatePullRequestAction` with `!githubHosted` before `openBranchPullRequest` so GitHub branches never render the Nostr Update PR action.
+
+```tsx
+updatePullRequestAction={
+  !githubHosted && openBranchPullRequest?.commit
+    ? {
+        onUpdate: () => {
+          void handleUpdatePullRequest();
+        },
+        pending: updatePullRequestMutation.isPending,
+      }
+    : undefined
+}
+```
 
 - [ ] **Step 5: Run tests and typecheck and verify GREEN**
 
@@ -2342,7 +2523,7 @@ Replace the people-pubkey flatMap with `pullRequestIdentityPubkeys(pullRequests)
 . ./bin/activate-hermit && cd desktop && pnpm test -- src/features/projects/pullRequestMutations.github.test.mjs src/features/projects/pullRequestMutations.test.mjs src/features/projects/lib/projectGithubPulls.test.mjs && pnpm typecheck && pnpm check:file-sizes
 ```
 
-Expected: routing tests pass, existing tag tests stay green, TypeScript accepts the new query shape, and no file exceeds 1,000 lines.
+Expected: routing and decimal-id guard tests pass, existing tag tests stay green, TypeScript accepts the new query shape, no GitHub PR starts a `refs/nostr/{number}` diff, and no file exceeds 1,000 lines.
 
 - [ ] **Step 6: Format, inspect scope, and commit**
 
@@ -2351,11 +2532,13 @@ Expected: routing tests pass, existing tag tests stay green, TypeScript accepts 
 cd desktop && pnpm exec biome check --write \
   src/features/projects/hooks.ts \
   src/features/projects/pullRequestMutations.ts \
+  src/features/projects/pullRequestReviews.ts \
   src/features/projects/pullRequestMutations.github.test.mjs \
   src/features/projects/ui/CreatePullRequestDialog.tsx \
   src/features/projects/ui/ProjectDetailScreen.tsx
 git add src/features/projects/hooks.ts \
   src/features/projects/pullRequestMutations.ts \
+  src/features/projects/pullRequestReviews.ts \
   src/features/projects/pullRequestMutations.github.test.mjs \
   src/features/projects/ui/CreatePullRequestDialog.tsx \
   src/features/projects/ui/ProjectDetailScreen.tsx
@@ -2370,20 +2553,175 @@ git commit -s -m "feat(projects): route GitHub pull request list and create"
 **Files:**
 
 - Create: `desktop/src/features/projects/ui/GitHubProjectPullRequests.tsx`
+- Create: `desktop/src/features/projects/ui/GitHubProjectPullRequests.test.mjs`
 - Modify: `desktop/src/features/projects/ui/ProjectWorkspaceTabList.tsx`
 - Modify: `desktop/src/features/projects/ui/ProjectWorkspaceTabs.tsx`
-- Do not modify `ProjectPullRequestsPanel.tsx` except if a type error requires a commentCount fallback on Buzz rows; prefer leaving that file untouched.
+- Modify: `desktop/src/features/projects/ui/ProjectDetailScreen.tsx` only to pass the exact query-state props described below
+- Do not modify `desktop/src/features/projects/ui/ProjectPullRequestsPanel.tsx`.
 
 **Interfaces:**
 
 - Consumes: `GitHubLoginIdentity`, `GitHubRepoStateRecovery`, `useGithubPullRequestCommentsQuery`, `pullRequestShareLink`, `pullRequestDisplayNumber`, `githubPullRequestBranchLabel`, `githubPullRequestConversationCount`, and `selectedGithubPullRequestAfterListLoad`
-- Produces: `GitHubPullRequestRow`, `GitHubPullRequestDetail`, `GitHubPullRequestDetailShell`, and `GitHubPullRequestsPanel`
+- Produces: exported `GitHubPullRequestRow`, `GitHubPullRequestDetail`, `GitHubPullRequestDetailHeader`, `GitHubPullRequestMetaRail`, and `GitHubPullRequestsPanel`, plus module-private `GitHubPullRequestDetailShell`
 
 - [ ] **Step 1: Run impact checks**
 
-Run GitNexus upstream impact for `WorkspaceTabs`, `PullRequestTabsList`, `PullRequestsPanel`, `PullRequestDetailHeader`, and `PullRequestMetaRail`.
+Run GitNexus upstream impact for `WorkspaceTabs`, `PullRequestTabsList`, `PullRequestsPanel`, `PullRequestDetailHeader`, `PullRequestMetaRail`, and `ProjectDetailScreen`.
 
-- [ ] **Step 2: Extend `PullRequestTabsList` first with a failing visual contract encoded in the props**
+- [ ] **Step 2: Write the failing server-rendered component contract**
+
+Create `GitHubProjectPullRequests.test.mjs` before creating the component file or changing `PullRequestTabsList`.
+
+```js
+import assert from "node:assert/strict";
+import { test } from "node:test";
+
+import React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+
+import { Tabs } from "@/shared/ui/tabs";
+import {
+  GitHubPullRequestDetail,
+  GitHubPullRequestDetailHeader,
+  GitHubPullRequestMetaRail,
+  GitHubPullRequestRow,
+} from "./GitHubProjectPullRequests.tsx";
+import { PullRequestTabsList } from "./ProjectWorkspaceTabList.tsx";
+
+const pullRequest = {
+  id: "42",
+  title: "Fix login",
+  content: "PR body from GitHub",
+  tags: [],
+  author: "ada",
+  authorAvatarUrl: "https://avatars.githubusercontent.com/u/1",
+  createdAt: 1_704_166_645,
+  repoAddress: `30617:${"a".repeat(64)}:app`,
+  channelId: null,
+  originAgentName: null,
+  labels: [],
+  recipients: [],
+  reviewers: [],
+  approvals: [],
+  changeRequests: [],
+  status: "Open",
+  statusEventId: null,
+  statusCreatedAt: null,
+  branchName: "feature",
+  targetBranch: "develop",
+  initialCommit: "d".repeat(40),
+  commit: "d".repeat(40),
+  cloneUrls: ["https://github.com/acme/app"],
+  updateCount: 0,
+  updatedAt: 1_704_253_045,
+  updates: [],
+  comments: [],
+  commentCount: 3,
+  headRepoFullName: "acme/app",
+  htmlUrl: "https://github.com/acme/app/pull/42",
+};
+
+const githubComment = {
+  id: "9",
+  content: "Looks good.",
+  tags: [],
+  author: "grace",
+  authorAvatarUrl: "https://avatars.githubusercontent.com/u/3",
+  createdAt: 1_704_253_100,
+  commit: null,
+  anchor: null,
+  inlineCommentStatus: null,
+  isInlineComment: false,
+  isApproval: false,
+  isChangeRequest: false,
+  isReviewRequest: false,
+  isTrustedReviewDecision: false,
+  isTrustedReviewRequest: false,
+  reviewDecision: null,
+  reviewDecisionStatus: null,
+  reviewerPubkeys: [],
+};
+
+test("GitHub row renders #N, login, host-native branches, and status", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(GitHubPullRequestRow, {
+      onOpen() {},
+      pullRequest,
+    }),
+  );
+  assert.match(html, /#42/);
+  assert.match(html, /ada/);
+  assert.match(html, /feature/);
+  assert.match(html, /develop/);
+  assert.match(html, /Open/);
+});
+
+test("GitHub conversation renders body and login comments without write chrome", () => {
+  const commentsQuery = {
+    data: [githubComment],
+    error: null,
+    isError: false,
+    isLoading: false,
+    refetch: async () => {},
+  };
+  const html = renderToStaticMarkup(
+    React.createElement(
+      React.Fragment,
+      null,
+      React.createElement(GitHubPullRequestDetailHeader, { pullRequest }),
+      React.createElement(GitHubPullRequestDetail, {
+        commentsQuery,
+        mode: "conversation",
+        onSelectedPullRequestIdChange() {},
+        pullRequest,
+      }),
+      React.createElement(GitHubPullRequestMetaRail, { pullRequest }),
+    ),
+  );
+  assert.match(html, /PR body from GitHub/);
+  assert.match(html, /Looks good\./);
+  assert.match(html, /grace/);
+  for (const forbidden of [
+    "Merge",
+    "Request changes",
+    "Reviewers",
+    "Discussed in channels",
+    "Add a comment",
+  ]) {
+    assert.equal(html.includes(forbidden), false, forbidden);
+  }
+});
+
+test("GitHub pull tabs hide Files changed and pin one commit", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(
+      Tabs,
+      { defaultValue: "pr-conversation" },
+      React.createElement(PullRequestTabsList, {
+        conversationCount: 5,
+        filesCount: 99,
+        hideFiles: true,
+        pullRequest,
+      }),
+    ),
+  );
+  assert.match(html, /Conversation/);
+  assert.match(html, /Commits/);
+  assert.equal(html.includes("Files changed"), false);
+  assert.ok(html.includes(">5<"), "conversation badge uses the supplied count");
+  assert.ok(html.includes(">1<"), "GitHub commit badge is exactly one");
+});
+```
+
+- [ ] **Step 3: Run the component contract and verify RED**
+
+```bash
+. ./bin/activate-hermit && cd desktop && pnpm test -- src/features/projects/ui/GitHubProjectPullRequests.test.mjs
+```
+
+Expected: FAIL because `GitHubProjectPullRequests.tsx` does not exist; after adding an empty module, the tabs assertion must still fail because `hideFiles` is not implemented.
+
+- [ ] **Step 4: Extend `PullRequestTabsList` minimally**
 
 Change the component to accept optional `hideFiles` and `conversationCount`.
 
@@ -2435,7 +2773,7 @@ export function PullRequestTabsList({
 }
 ```
 
-- [ ] **Step 3: Implement `GitHubProjectPullRequests.tsx`**
+- [ ] **Step 5: Implement `GitHubProjectPullRequests.tsx`**
 
 Use `text-sm`, `text-xs`, and `text-2xs` only.
 Reuse `GitHubLoginIdentity` and `ProjectIssueCommentTimeline` with `githubMode`.
@@ -2444,12 +2782,12 @@ Do not import `ProfileIdentityButton`, `normalizePubkey`, `MergePullRequestButto
 ```tsx
 import { Check, GitBranch, GitCommitHorizontal, GitPullRequest, MessageSquare, X } from "lucide-react";
 import * as React from "react";
+import { toast } from "sonner";
 
 import type { ProjectPullRequest, Repository } from "@/features/projects/hooks";
 import {
   githubPullRequestBranchLabel,
   githubPullRequestConversationCount,
-  parseGithubPullRequestNumber,
   pullRequestDisplayNumber,
   selectedGithubPullRequestAfterListLoad,
   useGithubPullRequestCommentsQuery,
@@ -2536,7 +2874,7 @@ export function GitHubPullRequestRow({
   );
 }
 
-/** GitHub pull-request conversation, one-commit list, or checks placeholder. */
+/** GitHub pull-request conversation, one-commit list, or empty checks state. */
 export function GitHubPullRequestDetail({
   commentsQuery,
   mode,
@@ -2553,6 +2891,7 @@ export function GitHubPullRequestDetail({
   const parsed = parseProjectPullRequestMergeError(commentsQuery.error);
   React.useEffect(() => {
     if (parsed?.code === "github_pr_unavailable") {
+      toast.error("Pull request not found.");
       onSelectedPullRequestIdChange(null);
     }
   }, [onSelectedPullRequestIdChange, parsed?.code]);
@@ -2635,7 +2974,7 @@ export function GitHubPullRequestsPanel({
   isFetching: boolean;
   isLoading: boolean;
   isSuccess: boolean;
-  onRetry?: () => void;
+  onRetry: () => void | Promise<unknown>;
   onSelectedPullRequestIdChange: (id: string | null) => void;
   pullRequests: ProjectPullRequest[];
   selectedPullRequestId: string | null;
@@ -2770,28 +3109,45 @@ export function GitHubPullRequestMetaRail({
   );
 }
 
-export function githubPullRequestUnavailableMessage(error: unknown): string | null {
-  const parsed = parseProjectPullRequestMergeError(error);
-  return parsed?.code === "github_pr_unavailable" ? "Pull request not found." : null;
-}
-
-export function isGithubPullRequestSelection(id: string | null): boolean {
-  return parseGithubPullRequestNumber(id) !== null;
-}
 ```
 
-- [ ] **Step 4: Host-split `WorkspaceTabs`**
+- [ ] **Step 6: Host-split `WorkspaceTabs` with exact query-state props**
 
-Pass `hasMore` and `isFetching`/`isSuccess` from `ProjectDetailScreen` if needed.
-The smallest option is to have `WorkspaceTabs` treat GitHub list errors and `hasMore` through new optional props:
+Add these required props to the `WorkspaceTabs` destructuring and parameter type.
 
 ```ts
-pullRequestsHasMore?: boolean;
-pullRequestsFetching?: boolean;
-pullRequestsSuccess?: boolean;
+pullRequestsHasMore: boolean;
+pullRequestsFetching: boolean;
+pullRequestsSuccess: boolean;
+onRetryPullRequests: () => void | Promise<unknown>;
 ```
 
-Default those to `false`/`false`/`!pullRequestsError` so Buzz callers stay valid.
+In `ProjectDetailScreen.tsx`, pass the exact values below.
+
+```tsx
+pullRequestsHasMore={pullRequestsQuery.data?.hasMore ?? false}
+pullRequestsFetching={pullRequestsQuery.isFetching}
+pullRequestsSuccess={pullRequestsQuery.isSuccess}
+onRetryPullRequests={pullRequestsQuery.refetch}
+```
+
+Do not add defaults or optional query-state props.
+`ProjectDetailScreen` is the only `WorkspaceTabs` caller, and required props ensure GitHub selection reconciliation cannot accidentally treat a failed or in-flight list as an empty successful list.
+
+Add these imports in `ProjectWorkspaceTabs.tsx`.
+
+```tsx
+import {
+  githubPullRequestConversationCount,
+  useGithubPullRequestCommentsQuery,
+} from "@/features/projects/lib/projectGithubPulls";
+import {
+  GitHubPullRequestDetail,
+  GitHubPullRequestDetailHeader,
+  GitHubPullRequestMetaRail,
+  GitHubPullRequestsPanel,
+} from "./GitHubProjectPullRequests";
+```
 
 Add this effect after the existing PR-tab effect:
 
@@ -2803,11 +3159,28 @@ React.useEffect(() => {
 }, [githubHosted, selectedTab]);
 ```
 
-Add `GitHubPullRequestDetailShell` in the same file.
+Replace the existing `commitAuthorPubkeys` declaration with these two declarations so GitHub logins stay out of the signed-event commit-author profile map.
+
+```tsx
+const nostrIdentityPullRequests = React.useMemo(
+  () => (githubHosted ? [] : pullRequests),
+  [githubHosted, pullRequests],
+);
+const commitAuthorPubkeys = React.useMemo(
+  () => commitAuthorPubkeysFromPullRequests(nostrIdentityPullRequests),
+  [nostrIdentityPullRequests],
+);
+```
+
+Pass `pullRequests={nostrIdentityPullRequests}` to `ActivityPanel` so its internal commit-author map also receives only Nostr identities.
+Keep the full `pullRequests` array for counts, PR selection, and the host-routed PR panels.
+
+Add `GitHubPullRequestDetailShell` in `ProjectWorkspaceTabs.tsx`.
 It owns `useGithubPullRequestCommentsQuery` so the conversation badge can use `max(commentCount, comments.length)` after comments load.
 
 ```tsx
-export function GitHubPullRequestDetailShell({
+/** GitHub-only detail shell that never mounts Buzz review, merge, or diff UI. */
+function GitHubPullRequestDetailShell({
   onSelectedPullRequestIdChange,
   project,
   pullRequest,
@@ -2852,35 +3225,130 @@ export function GitHubPullRequestDetailShell({
 }
 ```
 
-Change `GitHubPullRequestDetail` to take the shared `commentsQuery` instead of calling the hook again.
-When `githubHosted && selectedPullRequest`, render `<GitHubPullRequestDetailShell ... />` instead of `PullRequestDetailHeader` / Buzz `PullRequestsPanel` / `ProjectPullRequestFilesChangedPanel` / `PullRequestMetaRail`.
+Keep `GitHubPullRequestDetail` on the shared `commentsQuery` prop shown in Step 5; do not call the comment hook inside it.
+Replace the existing unconditional `selectedPullRequest` block with this exact host branch.
+
+```tsx
+{selectedPullRequest ? (
+  githubHosted ? (
+    <GitHubPullRequestDetailShell
+      onSelectedPullRequestIdChange={onSelectedPullRequestIdChange}
+      project={project}
+      pullRequest={selectedPullRequest}
+    />
+  ) : (
+    <div className={PROJECT_DETAIL_PANEL_CLASS} data-project-detail-panel>
+      <div className="grid xl:grid-cols-[minmax(0,1fr)_18rem]">
+        <div className="min-w-0">
+          <PullRequestDetailHeader
+            profiles={profiles}
+            pullRequest={selectedPullRequest}
+          />
+          <div className="border-b border-border/60 px-4">
+            <PullRequestTabsList
+              filesCount={repoDiff?.files.length ?? files.length}
+              pullRequest={selectedPullRequest}
+            />
+          </div>
+          {(["conversation", "commits", "checks"] as const).map((mode) => (
+            <TabsContent className="m-0" key={mode} value={`pr-${mode}`}>
+              <PullRequestsPanel
+                error={pullRequestsError}
+                isLoading={pullRequestsLoading}
+                mode={mode}
+                onOpenInlineComment={handleOpenPullRequestComment}
+                onOpenCommit={onSelectedCommitHashChange}
+                onOpenTerminal={onOpenMergeRecoveryTerminal}
+                onSelectedPullRequestIdChange={onSelectedPullRequestIdChange}
+                profiles={profiles}
+                project={project}
+                pullRequests={pullRequests}
+                selectedPullRequestId={selectedPullRequestId}
+              />
+            </TabsContent>
+          ))}
+          <TabsContent className="m-0" value="pr-files">
+            <ProjectPullRequestFilesChangedPanel
+              diff={repoDiff}
+              error={repoDiffError}
+              focusedAnchor={
+                pullRequestCommentTarget?.pullRequestId === selectedPullRequestId
+                  ? pullRequestCommentTarget.anchor
+                  : null
+              }
+              isLoading={repoDiffLoading}
+              profiles={profiles}
+              project={project}
+              pullRequest={selectedPullRequest}
+            />
+          </TabsContent>
+        </div>
+        <PullRequestMetaRail
+          profiles={profiles}
+          project={project}
+          pullRequest={selectedPullRequest}
+        />
+      </div>
+    </div>
+  )
+) : null}
+```
 
 Do not mount `TabsContent value="pr-files"` or `ProjectPullRequestFilesChangedPanel` when `githubHosted`.
 Do not mount `MergePullRequestButton`, `PullRequestReviewCard`, `ForumComposer`, or `PullRequestReviewersRow` on this path.
 
-When `githubHosted` and `selectedTab === "prs"` and no PR is selected, render `GitHubPullRequestsPanel` instead of `PullRequestsPanel`.
-Pass `error={pullRequestsError}` and check that error before the empty-success branch inside `GitHubPullRequestsPanel`.
+In the `TabsContent value="prs"` list block, replace only the panel child with this explicit host branch.
 
-Pass `onRetryPullRequests={() => void pullRequestsQuery.refetch()}` from `ProjectDetailScreen` through `WorkspaceTabs` into `GitHubPullRequestsPanel` and wire it to `GitHubRepoStateRecovery.onRetry`.
-
-- [ ] **Step 5: Typecheck, file-size ratchet, and existing unit tests**
-
-```bash
-. ./bin/activate-hermit && cd desktop && pnpm typecheck && pnpm check:file-sizes && pnpm check:px-text && pnpm test -- src/features/projects/lib/projectGithubPulls.test.mjs
+```tsx
+{githubHosted ? (
+  <GitHubPullRequestsPanel
+    error={pullRequestsError}
+    hasMore={pullRequestsHasMore}
+    isFetching={pullRequestsFetching}
+    isLoading={pullRequestsLoading}
+    isSuccess={pullRequestsSuccess}
+    onRetry={onRetryPullRequests}
+    onSelectedPullRequestIdChange={onSelectedPullRequestIdChange}
+    pullRequests={pullRequests}
+    selectedPullRequestId={selectedPullRequestId}
+  />
+) : (
+  <PullRequestsPanel
+    error={pullRequestsError}
+    isLoading={pullRequestsLoading}
+    onOpenCommit={onSelectedCommitHashChange}
+    onOpenTerminal={onOpenMergeRecoveryTerminal}
+    onSelectedPullRequestIdChange={onSelectedPullRequestIdChange}
+    profiles={profiles}
+    project={project}
+    pullRequests={pullRequests}
+    selectedPullRequestId={selectedPullRequestId}
+  />
+)}
 ```
 
-Expected: TypeScript passes, `ProjectPullRequestsPanel.tsx` stays at or under 1,000 lines, `GitHubProjectPullRequests.tsx` stays under 1,000 lines, and no new arbitrary text sizes.
+`GitHubPullRequestsPanel` must check `error` before the empty-success branch and wire `onRetry` directly to `GitHubRepoStateRecovery.onRetry`.
 
-- [ ] **Step 6: Format, inspect scope, and commit**
+- [ ] **Step 7: Run focused tests, typecheck, and both UI ratchets**
+
+```bash
+. ./bin/activate-hermit && cd desktop && pnpm test -- src/features/projects/ui/GitHubProjectPullRequests.test.mjs src/features/projects/lib/projectGithubPulls.test.mjs && pnpm typecheck && pnpm check:file-sizes && pnpm check:px-text
+```
+
+Expected: the component and helper contracts pass, TypeScript passes, `ProjectPullRequestsPanel.tsx` remains unchanged and under 1,000 lines, `GitHubProjectPullRequests.tsx` stays under 1,000 lines, and no new arbitrary text sizes are introduced.
+
+- [ ] **Step 8: Format, inspect scope, and commit**
 
 ```bash
 . ./bin/activate-hermit
 cd desktop && pnpm exec biome check --write \
   src/features/projects/ui/GitHubProjectPullRequests.tsx \
+  src/features/projects/ui/GitHubProjectPullRequests.test.mjs \
   src/features/projects/ui/ProjectWorkspaceTabList.tsx \
   src/features/projects/ui/ProjectWorkspaceTabs.tsx \
   src/features/projects/ui/ProjectDetailScreen.tsx
 git add src/features/projects/ui/GitHubProjectPullRequests.tsx \
+  src/features/projects/ui/GitHubProjectPullRequests.test.mjs \
   src/features/projects/ui/ProjectWorkspaceTabList.tsx \
   src/features/projects/ui/ProjectWorkspaceTabs.tsx \
   src/features/projects/ui/ProjectDetailScreen.tsx
@@ -2896,16 +3364,232 @@ git commit -s -m "feat(projects): render GitHub pull requests in the repository 
 
 - Modify: `desktop/src/testing/e2eBridge.ts`
 - Create: `desktop/tests/e2e/github-pull-requests.spec.ts`
+- Modify: `desktop/tests/e2e/project-pr-review.spec.ts`
 - Modify: `desktop/playwright.config.ts`
 
 **Interfaces:**
 
-- Consumes: the three Tauri command names and the existing `__BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__`
-- Produces: an in-memory GitHub pull-request store plus `github-pull-requests.spec.ts` on the smoke project
+- Consumes: the three Tauri command names, `maybeInstallE2eTauriMocks`, the existing `__BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__`, and the existing command/query/signed-event trackers
+- Produces: an in-memory GitHub pull-request store, `github-pull-requests.spec.ts` on the smoke project, and a legacy review spec limited to Buzz-hosted Nostr PR behavior
 
-- [ ] **Step 1: Add the mock store and command stubs**
+- [ ] **Step 1: Run impact checks before editing the shared bridge and smoke registration**
 
-Add window fields next to the issue stubs.
+Run GitNexus upstream impact for `maybeInstallE2eTauriMocks`, the mock Tauri invoke switch, and the smoke project in `desktop/playwright.config.ts`.
+Report direct callers, affected processes, and risk level.
+Stop and warn before editing if any result is HIGH or CRITICAL.
+
+- [ ] **Step 2: Write the smoke spec**
+
+```ts
+import { expect, test } from "@playwright/test";
+
+import { installMockBridge } from "../helpers/bridge";
+
+async function enableProjectsFeature(page: import("@playwright/test").Page) {
+  await page.addInitScript(() => {
+    window.localStorage.setItem(
+      "buzz-feature-overrides-v1",
+      JSON.stringify({ projects: true }),
+    );
+  });
+}
+
+async function openBuzzProject(page: import("@playwright/test").Page) {
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByTestId("open-projects-view").click();
+  await page.getByTestId("projects-section-projects").click();
+  const projectEntry = page
+    .locator(
+      '[data-testid="project-card-buzz"], [data-testid="project-row-buzz"]',
+    )
+    .first();
+  await expect(projectEntry).toBeVisible({ timeout: 10_000 });
+  await projectEntry.click();
+}
+
+async function openGithubPullRequests(page: import("@playwright/test").Page) {
+  await enableProjectsFeature(page);
+  await page.addInitScript(() => {
+    window.__BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__ =
+      "https://github.com/acme/app";
+  });
+  await installMockBridge(page);
+  await openBuzzProject(page);
+  await page.evaluate(() => {
+    window.__BUZZ_E2E_COMMANDS__ = [];
+    window.__BUZZ_E2E_PROJECT_QUERY_FILTERS__ = [];
+    window.__BUZZ_E2E_SIGNED_EVENTS__ = [];
+  });
+  await page.getByRole("tab", { name: "Pull Request", exact: true }).click();
+}
+
+test("GitHub pull requests list metadata, load read-only detail, and create #N", async ({
+  page,
+}) => {
+  await openGithubPullRequests(page);
+  const row = page.getByTestId("project-github-pull-request-row").first();
+  await expect(row).toContainText("#42");
+  await expect(row).toContainText("Open");
+  await expect(row).toContainText("ada");
+  await expect(row).toContainText("feature → develop");
+
+  await row.getByRole("button", { name: "#42", exact: true }).click();
+  await expect(page.getByText("PR body from GitHub", { exact: true })).toBeVisible();
+  const comments = page.getByTestId("project-issue-comment-timeline-row");
+  await expect(comments).toHaveCount(2);
+  await expect(comments.nth(0)).toContainText("API-order first comment.");
+  await expect(comments.nth(1)).toContainText("API-order second comment.");
+  await expect(page.getByText("grace", { exact: true })).toBeVisible();
+  await expect(page.getByTestId("project-pull-request-comment-composer")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Merge" })).toHaveCount(0);
+  await expect(page.getByRole("tab", { name: /Files changed/ })).toHaveCount(0);
+  await expect(page.getByTestId("pull-request-discussed-in")).toHaveCount(0);
+
+  await page.getByRole("tab", { name: /Commits/ }).click();
+  await expect(page.getByTestId("project-github-pull-request-commit-row")).toBeVisible();
+  await expect(page.getByTestId("project-github-pull-request-commit-row")).toContainText("ada");
+
+  await page.getByRole("button", { name: "Pull Request", exact: true }).click();
+  await page.getByRole("button", { name: "New pull request" }).click();
+  await page.getByTestId("create-pull-request-compare-branch").selectOption("main");
+  await page.getByTestId("create-pull-request-title").fill("New GitHub change");
+  await page.getByTestId("create-pull-request-body").fill("Created from Buzz");
+  await page.getByTestId("create-pull-request-submit").click();
+  await expect(page.getByText("New GitHub change", { exact: true })).toBeVisible({
+    timeout: 10_000,
+  });
+  await expect(page.getByText("#43", { exact: true })).toBeVisible();
+
+  const commands = await page.evaluate(() => window.__BUZZ_E2E_COMMANDS__ ?? []);
+  expect(commands).toContain("list_github_pull_requests");
+  expect(commands).toContain("list_github_pull_request_comments");
+  expect(commands).toContain("create_github_pull_request");
+  expect(commands).not.toContain("sign_project_pull_request_status");
+  expect(commands).not.toContain("sign_project_pull_request_review_request");
+  expect(commands).not.toContain("merge_project_pull_request");
+  expect(commands).not.toContain("get_project_repo_diff");
+  expect(commands).not.toContain("get_project_local_repo_diff");
+  const signedEvents = await page.evaluate(
+    () => window.__BUZZ_E2E_SIGNED_EVENTS__ ?? [],
+  );
+  expect(signedEvents).toHaveLength(0);
+  const detailFilters = await page.evaluate(
+    () => window.__BUZZ_E2E_PROJECT_QUERY_FILTERS__ ?? [],
+  );
+  expect(
+    detailFilters.some((filter) => filter.kinds?.includes(1618)),
+  ).toBe(false);
+});
+
+test("GitHub pull-request auth failure renders recovery before empty state", async ({
+  page,
+}) => {
+  await enableProjectsFeature(page);
+  await page.addInitScript(() => {
+    window.__BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__ =
+      "https://github.com/acme/app";
+    window.__BUZZ_E2E_GITHUB_PULLS_ERROR__ = {
+      code: "github_auth_required",
+      message:
+        "Authenticate GitHub CLI with: gh auth login --hostname github.com",
+    };
+  });
+  await installMockBridge(page);
+  await openBuzzProject(page);
+  await page.getByRole("tab", { name: "Pull Request", exact: true }).click();
+  await expect(page.getByText("GitHub authentication required")).toBeVisible({
+    timeout: 10_000,
+  });
+  await expect(page.getByText("No pull requests yet.")).toHaveCount(0);
+  await expect(page.getByText("No open pull requests.")).toHaveCount(0);
+  await expect(page.getByTestId("project-github-pull-request-row")).toHaveCount(0);
+});
+
+test("GitHub comment failure keeps the pull-request body and retries only comments", async ({
+  page,
+}) => {
+  await enableProjectsFeature(page);
+  await page.addInitScript(() => {
+    window.__BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__ =
+      "https://github.com/acme/app";
+    window.__BUZZ_E2E_GITHUB_PULL_COMMENTS_ERROR__ = {
+      code: "github_pulls_failed",
+      message: "Comment request failed.",
+    };
+  });
+  await installMockBridge(page);
+  await openBuzzProject(page);
+  await page.getByRole("tab", { name: "Pull Request", exact: true }).click();
+  const row = page.getByTestId("project-github-pull-request-row").first();
+  await row.getByRole("button", { name: "#42", exact: true }).click();
+  await expect(page.getByText("PR body from GitHub", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("Could not load GitHub comments", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Could not load GitHub pull requests", { exact: true }),
+  ).toHaveCount(0);
+  const before = await page.evaluate(() => window.__BUZZ_E2E_COMMANDS__ ?? []);
+  const listCallsBefore = before.filter((command) => command === "list_github_pull_requests").length;
+  const commentCallsBefore = before.filter((command) => command === "list_github_pull_request_comments").length;
+  await page
+    .locator('[aria-labelledby="github-pull-request-comments-recovery-title"]')
+    .getByRole("button", { name: "Retry", exact: true })
+    .click();
+  await expect(
+    page.getByText("Could not load GitHub comments", { exact: true }),
+  ).toBeVisible();
+  const after = await page.evaluate(() => window.__BUZZ_E2E_COMMANDS__ ?? []);
+  expect(after.filter((command) => command === "list_github_pull_requests").length).toBe(listCallsBefore);
+  expect(after.filter((command) => command === "list_github_pull_request_comments").length).toBe(
+    commentCallsBefore + 1,
+  );
+});
+
+test("GitHub comment 404 clears the stale selection and keeps the list", async ({
+  page,
+}) => {
+  await enableProjectsFeature(page);
+  await page.addInitScript(() => {
+    window.__BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__ =
+      "https://github.com/acme/app";
+    window.__BUZZ_E2E_GITHUB_PULL_COMMENTS_ERROR__ = {
+      code: "github_pr_unavailable",
+      message: "Pull request is unavailable.",
+    };
+  });
+  await installMockBridge(page);
+  await openBuzzProject(page);
+  await page.getByRole("tab", { name: "Pull Request", exact: true }).click();
+  await page
+    .getByTestId("project-github-pull-request-row")
+    .first()
+    .getByRole("button", { name: "#42", exact: true })
+    .click();
+  await expect(page.getByText("Pull request not found.", { exact: true })).toBeVisible();
+  await expect(page.getByTestId("project-github-pull-request-row")).toHaveCount(1);
+  await expect(page.getByText("PR body from GitHub", { exact: true })).toHaveCount(0);
+});
+```
+
+Add `"**/github-pull-requests.spec.ts"` to the smoke `testMatch` list in `playwright.config.ts` next to `"**/github-issues.spec.ts"`.
+
+- [ ] **Step 3: Build the E2E app and verify RED before adding bridge behavior**
+
+Kill any stale process on port 4173 before building because Playwright reuses the existing preview server.
+
+```bash
+. ./bin/activate-hermit
+cd desktop
+pnpm build:e2e
+pnpm exec playwright test --project=smoke tests/e2e/github-pull-requests.spec.ts
+```
+
+Expected: FAIL because `list_github_pull_requests` is not handled by the mock bridge; do not weaken any UI assertion.
+
+- [ ] **Step 4: Add the minimal mock store and command stubs**
+
+Add these window fields beside the existing GitHub issue fields in `desktop/src/testing/e2eBridge.ts`.
 
 ```ts
 __BUZZ_E2E_GITHUB_PULLS_ERROR__?: { code: string; message: string };
@@ -2913,7 +3597,7 @@ __BUZZ_E2E_GITHUB_PULL_COMMENTS_ERROR__?: { code: string; message: string };
 __BUZZ_E2E_GITHUB_PULL_STORE__?: E2eGithubPullStore;
 ```
 
-Seed one open PR and two comments in GitHub order.
+Add these mock DTOs beside the GitHub issue mock DTOs.
 
 ```ts
 type E2eGithubPullUser = { login: string; avatar_url: string };
@@ -2941,7 +3625,11 @@ type E2eGithubPullStore = {
   pulls: E2eGithubPullDto[];
   commentsByNumber: Record<number, E2eGithubPullCommentDto[]>;
 };
+```
 
+Add this exact seed function.
+
+```ts
 function createDefaultE2eGithubPullStore(): E2eGithubPullStore {
   return {
     pulls: [
@@ -2985,186 +3673,116 @@ function createDefaultE2eGithubPullStore(): E2eGithubPullStore {
 }
 ```
 
-Handle the three commands next to the issue commands.
-`list_github_pull_requests` throws `__BUZZ_E2E_GITHUB_PULLS_ERROR__` when set and otherwise returns `{ pulls, has_more: false }`.
-`create_github_pull_request` appends the next number, uses the supplied title/body/head/base, and returns the created DTO.
-`list_github_pull_request_comments` throws `__BUZZ_E2E_GITHUB_PULL_COMMENTS_ERROR__` when set.
-
-- [ ] **Step 2: Write the smoke spec**
+Initialize the store once per `installMockBridge` call with this exact expression before the invoke switch is installed.
 
 ```ts
-import { expect, test } from "@playwright/test";
-
-import { installMockBridge } from "../helpers/bridge";
-
-async function enableProjectsFeature(page: import("@playwright/test").Page) {
-  await page.addInitScript(() => {
-    window.localStorage.setItem(
-      "buzz-feature-overrides-v1",
-      JSON.stringify({ projects: true }),
-    );
-  });
-}
-
-async function openBuzzProject(page: import("@playwright/test").Page) {
-  await page.goto("/", { waitUntil: "domcontentloaded" });
-  await page.getByTestId("open-projects-view").click();
-  await page.getByTestId("projects-section-projects").click();
-  const projectEntry = page
-    .locator(
-      '[data-testid="project-card-buzz"], [data-testid="project-row-buzz"]',
-    )
-    .first();
-  await expect(projectEntry).toBeVisible({ timeout: 10_000 });
-  await projectEntry.click();
-}
-
-async function openGithubPullRequests(page: import("@playwright/test").Page) {
-  await enableProjectsFeature(page);
-  await page.addInitScript(() => {
-    window.__BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__ =
-      "https://github.com/acme/app";
-  });
-  await installMockBridge(page);
-  await openBuzzProject(page);
-  await page.getByRole("tab", { name: "Pull Requests", exact: true }).click();
-}
-
-test("GitHub pull requests list metadata, load read-only detail, and create #N", async ({
-  page,
-}) => {
-  await openGithubPullRequests(page);
-  const row = page.getByTestId("project-github-pull-request-row").first();
-  await expect(row).toContainText("#42");
-  await expect(row).toContainText("Open");
-  await expect(row).toContainText("ada");
-  await expect(row).toContainText("feature → develop");
-
-  await row.getByRole("button", { name: "#42", exact: true }).click();
-  await expect(page.getByText("PR body from GitHub", { exact: true })).toBeVisible();
-  const comments = page.getByTestId("project-issue-comment-timeline-row");
-  await expect(comments).toHaveCount(2);
-  await expect(comments.nth(0)).toContainText("API-order first comment.");
-  await expect(comments.nth(1)).toContainText("API-order second comment.");
-  await expect(page.getByText("grace", { exact: true })).toBeVisible();
-  await expect(page.getByTestId("project-pull-request-comment-composer")).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Merge" })).toHaveCount(0);
-  await expect(page.getByRole("tab", { name: /Files changed/ })).toHaveCount(0);
-  await expect(page.getByTestId("pull-request-discussed-in")).toHaveCount(0);
-
-  await page.getByRole("tab", { name: /Commits/ }).click();
-  await expect(page.getByTestId("project-github-pull-request-commit-row")).toBeVisible();
-  await expect(page.getByTestId("project-github-pull-request-commit-row")).toContainText("ada");
-
-  await page.getByRole("tab", { name: "Pull Requests", exact: true }).click();
-  await page.getByRole("button", { name: "New pull request" }).click();
-  await page.getByTestId("create-pull-request-compare-branch").selectOption("main");
-  await page.getByTestId("create-pull-request-title").fill("New GitHub change");
-  await page.getByTestId("create-pull-request-body").fill("Created from Buzz");
-  await page.getByTestId("create-pull-request-submit").click();
-  await expect(page.getByText("New GitHub change", { exact: true })).toBeVisible({
-    timeout: 10_000,
-  });
-  await expect(page.getByText("#43", { exact: true })).toBeVisible();
-
-  const commands = await page.evaluate(() => window.__BUZZ_E2E_COMMANDS__ ?? []);
-  expect(commands).toContain("list_github_pull_requests");
-  expect(commands).toContain("list_github_pull_request_comments");
-  expect(commands).toContain("create_github_pull_request");
-  expect(commands).not.toContain("sign_project_pull_request_status");
-});
-
-test("GitHub pull-request auth failure renders recovery before empty state", async ({
-  page,
-}) => {
-  await enableProjectsFeature(page);
-  await page.addInitScript(() => {
-    window.__BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__ =
-      "https://github.com/acme/app";
-    window.__BUZZ_E2E_GITHUB_PULLS_ERROR__ = {
-      code: "github_auth_required",
-      message:
-        "Authenticate GitHub CLI with: gh auth login --hostname github.com",
-    };
-  });
-  await installMockBridge(page);
-  await openBuzzProject(page);
-  await page.getByRole("tab", { name: "Pull Requests", exact: true }).click();
-  await expect(page.getByText("GitHub authentication required")).toBeVisible({
-    timeout: 10_000,
-  });
-  await expect(page.getByText("No pull requests yet.")).toHaveCount(0);
-  await expect(page.getByText("No open pull requests.")).toHaveCount(0);
-  await expect(page.getByTestId("project-github-pull-request-row")).toHaveCount(0);
-});
-
-test("GitHub comment failure keeps the pull-request body and retries only comments", async ({
-  page,
-}) => {
-  await enableProjectsFeature(page);
-  await page.addInitScript(() => {
-    window.__BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__ =
-      "https://github.com/acme/app";
-    window.__BUZZ_E2E_GITHUB_PULL_COMMENTS_ERROR__ = {
-      code: "github_pulls_failed",
-      message: "Comment request failed.",
-    };
-  });
-  await installMockBridge(page);
-  await openBuzzProject(page);
-  await page.getByRole("tab", { name: "Pull Requests", exact: true }).click();
-  const row = page.getByTestId("project-github-pull-request-row").first();
-  await row.getByRole("button", { name: "#42", exact: true }).click();
-  await expect(page.getByText("PR body from GitHub", { exact: true })).toBeVisible();
-  await expect(
-    page.getByText("Could not load GitHub comments", { exact: true }),
-  ).toBeVisible();
-  await expect(
-    page.getByText("Could not load GitHub pull requests", { exact: true }),
-  ).toHaveCount(0);
-  const before = await page.evaluate(() => window.__BUZZ_E2E_COMMANDS__ ?? []);
-  const listCallsBefore = before.filter((command) => command === "list_github_pull_requests").length;
-  const commentCallsBefore = before.filter((command) => command === "list_github_pull_request_comments").length;
-  await page
-    .locator('[aria-labelledby="github-pull-request-comments-recovery-title"]')
-    .getByRole("button", { name: "Retry", exact: true })
-    .click();
-  await expect(
-    page.getByText("Could not load GitHub comments", { exact: true }),
-  ).toBeVisible();
-  const after = await page.evaluate(() => window.__BUZZ_E2E_COMMANDS__ ?? []);
-  expect(after.filter((command) => command === "list_github_pull_requests").length).toBe(listCallsBefore);
-  expect(after.filter((command) => command === "list_github_pull_request_comments").length).toBe(
-    commentCallsBefore + 1,
-  );
-});
+window.__BUZZ_E2E_GITHUB_PULL_STORE__ ??=
+  createDefaultE2eGithubPullStore();
 ```
 
-Add `"**/github-pull-requests.spec.ts"` to the smoke `testMatch` list in `playwright.config.ts` next to `"**/github-issues.spec.ts"`.
+Handle these cases beside the existing GitHub issue commands.
 
-- [ ] **Step 3: Run the smoke spec and existing Buzz PR coverage**
+```ts
+case "list_github_pull_requests": {
+  if (window.__BUZZ_E2E_GITHUB_PULLS_ERROR__) {
+    throw window.__BUZZ_E2E_GITHUB_PULLS_ERROR__;
+  }
+  const store = window.__BUZZ_E2E_GITHUB_PULL_STORE__;
+  if (!store) throw new Error("GitHub pull store was not initialized.");
+  return { pulls: store.pulls, has_more: false };
+}
+case "create_github_pull_request": {
+  const store = window.__BUZZ_E2E_GITHUB_PULL_STORE__;
+  if (!store) throw new Error("GitHub pull store was not initialized.");
+  const input = payload as {
+    cloneUrl: string;
+    title: string;
+    body: string;
+    head: string;
+    base: string;
+  };
+  const number = Math.max(0, ...store.pulls.map((pull) => pull.number)) + 1;
+  const pull: E2eGithubPullDto = {
+    number,
+    title: input.title,
+    body: input.body,
+    html_url: `https://github.com/acme/app/pull/${number}`,
+    draft: false,
+    comments: 0,
+    created_at: Math.floor(Date.now() / 1000),
+    updated_at: Math.floor(Date.now() / 1000),
+    user: { login: "mock-user", avatar_url: "" },
+    head: {
+      ref: input.head,
+      sha: "e".repeat(40),
+      repo: { full_name: "acme/app" },
+    },
+    base: { ref: input.base, repo: { full_name: "acme/app" } },
+  };
+  store.pulls.unshift(pull);
+  store.commentsByNumber[number] = [];
+  return pull;
+}
+case "list_github_pull_request_comments": {
+  if (window.__BUZZ_E2E_GITHUB_PULL_COMMENTS_ERROR__) {
+    throw window.__BUZZ_E2E_GITHUB_PULL_COMMENTS_ERROR__;
+  }
+  const store = window.__BUZZ_E2E_GITHUB_PULL_STORE__;
+  if (!store) throw new Error("GitHub pull store was not initialized.");
+  const number = (payload as { number: number }).number;
+  return store.commentsByNumber[number] ?? [];
+}
+```
 
-If port 4173 is already serving a stale build, kill it before `pnpm build:e2e`.
+The wrapper in Task 4 passes `{ cloneUrl, number }` directly, so the mock reads `number` from the top-level payload exactly as shown.
+
+- [ ] **Step 5: Remove obsolete GitHub-hosted Nostr merge UI scenarios**
+
+The approved host split means a `github.com` repository no longer renders the kind:1618 merge UI, so the existing GitHub merge scenarios in `desktop/tests/e2e/project-pr-review.spec.ts` contradict the new product behavior.
+Delete exactly these tests and the two-theme loop:
+
+- `sends GitHub merge payload unchanged through native boundary`
+- `GitHub merge success publishes one merged status`
+- `GitHub merged-status retry skips the merge command`
+- `GitHub CLI guidance persists with retry`
+- `GitHub blocked recovery opens the exact pull request and retries`
+- `GitHub branch changes require refresh without a stale merge action`
+- `GitHub ambiguous recovery opens the exact pull-request list`
+- `invalid GitHub recovery URLs never render an open action`
+- `renders GitHub merge recovery in buzz`
+- `renders GitHub merge recovery in buzz-dark`
+
+Delete `openClonedGitHubAlicePullRequest`, `confirmMerge`, `openedExternalUrls`, and the now-unused `KIND_GIT_PULL_REQUEST` constant.
+Keep `cloneMissingGitHubRepository`; the unrelated SCP-style clone coverage later in the file still uses it.
+Keep all Buzz-hosted review, merge-conflict, inline-comment, create, and authorization scenarios unchanged.
+Do not remove or modify the native merge implementation tests in `desktop/src-tauri/src/commands/project_github_pull_request/tests.rs`; P4 will adapt that tested capability to numeric GitHub PRs later.
+
+- [ ] **Step 6: Run focused E2E, preserved native merge tests, and verify GREEN**
+
+Kill any stale process on port 4173 before `pnpm build:e2e`.
 
 ```bash
 . ./bin/activate-hermit
+cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib project_github_pull_request
 cd desktop
 pnpm build:e2e
 pnpm exec playwright test --project=smoke tests/e2e/github-pull-requests.spec.ts tests/e2e/project-pr-review.spec.ts tests/e2e/github-issues.spec.ts
 ```
 
-Expected: GitHub list, detail, create, and auth recovery pass, and existing Buzz PR review plus GitHub issue specs stay green.
+Expected: GitHub list, read-only detail, create, auth recovery, comment retry, and comment-404 recovery pass; Buzz-hosted PR review coverage and GitHub issue coverage remain green; and the existing native GitHub merge core remains tested without exposing it on this P1/P2 UI path.
 
-- [ ] **Step 4: Format, inspect scope, and commit**
+- [ ] **Step 7: Format, inspect scope, and commit**
 
 ```bash
 . ./bin/activate-hermit
 cd desktop && pnpm exec biome check --write \
   src/testing/e2eBridge.ts \
   tests/e2e/github-pull-requests.spec.ts \
+  tests/e2e/project-pr-review.spec.ts \
   playwright.config.ts
 git add src/testing/e2eBridge.ts \
   tests/e2e/github-pull-requests.spec.ts \
+  tests/e2e/project-pr-review.spec.ts \
   playwright.config.ts
 git diff --check
 git commit -s -m "test(projects): cover GitHub pull request list and create"
@@ -3177,12 +3795,18 @@ git commit -s -m "test(projects): cover GitHub pull request list and create"
 On a GitHub-hosted project (`harness-service` or the e2e `https://github.com/acme/app` override), with `gh` installed and authenticated or with the mock bridge:
 
 - The Pull Request tab shows GitHub open PRs as `#N`, including drafts as Draft.
-- Creating a pull request creates a GitHub PR and does not publish kind:1618.
+- A raw first page of 100 PRs shows the muted `More open pull requests exist on GitHub.` note and does not add pagination controls.
+- Creating a pull request sends only title, exact body, same-repository head, and base to GitHub; a colon-qualified head is rejected before `gh` runs.
+- Creating a pull request does not query, sign, or publish kind:1618 and invalidates only the per-repository pull-request query.
 - Opening `#N` shows the body and read-only conversation comments in GitHub order.
+- A non-404 comment failure keeps the body and retries only comments; a comment 404 shows `Pull request not found.`, clears selection, and keeps the list.
 - Copy link copies `https://github.com/<owner>/<repo>/pull/<N>` when that URL is valid.
-- Merge, review writes, reviewers, the composer, and Files changed are not offered.
+- Commits shows exactly one head-SHA row, Checks keeps the empty-check copy, and Files changed is absent.
+- Merge, review writes, reviewers, the composer, Discussed in channels, origin reference, and the Nostr-only Update PR action are not offered.
+- Opening a GitHub PR never starts `get_project_repo_diff` or `get_project_local_repo_diff` against `refs/nostr/<N>`.
 - Without `gh` or without auth, the tab shows merge-style recovery, not `No pull requests yet.`
 - Buzz-hosted repositories still list and create kind:1618 only.
+- Existing native GitHub merge tests remain green, but the obsolete GitHub-hosted kind:1618 merge UI scenarios are removed from `project-pr-review.spec.ts` because P4 adaptation is out of scope.
 
 ## Validation Commands
 
@@ -3191,13 +3815,16 @@ Run from the worktree root after activating Hermit.
 ```bash
 . ./bin/activate-hermit
 cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib project_github_pulls
+cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib project_github_pull_request
 cd desktop
-pnpm test -- src/features/projects/projectPullRequests.test.mjs src/features/projects/lib/projectGithubPulls.test.mjs src/features/projects/lib/projectShareLinks.test.mjs src/features/projects/pullRequestMutations.test.mjs src/features/projects/pullRequestMutations.github.test.mjs src/features/projects/lib/projectGithubSync.test.mjs
+pnpm test -- src/features/projects/projectPullRequests.test.mjs src/features/projects/lib/projectGithubPulls.test.mjs src/features/projects/lib/projectShareLinks.test.mjs src/features/projects/pullRequestMutations.test.mjs src/features/projects/pullRequestMutations.github.test.mjs src/features/projects/lib/projectGithubSync.test.mjs src/features/projects/ui/GitHubProjectPullRequests.test.mjs
 pnpm typecheck
 pnpm check:file-sizes
 pnpm check:px-text
 pnpm build:e2e
 pnpm exec playwright test --project=smoke tests/e2e/github-pull-requests.spec.ts tests/e2e/project-pr-review.spec.ts tests/e2e/github-issues.spec.ts
+cd ..
+just ci
 ```
 
 Before final handoff, run GitNexus `detect_changes({ scope: "compare", base_ref: "main" })` when available.
@@ -3210,6 +3837,7 @@ Spec coverage:
 - Host split, auth, list, create, comments, share, identity, status, branches, errors, hidden chrome, query shape, invalidation, and tests each have a task.
 - P3/P4/P5, CLI, mobile, global list, and merge-command changes are excluded by Global Constraints.
 - `publishProjectPullRequestUpdate` skip for GitHub already exists and is covered by `projectGithubSync.test.mjs`.
+- Legacy GitHub-hosted kind:1618 merge UI tests are removed because they contradict the approved host split, while the existing native merge-core test module remains in the validation gate.
 
 Placeholder scan: no TBD, TODO, or "similar to Task N" steps remain.
 
@@ -3217,3 +3845,5 @@ Type consistency: Rust `GitHubPullRequestDto` / `GitHubPullRequestListDto.pulls`
 Selection ids are decimal strings.
 Query key remains `["project", id, "pull-requests"]`.
 Comment query key is `["project", id, "pull-requests", number, "comments"]`.
+
+Open questions: none.
