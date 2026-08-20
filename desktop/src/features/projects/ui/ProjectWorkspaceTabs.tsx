@@ -26,6 +26,7 @@ import {
   type ViewerGitIdentity,
 } from "@/features/projects/lib/projectContributorMatching";
 import { repositoryDiscussionQuery } from "@/features/projects/lib/discussionChannels";
+import type { ProjectDiscussionChannel } from "@/features/projects/lib/projectDiscussionChannel";
 import { isGitHubCloneUrl } from "@/features/projects/lib/projectGitError";
 import type { GithubIssueListState } from "@/features/projects/lib/projectGithubIssues";
 import { githubSplashHost } from "@/features/projects/lib/projectGithubRemoteView";
@@ -99,6 +100,7 @@ type UpdatePullRequestAction = {
 };
 
 export function WorkspaceTabs({
+  boundChannel,
   commitDiff,
   commitDiffError,
   commitDiffLoading,
@@ -142,6 +144,7 @@ export function WorkspaceTabs({
   terminalTitle,
   viewerGitIdentity,
 }: {
+  boundChannel: ProjectDiscussionChannel | null;
   commitDiff: ProjectRepoDiff | null | undefined;
   commitDiffError: unknown;
   commitDiffLoading: boolean;
@@ -643,7 +646,10 @@ export function WorkspaceTabs({
         </TabsContent>
 
         <TabsContent className="m-0" value="channels">
-          <DiscussionChannelsPanel query={repositoryDiscussionQuery(project)} />
+          <DiscussionChannelsPanel
+            boundChannel={boundChannel}
+            query={repositoryDiscussionQuery(project)}
+          />
         </TabsContent>
 
         <TabsContent className="m-0" value="contributors">

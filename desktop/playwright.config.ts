@@ -111,6 +111,7 @@ export default defineConfig({
         "**/project-commit-detail.spec.ts",
         "**/project-inbox.spec.ts",
         "**/projects-v3-screenshots.spec.ts",
+        "**/project-channel-routing.spec.ts",
         "**/project-issue-comments.spec.ts",
         "**/project-pr-review.spec.ts",
         "**/github-repo-state.spec.ts",

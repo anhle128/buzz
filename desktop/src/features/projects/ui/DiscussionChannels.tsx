@@ -14,6 +14,10 @@ import {
   discussionSnippet,
   groupDiscussionChannels,
 } from "@/features/projects/lib/discussionChannels";
+import {
+  mergeBoundDiscussionChannel,
+  type ProjectDiscussionChannel,
+} from "@/features/projects/lib/projectDiscussionChannel";
 import { relativeTime } from "@/features/projects/lib/projectsViewHelpers";
 import { useSearchMessagesQuery } from "@/features/search/hooks";
 import type { SearchHit } from "@/shared/api/searchTypes";
@@ -314,9 +318,23 @@ function ParticipantFacepile({
  * where the repository (or its PRs/issues) is linked in chat, with the
  * people who discussed it there.
  */
-export function DiscussionChannelsPanel({ query }: { query: string }) {
-  const { channels, isLoading, isTruncated } = useDiscussionChannels(query);
+export function DiscussionChannelsPanel({
+  boundChannel,
+  query,
+}: {
+  boundChannel: ProjectDiscussionChannel | null;
+  query: string;
+}) {
+  const {
+    channels: discoveredChannels,
+    isLoading,
+    isTruncated,
+  } = useDiscussionChannels(query);
   const { goChannel } = useAppNavigation();
+  const channels = React.useMemo(
+    () => mergeBoundDiscussionChannel(boundChannel, discoveredChannels),
+    [boundChannel, discoveredChannels],
+  );
   const channelName = useChannelNameLookup(channels.length > 0);
   const profilesQuery = useUsersBatchQuery(
     channels.flatMap((channel) => channel.participants),
@@ -324,7 +342,7 @@ export function DiscussionChannelsPanel({ query }: { query: string }) {
   );
   const profiles = profilesQuery.data?.profiles;
 
-  if (isLoading) {
+  if (isLoading && boundChannel === null) {
     return (
       <p className="px-4 py-6 text-sm text-muted-foreground">
         Searching channel discussions…
@@ -348,6 +366,7 @@ export function DiscussionChannelsPanel({ query }: { query: string }) {
       >
         {channels.map((channel) => {
           const name = channelName(channel.id, channel.name);
+          const isBound = boundChannel?.id === channel.id;
           const speakers = channel.participants
             .slice(0, 2)
             .map((pubkey) => resolveUserLabel({ profiles, pubkey }));
@@ -356,6 +375,9 @@ export function DiscussionChannelsPanel({ query }: { query: string }) {
             <li className="relative" key={channel.id}>
               <button
                 className="flex w-full min-w-0 items-center gap-2.5 px-4 py-3 text-left transition-colors hover:bg-muted/30"
+                data-testid={
+                  isBound ? "project-bound-discussion-channel" : undefined
+                }
                 onClick={() => void goChannel(channel.id)}
                 type="button"
               >
@@ -367,13 +389,17 @@ export function DiscussionChannelsPanel({ query }: { query: string }) {
                     #{name}
                   </span>
                   <span className="block truncate text-xs text-muted-foreground">
-                    {speakers.join(", ")}
-                    {others > 0
-                      ? ` and ${others} ${others === 1 ? "other" : "others"}`
-                      : ""}{" "}
-                    · {channel.messageCount}
-                    {isTruncated ? "+" : ""}{" "}
-                    {channel.messageCount === 1 ? "message" : "messages"}
+                    {isBound && channel.messageCount === 0
+                      ? "Linked discussion channel"
+                      : `${speakers.join(", ")}${
+                          others > 0
+                            ? ` and ${others} ${
+                                others === 1 ? "other" : "others"
+                              }`
+                            : ""
+                        } · ${channel.messageCount}${isTruncated ? "+" : ""} ${
+                          channel.messageCount === 1 ? "message" : "messages"
+                        }`}
                   </span>
                 </span>
                 <ParticipantFacepile
@@ -383,11 +409,17 @@ export function DiscussionChannelsPanel({ query }: { query: string }) {
                 <span
                   className="hidden w-20 shrink-0 text-right text-xs text-muted-foreground sm:block"
                   data-testid="project-channel-row-date"
-                  title={new Date(
-                    channel.lastActivityAt * 1_000,
-                  ).toLocaleString()}
+                  title={
+                    channel.lastActivityAt > 0
+                      ? new Date(
+                          channel.lastActivityAt * 1_000,
+                        ).toLocaleString()
+                      : undefined
+                  }
                 >
-                  {relativeTime(channel.lastActivityAt)}
+                  {channel.lastActivityAt > 0
+                    ? relativeTime(channel.lastActivityAt)
+                    : ""}
                 </span>
               </button>
             </li>
