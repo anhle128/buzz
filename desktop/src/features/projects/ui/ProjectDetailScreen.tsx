@@ -297,14 +297,14 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
     repository,
     activeBranch,
     activeRepoPullRequest,
-    repoSource === "remote",
+    repoSource === "remote" && !githubHosted,
   );
   const localRepoDiffQuery = useProjectLocalRepoDiffQuery(
     repository,
     activeCommunity?.reposDir,
     activeBranch,
     activeRepoPullRequest,
-    repoSource === "local" && Boolean(activeRepoPullRequest),
+    repoSource === "local" && Boolean(activeRepoPullRequest) && !githubHosted,
   );
   const commitDiffQuery = useProjectCommitDiffQuery(
     repository,
@@ -862,17 +862,19 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
                   reposDir: activeCommunity?.reposDir,
                 }}
                 updatePullRequestAction={
-                  openBranchPullRequest &&
-                  repoSyncStatusQuery.data?.remoteHead &&
-                  repoSyncStatusQuery.data.remoteHead !==
-                    openBranchPullRequest.commit
-                    ? {
-                        onUpdate: () => {
-                          void handleUpdatePullRequest();
-                        },
-                        pending: updatePullRequestMutation.isPending,
-                      }
-                    : undefined
+                  githubHosted
+                    ? undefined
+                    : openBranchPullRequest &&
+                        repoSyncStatusQuery.data?.remoteHead &&
+                        repoSyncStatusQuery.data.remoteHead !==
+                          openBranchPullRequest.commit
+                      ? {
+                          onUpdate: () => {
+                            void handleUpdatePullRequest();
+                          },
+                          pending: updatePullRequestMutation.isPending,
+                        }
+                      : undefined
                 }
                 localSnapshot={localRepoSnapshotQuery.data}
                 localSnapshotError={localRepoSnapshotQuery.error}
@@ -908,7 +910,11 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
                 repoDiffLoading={displayedRepoDiffLoading}
                 pullRequests={pullRequests}
                 pullRequestsError={pullRequestsQuery.error}
+                pullRequestsFetching={pullRequestsQuery.isFetching}
+                pullRequestsHasMore={pullRequestsQuery.data?.hasMore ?? false}
                 pullRequestsLoading={pullRequestsQuery.isLoading}
+                pullRequestsSuccess={pullRequestsQuery.isSuccess}
+                onRetryPullRequests={() => void pullRequestsQuery.refetch()}
                 repoContributors={repoContributors}
                 repoHost={repoRemote.host}
                 repoSource={repoSource}

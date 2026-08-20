@@ -28,6 +28,10 @@ import {
 import { repositoryDiscussionQuery } from "@/features/projects/lib/discussionChannels";
 import { isGitHubCloneUrl } from "@/features/projects/lib/projectGitError";
 import type { GithubIssueListState } from "@/features/projects/lib/projectGithubIssues";
+import {
+  githubPullRequestDetailTab,
+  selectedGithubPullRequestAfterListLoad,
+} from "@/features/projects/lib/projectGithubPullRequests";
 import { githubSplashHost } from "@/features/projects/lib/projectGithubRemoteView";
 import type { ProjectRepoHost } from "@/features/projects/lib/projectRepoHost";
 import {
@@ -77,6 +81,13 @@ import {
   CreateIssueDialog,
   type CreateIssueDialogInput,
 } from "./CreateIssueDialog";
+import {
+  GitHubPullRequestDetail,
+  GitHubPullRequestsPanel,
+} from "./GitHubProjectPullRequests";
+
+const EMPTY_COMMIT_AUTHOR_PUBKEYS = new Map<string, string>();
+const EMPTY_SIGNED_PULL_REQUESTS: ProjectPullRequest[] = [];
 
 type CreatePullRequestAction = {
   projects: Project[];
@@ -120,7 +131,11 @@ export function WorkspaceTabs({
   selectedPullRequestId,
   pullRequests,
   pullRequestsError,
+  pullRequestsFetching,
+  pullRequestsHasMore,
   pullRequestsLoading,
+  pullRequestsSuccess,
+  onRetryPullRequests,
   githubIssueListState,
   onGithubIssueListStateChange,
   onSelectedCommitHashChange,
@@ -165,7 +180,11 @@ export function WorkspaceTabs({
   selectedPullRequestId: string | null;
   pullRequests: ProjectPullRequest[];
   pullRequestsError: unknown;
+  pullRequestsFetching: boolean;
+  pullRequestsHasMore: boolean;
   pullRequestsLoading: boolean;
+  pullRequestsSuccess: boolean;
+  onRetryPullRequests: () => void;
   githubIssueListState: GithubIssueListState;
   onGithubIssueListStateChange: (state: GithubIssueListState) => void;
   onSelectedCommitHashChange: (hash: string | null) => void;
@@ -232,9 +251,15 @@ export function WorkspaceTabs({
   const repositoryLoaded =
     gitDataState === "available" || gitDataState === "empty";
   const commitAuthorPubkeys = React.useMemo(
-    () => commitAuthorPubkeysFromPullRequests(pullRequests),
-    [pullRequests],
+    () =>
+      githubHosted
+        ? EMPTY_COMMIT_AUTHOR_PUBKEYS
+        : commitAuthorPubkeysFromPullRequests(pullRequests),
+    [githubHosted, pullRequests],
   );
+  const activityPullRequests = githubHosted
+    ? EMPTY_SIGNED_PULL_REQUESTS
+    : pullRequests;
   const selectedPullRequest =
     pullRequests.find(
       (pullRequest) => pullRequest.id === selectedPullRequestId,
@@ -273,6 +298,33 @@ export function WorkspaceTabs({
   React.useEffect(() => {
     onSelectedTabChange?.(selectedTab);
   }, [onSelectedTabChange, selectedTab]);
+
+  React.useEffect(() => {
+    if (!githubHosted) return;
+    const nextSelectedPullRequestId = selectedGithubPullRequestAfterListLoad({
+      selectedPullRequestId,
+      pullRequestIds: pullRequests.map((item) => item.id),
+      isSuccess: pullRequestsSuccess,
+      isFetching: pullRequestsFetching,
+    });
+    if (nextSelectedPullRequestId !== selectedPullRequestId) {
+      onSelectedPullRequestIdChange(nextSelectedPullRequestId);
+    }
+  }, [
+    githubHosted,
+    onSelectedPullRequestIdChange,
+    pullRequests,
+    pullRequestsFetching,
+    pullRequestsSuccess,
+    selectedPullRequestId,
+  ]);
+
+  React.useEffect(() => {
+    const nextTab = githubPullRequestDetailTab(selectedTab, githubHosted);
+    if (nextTab !== selectedTab) {
+      setSelectedTab(nextTab);
+    }
+  }, [githubHosted, selectedTab]);
 
   React.useEffect(() => {
     if (isPullRequestSelected) {
@@ -462,70 +514,88 @@ export function WorkspaceTabs({
         ) : null}
         {sectionHeader}
         {selectedPullRequest ? (
-          <div className={PROJECT_DETAIL_PANEL_CLASS} data-project-detail-panel>
-            {/* Two full-height columns: the meta rail runs all the way to the
-              top of the card, alongside the header and tabs. */}
-            <div className="grid xl:grid-cols-[minmax(0,1fr)_18rem]">
-              <div className="min-w-0">
-                <PullRequestDetailHeader
-                  profiles={profiles}
-                  pullRequest={selectedPullRequest}
-                />
-                <div className="border-b border-border/60 px-4">
-                  <PullRequestTabsList
-                    filesCount={repoDiff?.files.length ?? files.length}
-                    pullRequest={selectedPullRequest}
-                  />
-                </div>
-                {(["conversation", "commits", "checks"] as const).map(
-                  (mode) => (
-                    <TabsContent
-                      className="m-0"
-                      key={mode}
-                      value={`pr-${mode}`}
-                    >
-                      <PullRequestsPanel
-                        error={pullRequestsError}
-                        isLoading={pullRequestsLoading}
-                        mode={mode}
-                        onOpenInlineComment={handleOpenPullRequestComment}
-                        onOpenCommit={onSelectedCommitHashChange}
-                        onOpenTerminal={onOpenMergeRecoveryTerminal}
-                        onSelectedPullRequestIdChange={
-                          onSelectedPullRequestIdChange
-                        }
-                        profiles={profiles}
-                        project={project}
-                        pullRequests={pullRequests}
-                        selectedPullRequestId={selectedPullRequestId}
-                      />
-                    </TabsContent>
-                  ),
-                )}
-                <TabsContent className="m-0" value="pr-files">
-                  <ProjectPullRequestFilesChangedPanel
-                    diff={repoDiff}
-                    error={repoDiffError}
-                    focusedAnchor={
-                      pullRequestCommentTarget?.pullRequestId ===
-                      selectedPullRequestId
-                        ? pullRequestCommentTarget.anchor
-                        : null
-                    }
-                    isLoading={repoDiffLoading}
-                    profiles={profiles}
-                    project={project}
-                    pullRequest={selectedPullRequest}
-                  />
-                </TabsContent>
-              </div>
-              <PullRequestMetaRail
-                profiles={profiles}
+          githubHosted ? (
+            <div
+              className={PROJECT_DETAIL_PANEL_CLASS}
+              data-project-detail-panel
+            >
+              <GitHubPullRequestDetail
+                onOpenCommit={onSelectedCommitHashChange}
+                onSelectedPullRequestIdChange={onSelectedPullRequestIdChange}
                 project={project}
                 pullRequest={selectedPullRequest}
               />
             </div>
-          </div>
+          ) : (
+            <div
+              className={PROJECT_DETAIL_PANEL_CLASS}
+              data-project-detail-panel
+            >
+              {/* Two full-height columns: the meta rail runs all the way to the
+              top of the card, alongside the header and tabs. */}
+              <div className="grid xl:grid-cols-[minmax(0,1fr)_18rem]">
+                <div className="min-w-0">
+                  <PullRequestDetailHeader
+                    profiles={profiles}
+                    pullRequest={selectedPullRequest}
+                  />
+                  <div className="border-b border-border/60 px-4">
+                    <PullRequestTabsList
+                      filesCount={repoDiff?.files.length ?? files.length}
+                      githubHosted={false}
+                      pullRequest={selectedPullRequest}
+                    />
+                  </div>
+                  {(["conversation", "commits", "checks"] as const).map(
+                    (mode) => (
+                      <TabsContent
+                        className="m-0"
+                        key={mode}
+                        value={`pr-${mode}`}
+                      >
+                        <PullRequestsPanel
+                          error={pullRequestsError}
+                          isLoading={pullRequestsLoading}
+                          mode={mode}
+                          onOpenInlineComment={handleOpenPullRequestComment}
+                          onOpenCommit={onSelectedCommitHashChange}
+                          onOpenTerminal={onOpenMergeRecoveryTerminal}
+                          onSelectedPullRequestIdChange={
+                            onSelectedPullRequestIdChange
+                          }
+                          profiles={profiles}
+                          project={project}
+                          pullRequests={pullRequests}
+                          selectedPullRequestId={selectedPullRequestId}
+                        />
+                      </TabsContent>
+                    ),
+                  )}
+                  <TabsContent className="m-0" value="pr-files">
+                    <ProjectPullRequestFilesChangedPanel
+                      diff={repoDiff}
+                      error={repoDiffError}
+                      focusedAnchor={
+                        pullRequestCommentTarget?.pullRequestId ===
+                        selectedPullRequestId
+                          ? pullRequestCommentTarget.anchor
+                          : null
+                      }
+                      isLoading={repoDiffLoading}
+                      profiles={profiles}
+                      project={project}
+                      pullRequest={selectedPullRequest}
+                    />
+                  </TabsContent>
+                </div>
+                <PullRequestMetaRail
+                  profiles={profiles}
+                  project={project}
+                  pullRequest={selectedPullRequest}
+                />
+              </div>
+            </div>
+          )
         ) : null}
 
         <TabsContent className="m-0" value="overview">
@@ -575,7 +645,7 @@ export function WorkspaceTabs({
                 onSelectedCommitHashChange(commit.hash)
               }
               profiles={profiles}
-              pullRequests={pullRequests}
+              pullRequests={activityPullRequests}
               repoContributors={displayedContributors}
               snapshot={displayedSnapshot}
               viewerGitIdentity={viewerGitIdentity}
@@ -588,17 +658,28 @@ export function WorkspaceTabs({
           data-project-detail-panel
           value="prs"
         >
-          <PullRequestsPanel
-            error={pullRequestsError}
-            isLoading={pullRequestsLoading}
-            onOpenCommit={onSelectedCommitHashChange}
-            onOpenTerminal={onOpenMergeRecoveryTerminal}
-            onSelectedPullRequestIdChange={onSelectedPullRequestIdChange}
-            profiles={profiles}
-            project={project}
-            pullRequests={pullRequests}
-            selectedPullRequestId={selectedPullRequestId}
-          />
+          {githubHosted ? (
+            <GitHubPullRequestsPanel
+              error={pullRequestsError}
+              hasMore={pullRequestsHasMore}
+              isLoading={pullRequestsLoading}
+              onRetry={onRetryPullRequests}
+              onSelectedPullRequestIdChange={onSelectedPullRequestIdChange}
+              pullRequests={pullRequests}
+            />
+          ) : (
+            <PullRequestsPanel
+              error={pullRequestsError}
+              isLoading={pullRequestsLoading}
+              onOpenCommit={onSelectedCommitHashChange}
+              onOpenTerminal={onOpenMergeRecoveryTerminal}
+              onSelectedPullRequestIdChange={onSelectedPullRequestIdChange}
+              profiles={profiles}
+              project={project}
+              pullRequests={pullRequests}
+              selectedPullRequestId={selectedPullRequestId}
+            />
+          )}
         </TabsContent>
 
         <TabsContent

@@ -71,18 +71,26 @@ const PR_TAB_TRIGGER_CLASS =
 
 export function PullRequestTabsList({
   filesCount,
+  githubHosted,
   pullRequest,
 }: {
   filesCount: number;
+  githubHosted: boolean;
   pullRequest: ProjectPullRequest;
 }) {
-  const commitCount = Math.max(1, pullRequest.updateCount + 1);
+  const conversationCount = Math.max(
+    pullRequest.commentCount,
+    pullRequest.comments.length,
+  );
+  const commitCount = githubHosted
+    ? 1
+    : Math.max(1, pullRequest.updateCount + 1);
   return (
     <TabsList className="h-9 w-fit justify-start gap-6 bg-transparent p-0">
       <TabsTrigger className={PR_TAB_TRIGGER_CLASS} value="pr-conversation">
         Conversation
         <span className="rounded-full bg-muted px-1.5 py-0.5 text-2xs">
-          {pullRequest.comments.length}
+          {conversationCount}
         </span>
       </TabsTrigger>
       <TabsTrigger className={PR_TAB_TRIGGER_CLASS} value="pr-commits">
@@ -95,12 +103,14 @@ export function PullRequestTabsList({
         Checks
         <span className="rounded-full bg-muted px-1.5 py-0.5 text-2xs">0</span>
       </TabsTrigger>
-      <TabsTrigger className={PR_TAB_TRIGGER_CLASS} value="pr-files">
-        Files changed
-        <span className="rounded-full bg-muted px-1.5 py-0.5 text-2xs">
-          {filesCount}
-        </span>
-      </TabsTrigger>
+      {githubHosted ? null : (
+        <TabsTrigger className={PR_TAB_TRIGGER_CLASS} value="pr-files">
+          Files changed
+          <span className="rounded-full bg-muted px-1.5 py-0.5 text-2xs">
+            {filesCount}
+          </span>
+        </TabsTrigger>
+      )}
     </TabsList>
   );
 }
