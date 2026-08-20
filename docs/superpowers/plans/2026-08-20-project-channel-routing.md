@@ -3,139 +3,125 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task.
 > Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Route Desktop Projects discussion navigation to the bound `buzz-channel` (selected repository first, then the project container) so Open Discussion and the Channels tab open a real Stream channel instead of a dead label or FTS-only empty state.
+**Goal:** Route the Desktop Projects Open Discussion control and Channels tab to the resolvable `buzz-channel` bound to the selected repository, falling back to the project container binding.
 
-**Architecture:** Keep `buzz-channel` as NIP-MP metadata, not an `h` routing tag.
-Add a pure resolver that maps repository/project bindings onto a channel the viewer can actually see, then wire that result into the project chrome button and the Channels tab.
-Do not post git events into chat, do not auto-create branch channels, and do not change relay ingest.
+**Architecture:** Keep `buzz-channel` as NIP-MP metadata and resolve it only against the viewer-readable channel list returned by `useChannelsQuery`.
+The pure resolver applies repository-first precedence, rejects malformed, unavailable, archived, and DM channels, and supplies one resolved channel to both project surfaces.
+The project screen passes that resolved value through the existing chrome `actions` slot and the workspace Channels tab without changing relay routing, event writers, or share-link vocabulary.
 
-**Tech Stack:** Desktop TypeScript, React 19, TanStack Router `goChannel`, Node `node:test` (`*.test.mjs`), Playwright mock-bridge smoke, Biome, Hermit, `just`.
+**Tech Stack:** Desktop TypeScript, React 19, TanStack Query, TanStack Router, Node `node:test`, Playwright mock bridge, Biome, Hermit, and `just`.
 
-**Spec:** The named design file `docs/superpowers/specs/2026-08-20-buzz-project-channel-routing-design.md` is not in this tree.
-This plan is the executable contract.
-Requirements come from [VISION_PROJECTS.md](../../../VISION_PROJECTS.md), [NIP-MP](../../nips/NIP-MP.md) (`buzz-channel` is metadata; unresolvable values must not become broken links), GitHub issue [#3611](https://github.com/block/buzz/issues/3611), and the current Desktop writers/readers in `projectCreation.ts`, `projectRepositoryCreation.ts`, and `projectModels.ts`.
+**Spec:** [docs/nips/NIP-MP.md](../../nips/NIP-MP.md), especially Metadata interpretation, Authority, and Routing.
 
-**Product contract:** [VISION.md](../../../VISION.md) says the app is the channels where the work happens.
-[VISION_PROJECTS.md](../../../VISION_PROJECTS.md) documents `buzz-channel` as the project/repo discussion binding.
-[NIP-MP](../../nips/NIP-MP.md) forbids treating that tag as channel scope and forbids dropping a project or showing a broken link when the UUID cannot be resolved.
+**Approved brainstorm input:** `2026-08-20-buzz-project-channel-routing-design`.
+
+**Design provenance:** The workflow record contains the approved brainstorm name but no standalone design file, so the approved implementation decisions are repeated explicitly in this plan.
 
 ## Global Constraints
 
-- Desktop only.
-- Canonical tag is `buzz-channel`.
-- Do not write `h` or `project-channel` on kind:30617 or kind:30621.
-- Do not change relay ingest, git push policy, or `crates/buzz-relay/src/api/git/binding.rs`.
-- Do not change CLI `buzz repos bind` / `buzz repos create --channel` except if a test fixture needs a UUID.
-- Do not auto-create a channel per branch.
-- Do not publish kind:9/11 messages for pushes, PRs, or issues.
-- Do not change `buzz://` share-link vocabulary: `tab=channels` still means the Projects workspace Channels tab.
-- Do not add mobile routing.
-- Do not add web client routing.
-- Selected repository `channelId` wins over `project.projectChannelId`.
-- Hide Open Discussion when the bound UUID is missing, malformed, archived, a DM, or absent from the viewer's channel list.
-- Open channels the viewer has not joined still count as resolvable if they appear in `useChannelsQuery` data.
-- `ProjectDetailScreen.tsx` must stay at or under the 1000-line ratchet.
-- `ProjectWorkspaceTabs.tsx` must stay at or under the 1000-line ratchet.
-- New public TypeScript exports need a doc comment.
-- Activate Hermit in every shell: `. ./bin/activate-hermit && …`.
-- CWD does not persist across tool calls.
-- Sign every commit with `git commit -s`.
-- TDD: write the named failing test, run it red, write the minimum code, run it green, then refactor.
-- Do not implement a later task's production code to make an earlier task pass.
+- Desktop is the only product surface in scope.
+- `buzz-channel` is the only canonical project and repository discussion-binding tag.
+- Do not add `h` or `project-channel` tags to kind:30617 or kind:30621 events.
+- Do not change `desktop/src/features/projects/projectCreation.ts` or `desktop/src/features/projects/projectRepositoryCreation.ts`; both current writers already emit `buzz-channel`.
+- Do not change `desktop/src/features/projects/projectModels.ts`; current readers already parse valid `buzz-channel` values into `repository.channelId` and `project.projectChannelId`.
+- Do not change relay ingest, git transport, git push policy, CLI commands, mobile, or the web client.
+- Do not change the meaning of `buzz://project?...&tab=channels` or `buzz://repo?...&tab=channels`; those links continue to open the Projects workspace Channels tab.
+- The selected repository's resolvable `channelId` wins over `project.projectChannelId`.
+- If the selected repository binding is absent or unusable, fall back to the project binding.
+- A binding is usable only when it is a valid UUID, appears in `useChannelsQuery` data, has `archivedAt === null`, and has `channelType !== "dm"`.
+- Stream and forum channels are both valid because the existing project creation and repository management UIs allow every non-DM access channel.
+- An open channel the viewer has not joined is valid when it appears in `useChannelsQuery` data; the resolver must not inspect `isMember`.
+- When NIP-50 finds no repository mentions, the bound channel still appears first in the Channels tab with the secondary label `Linked discussion channel`.
+- When NIP-50 already found the bound channel, move that existing row first and preserve its hit count, activity time, and participants.
+- When no binding resolves, render no Open Discussion control and preserve the current FTS-only Channels tab behavior.
+- The Open Discussion control uses a Hash icon, `aria-label="Open Discussion"`, and `data-testid="project-open-discussion"`.
+- Use the existing `ProjectDetailChrome.actions` slot so the control renders immediately before `ShareLinkButton` without adding a new chrome API.
+- `ProjectDetailScreen.tsx` and `ProjectWorkspaceTabs.tsx` must remain at or below the repository's 1000-line ceiling.
+- Every new public TypeScript export needs a doc comment.
+- Activate Hermit before every Git or validation command with `. ./bin/activate-hermit && ...`.
+- Create every commit with `git commit -s`.
+- Follow TDD for each behavior: add the named failing test, run it and confirm the expected failure, implement only that task, and run the same test green.
+- Do not add production code for a later task to make an earlier task pass.
+
+## Verified Repository Facts
+
+- `desktop/src/features/projects/projectCreation.ts` writes the same access-channel UUID to both the initial kind:30617 repository and kind:30621 project as `buzz-channel`.
+- `desktop/src/features/projects/projectRepositoryCreation.ts` preserves and updates repository `buzz-channel` metadata.
+- `desktop/src/features/projects/projectModels.ts` reads only `buzz-channel`, validates it with `isValidProjectChannelId`, and exposes it as `Repository.channelId` and `Project.projectChannelId`.
+- `desktop/src/features/projects/ui/ProjectDetailScreen.tsx` selects the active repository with `selectProjectRepository` and already owns `goChannel`.
+- `desktop/src/features/projects/ui/DiscussionChannels.tsx` currently derives the Channels tab only from NIP-50 search hits.
+- `desktop/src/features/channels/hooks.ts` exposes the viewer-readable channel list through `useChannelsQuery`.
+- `desktop/src/features/projects/ui/ProjectDetailChrome.tsx` already renders its optional `actions` node immediately before `ShareLinkButton`.
+- `desktop/src/testing/e2eBridge.ts` binds the mock `buzz` repository to `9a1657ac-f7aa-5db0-b632-d8bbeb6dfb50` (`#general`) while the mock kind:30621 project has no `buzz-channel`, which proves repository-first routing without changing fixtures.
+- `desktop/tests/e2e/projects-v3-screenshots.spec.ts` currently asserts that Open Discussion is absent, so that assertion must become positive in the chrome task.
 
 ## GitNexus Gates
 
-GitNexus MCP tools and `.gitnexus/run.cjs` are absent in this planning session.
-The implementation session must still follow the repository GitNexus policy in AGENTS.md.
-
-- Before changing an existing function, class, method, or exported type, run `impact({ target: "<symbol>", direction: "upstream" })`.
-- Report direct callers, affected execution flows, and the returned risk before editing.
-- Stop before editing if risk is HIGH or CRITICAL.
-- If the implementation session has no GitNexus index, run `npx gitnexus analyze`, then resume in a session where the GitNexus MCP tools are loaded.
-- `rg` is useful corroborating evidence but is not a substitute for the required GitNexus impact call.
-- Before each commit, stage the task files and run `detect_changes({ scope: "staged" })`.
+- Before editing an existing function, class, method, or exported type, run `impact({ target: "<symbol>", direction: "upstream" })` and report direct callers, affected processes, and risk.
+- Stop and warn the user before editing when GitNexus reports HIGH or CRITICAL risk.
+- If the index is stale and `.gitnexus/run.cjs` exists, run `. ./bin/activate-hermit && node .gitnexus/run.cjs analyze` from the repository root.
+- If no `.gitnexus/run.cjs` exists, run `. ./bin/activate-hermit && npx gitnexus analyze` from the repository root before retrying the MCP call.
+- Before every commit, stage only that task's files and run `detect_changes({ scope: "staged" })`.
 - Before final handoff, run `detect_changes({ scope: "compare", base_ref: "main" })`.
-- There is no GitNexus CLI `detect` command, so do not run `node .gitnexus/run.cjs detect`.
-- If `detect_changes` is unavailable, stop before the commit, leave the changes uncommitted, and do not begin the next task until the repository gate is available.
+- If a required GitNexus MCP call remains unavailable after refreshing the index, stop before editing or committing rather than substituting `rg` for the repository gate.
 
-## Resolved Implementation Decisions
+## File Map
 
-- Resolver file is `desktop/src/features/projects/lib/projectDiscussionChannel.ts`.
-- Hook file is `desktop/src/features/projects/useProjectDiscussionChannel.ts`.
-- Button file is `desktop/src/features/projects/ui/OpenDiscussionButton.tsx`.
-- Accessible name is exactly `Open Discussion` (aria-label), matching `projects-v3-screenshots.spec.ts` and issue #3611.
-- Chrome control is an icon button with a Hash icon, height `h-7`, same chrome treatment as `ShareLinkButton`.
-- Test id is `project-open-discussion`.
-- Bound channel on the Channels tab is labeled `Linked discussion channel` when it has zero FTS hits.
-- Legacy implicit projects copy `repository.channelId` into `project.projectChannelId`.
-- `getDiscussionLabel` takes `ProjectDiscussionChannel | null`, not `Project`.
-- `desktop/src/features/projects/lib/projectLabels.ts` re-exports `getDiscussionLabel` from the resolver module.
-- Mock kind:30621 for `buzz` does not need a new tag for the happy-path e2e: the mock kind:30617 already binds `9a1657ac-f7aa-5db0-b632-d8bbeb6dfb50` (`general`).
-- `projects-v3-screenshots.spec.ts` currently asserts Open Discussion is absent; this plan reverses that assertion.
+| File | Responsibility |
+|---|---|
+| Create: `desktop/src/features/projects/lib/projectDiscussionChannel.ts` | Pure repository-first channel resolver and bound-row merge |
+| Create: `desktop/src/features/projects/lib/projectDiscussionChannel.test.mjs` | Resolver and merge unit coverage |
+| Create: `desktop/src/features/projects/useProjectDiscussionChannel.ts` | React hook over `useChannelsQuery` |
+| Modify: `desktop/src/features/projects/ui/DiscussionChannels.tsx` | Merge and render the bound channel in the Channels tab |
+| Modify: `desktop/src/features/projects/ui/ProjectWorkspaceTabs.tsx` | Carry the resolved channel into `DiscussionChannelsPanel` |
+| Modify: `desktop/src/features/projects/ui/ProjectDetailScreen.tsx` | Resolve once and feed both routing surfaces |
+| Create: `desktop/src/features/projects/ui/OpenDiscussionButton.tsx` | Icon control for opening the resolved channel |
+| Create: `desktop/tests/e2e/project-channel-routing.spec.ts` | Mock-bridge routing tests for the Channels row and chrome control |
+| Modify: `desktop/tests/e2e/projects-v3-screenshots.spec.ts` | Update the screenshot contract to require Open Discussion |
+| Modify: `desktop/playwright.config.ts` | Register the new smoke spec |
 
-## File map
+## Out of Scope
 
-| File | Role |
-|------|------|
-| Create: `desktop/src/features/projects/lib/projectDiscussionChannel.ts` | Pure resolver + Channels-tab merge |
-| Create: `desktop/src/features/projects/lib/projectDiscussionChannel.test.mjs` | Unit tests for resolver, merge, labels |
-| Modify: `desktop/src/features/projects/lib/projectLabels.ts` | Label helper consumes the resolver result |
-| Modify: `desktop/src/features/projects/projectModels.ts` | Legacy implicit projects inherit repo `channelId` |
-| Modify: `desktop/src/features/projects/projectModels.test.mjs` | Cover legacy `projectChannelId` inheritance |
-| Create: `desktop/src/features/projects/useProjectDiscussionChannel.ts` | Hook over `useChannelsQuery` |
-| Create: `desktop/src/features/projects/ui/OpenDiscussionButton.tsx` | Chrome control |
-| Modify: `desktop/src/features/projects/ui/ProjectDetailChrome.tsx` | Render the control left of share |
-| Modify: `desktop/src/features/projects/ui/ProjectDetailScreen.tsx` | Resolve + `goChannel` + pass bound id into tabs |
-| Modify: `desktop/src/features/projects/ui/ProjectWorkspaceTabs.tsx` | Pass bound id into the Channels panel |
-| Modify: `desktop/src/features/projects/ui/DiscussionChannels.tsx` | Pin bound channel; keep FTS rows |
-| Modify: `desktop/tests/e2e/projects-v3-screenshots.spec.ts` | Expect Open Discussion to exist |
-| Create: `desktop/tests/e2e/project-channel-routing.spec.ts` | Smoke: button opens `#general` |
-| Modify: `desktop/playwright.config.ts` | Register the smoke spec |
-
-## Out of scope
-
-- Branch-as-channel creation from VISION_PROJECTS.
-- Routing git ref updates, CI, or NIP-34 issues/PRs into Stream as messages.
-- Changing `tab=channels` share links to call `goChannel`.
-- Web, mobile, CLI bind UX, relay ACL, or NIP-MP envelope rules.
-- Restoring Desktop readers for `h` / `project-channel` (writers already emit `buzz-channel`; `projectModels.ts` already reads only `buzz-channel`).
+- Legacy model changes such as copying `Repository.channelId` into `Project.projectChannelId` for implicit projects are unnecessary because the resolver receives the selected repository directly.
+- `desktop/src/features/projects/lib/projectLabels.ts` is unused and is not part of routing.
+- Branch-channel creation, archive automation, and git-event fan-in to Stream remain future work from `VISION_PROJECTS.md`.
+- Changing the relay's global-only handling of kind:30621 is forbidden.
+- Auto-creating channels or publishing chat messages is forbidden.
 
 ---
 
-### Task 1: Resolve the bound discussion channel
+### Task 1: Resolve and merge the discussion channel
 
 **Files:**
+
 - Create: `desktop/src/features/projects/lib/projectDiscussionChannel.ts`
 - Create: `desktop/src/features/projects/lib/projectDiscussionChannel.test.mjs`
-- Modify: `desktop/src/features/projects/lib/projectLabels.ts`
-- Modify: `desktop/src/features/projects/projectModels.ts` (`repositoryToLegacyProject`)
-- Modify: `desktop/src/features/projects/projectModels.test.mjs`
 
 **Interfaces:**
-- Consumes: `isValidProjectChannelId` from `desktop/src/features/projects/projectModels.ts`, `DiscussionChannel` from `desktop/src/features/projects/lib/discussionChannels.ts`, `Channel` from `desktop/src/shared/api/types.ts`
-- Produces:
-  - `export type ProjectDiscussionChannel = { id: string; name: string; source: "repository" | "project" }`
-  - `export function resolveProjectDiscussionChannel(input: { repositoryChannelId: string | null | undefined; projectChannelId: string | null | undefined; channels: readonly Pick<Channel, "id" | "name" | "archivedAt" | "channelType">[] }): ProjectDiscussionChannel | null`
-  - `export function mergeBoundDiscussionChannel(bound: ProjectDiscussionChannel | null, discovered: readonly DiscussionChannel[]): DiscussionChannel[]`
-  - `export function getDiscussionLabel(channel: ProjectDiscussionChannel | null): string`
 
-- [ ] **Step 1: Write the failing tests**
+- Consumes: `isValidProjectChannelId` from `desktop/src/features/projects/projectModels.ts`.
+- Consumes: `DiscussionChannel` from `desktop/src/features/projects/lib/discussionChannels.ts`.
+- Consumes: `Channel` from `desktop/src/shared/api/types.ts`.
+- Produces: `export type ProjectDiscussionChannel = { id: string; name: string }`.
+- Produces: `resolveProjectDiscussionChannel(input): ProjectDiscussionChannel | null` with the exact signature below.
+- Produces: `mergeBoundDiscussionChannel(bound, discovered): DiscussionChannel[]` with the exact signature below.
 
-Create `desktop/src/features/projects/lib/projectDiscussionChannel.test.mjs` with this full content:
+- [ ] **Step 1: Write the failing resolver and merge tests**
+
+Create `desktop/src/features/projects/lib/projectDiscussionChannel.test.mjs` with this complete content:
 
 ```js
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
-  getDiscussionLabel,
   mergeBoundDiscussionChannel,
   resolveProjectDiscussionChannel,
 } from "./projectDiscussionChannel.ts";
 
 const GENERAL = "9a1657ac-f7aa-5db0-b632-d8bbeb6dfb50";
 const DESIGN = "9a1657ac-f7aa-5db0-b632-d8bbeb6dfb51";
-const NOT_A_UUID = "general";
+const MISSING = "11111111-1111-4111-8111-111111111111";
 
 function channel(id, overrides = {}) {
   return {
@@ -147,55 +133,67 @@ function channel(id, overrides = {}) {
   };
 }
 
-test("repository binding wins over project binding", () => {
-  const resolved = resolveProjectDiscussionChannel({
-    repositoryChannelId: GENERAL,
-    projectChannelId: DESIGN,
-    channels: [channel(GENERAL), channel(DESIGN)],
-  });
-  assert.deepEqual(resolved, {
-    id: GENERAL,
-    name: "general",
-    source: "repository",
-  });
+test("repository binding wins over the project binding", () => {
+  assert.deepEqual(
+    resolveProjectDiscussionChannel({
+      repositoryChannelId: GENERAL,
+      projectChannelId: DESIGN,
+      channels: [channel(GENERAL), channel(DESIGN)],
+    }),
+    { id: GENERAL, name: "general" },
+  );
 });
 
-test("falls back to the project binding when the repository has none", () => {
-  const resolved = resolveProjectDiscussionChannel({
-    repositoryChannelId: null,
-    projectChannelId: DESIGN,
-    channels: [channel(DESIGN)],
-  });
-  assert.equal(resolved?.source, "project");
-  assert.equal(resolved?.id, DESIGN);
+test("project binding is the fallback when the repository has no binding", () => {
+  assert.deepEqual(
+    resolveProjectDiscussionChannel({
+      repositoryChannelId: null,
+      projectChannelId: DESIGN,
+      channels: [channel(DESIGN)],
+    }),
+    { id: DESIGN, name: "design" },
+  );
 });
 
-test("hides malformed, missing, archived, dm, and unresolved bindings", () => {
-  const channels = [
-    channel(GENERAL),
-    channel(DESIGN, { archivedAt: "2026-01-01T00:00:00Z" }),
-  ];
-  assert.equal(
-    resolveProjectDiscussionChannel({
-      repositoryChannelId: NOT_A_UUID,
-      projectChannelId: null,
-      channels,
-    }),
-    null,
-  );
-  assert.equal(
-    resolveProjectDiscussionChannel({
-      repositoryChannelId: "11111111-1111-4111-8111-111111111111",
-      projectChannelId: null,
-      channels,
-    }),
-    null,
-  );
-  assert.equal(
+test("an unusable repository binding falls through to the project binding", () => {
+  assert.deepEqual(
     resolveProjectDiscussionChannel({
       repositoryChannelId: DESIGN,
+      projectChannelId: GENERAL,
+      channels: [
+        channel(GENERAL),
+        channel(DESIGN, { archivedAt: "2026-08-20T00:00:00Z" }),
+      ],
+    }),
+    { id: GENERAL, name: "general" },
+  );
+});
+
+test("malformed and viewer-unresolved bindings do not resolve", () => {
+  assert.equal(
+    resolveProjectDiscussionChannel({
+      repositoryChannelId: "general",
       projectChannelId: null,
-      channels,
+      channels: [channel(GENERAL)],
+    }),
+    null,
+  );
+  assert.equal(
+    resolveProjectDiscussionChannel({
+      repositoryChannelId: MISSING,
+      projectChannelId: null,
+      channels: [channel(GENERAL)],
+    }),
+    null,
+  );
+});
+
+test("archived and DM bindings do not resolve", () => {
+  assert.equal(
+    resolveProjectDiscussionChannel({
+      repositoryChannelId: GENERAL,
+      projectChannelId: null,
+      channels: [channel(GENERAL, { archivedAt: "2026-08-20T00:00:00Z" })],
     }),
     null,
   );
@@ -209,139 +207,102 @@ test("hides malformed, missing, archived, dm, and unresolved bindings", () => {
   );
 });
 
-test("skips an unusable repository binding and uses the project binding", () => {
-  const resolved = resolveProjectDiscussionChannel({
-    repositoryChannelId: DESIGN,
-    projectChannelId: GENERAL,
-    channels: [channel(GENERAL), channel(DESIGN, { archivedAt: "x" })],
-  });
-  assert.deepEqual(resolved, {
+test("non-DM channels resolve without a membership check", () => {
+  assert.deepEqual(
+    resolveProjectDiscussionChannel({
+      repositoryChannelId: GENERAL,
+      projectChannelId: null,
+      channels: [channel(GENERAL, { channelType: "forum", isMember: false })],
+    }),
+    { id: GENERAL, name: "general" },
+  );
+});
+
+test("a zero-hit bound channel is inserted first", () => {
+  const discovered = [
+    {
+      id: DESIGN,
+      name: "design",
+      messageCount: 4,
+      lastActivityAt: 200,
+      participants: ["aa"],
+    },
+  ];
+  const merged = mergeBoundDiscussionChannel(
+    { id: GENERAL, name: "general" },
+    discovered,
+  );
+  assert.deepEqual(merged[0], {
     id: GENERAL,
     name: "general",
-    source: "project",
+    messageCount: 0,
+    lastActivityAt: 0,
+    participants: [],
   });
+  assert.equal(merged[1], discovered[0]);
 });
 
-test("mergeBoundDiscussionChannel pins a zero-hit bound channel first", () => {
-  const merged = mergeBoundDiscussionChannel(
-    { id: GENERAL, name: "general", source: "repository" },
-    [
-      {
-        id: DESIGN,
-        name: "design",
-        messageCount: 4,
-        lastActivityAt: 200,
-        participants: ["aa"],
-      },
-    ],
-  );
-  assert.equal(merged[0].id, GENERAL);
-  assert.equal(merged[0].messageCount, 0);
-  assert.equal(merged[1].id, DESIGN);
-});
-
-test("mergeBoundDiscussionChannel moves an already-discovered bound channel first", () => {
-  const merged = mergeBoundDiscussionChannel(
-    { id: DESIGN, name: "design", source: "project" },
-    [
-      {
-        id: GENERAL,
-        name: "general",
-        messageCount: 1,
-        lastActivityAt: 1,
-        participants: [],
-      },
-      {
-        id: DESIGN,
-        name: "design",
-        messageCount: 9,
-        lastActivityAt: 9,
-        participants: ["aa"],
-      },
-    ],
-  );
-  assert.equal(merged[0].id, DESIGN);
-  assert.equal(merged[0].messageCount, 9);
-  assert.equal(merged.length, 2);
-});
-
-test("getDiscussionLabel reports linked vs none", () => {
-  assert.equal(getDiscussionLabel(null), "No discussion");
-  assert.equal(
-    getDiscussionLabel({
-      id: GENERAL,
-      name: "general",
-      source: "repository",
-    }),
-    "Discussion linked",
-  );
-});
-```
-
-Add this test to `desktop/src/features/projects/projectModels.test.mjs` after the existing implicit-project test (do not replace that test).
-Update the local `repositoryEvent` helper so it can take extra tags without breaking other tests:
-
-```js
-function repositoryEvent(owner, id, createdAt = 100, extraTags = []) {
-  return {
-    id: `${id}-${createdAt}`,
-    kind: 30617,
-    pubkey: owner,
-    created_at: createdAt,
-    content: "",
-    tags: [["d", id], ["name", id], ...extraTags],
+test("an already-discovered bound channel moves first without losing hit data", () => {
+  const general = {
+    id: GENERAL,
+    name: "general",
+    messageCount: 1,
+    lastActivityAt: 1,
+    participants: [],
   };
-}
+  const design = {
+    id: DESIGN,
+    name: "design",
+    messageCount: 9,
+    lastActivityAt: 9,
+    participants: ["aa"],
+  };
+  const merged = mergeBoundDiscussionChannel({ id: DESIGN, name: "design" }, [
+    general,
+    design,
+  ]);
+  assert.equal(merged.length, 2);
+  assert.equal(merged[0], design);
+  assert.equal(merged[1], general);
+});
 
-test("implicit projects inherit the repository buzz-channel", () => {
-  const projects = buildProjectReadModels({
-    projectEvents: [],
-    repositoryEvents: [
-      repositoryEvent(BACKEND_OWNER, "backend", 100, [
-        ["buzz-channel", "11111111-1111-4111-8111-111111111111"],
-      ]),
-    ],
-    relayOrigin: RELAY_ORIGIN,
-  });
-  assert.equal(projects.length, 1);
-  assert.equal(projects[0].legacy, true);
-  assert.equal(
-    projects[0].projectChannelId,
-    "11111111-1111-4111-8111-111111111111",
-  );
-  assert.equal(
-    projects[0].repositories[0].channelId,
-    "11111111-1111-4111-8111-111111111111",
-  );
+test("no bound channel preserves the discovered order", () => {
+  const discovered = [
+    {
+      id: DESIGN,
+      name: "design",
+      messageCount: 2,
+      lastActivityAt: 2,
+      participants: [],
+    },
+  ];
+  assert.deepEqual(mergeBoundDiscussionChannel(null, discovered), discovered);
 });
 ```
 
-Leave `desktop/src/features/projects/lib/projectLabels.ts` unchanged until Step 3.
-
-- [ ] **Step 2: Run tests to verify they fail**
+- [ ] **Step 2: Run the test and verify the expected red state**
 
 Run:
 
 ```bash
-. ./bin/activate-hermit && cd desktop && node --import ./test-loader.mjs --experimental-strip-types --test src/features/projects/lib/projectDiscussionChannel.test.mjs src/features/projects/projectModels.test.mjs
+. ./bin/activate-hermit && cd desktop && node --import ./test-loader.mjs --experimental-strip-types --test src/features/projects/lib/projectDiscussionChannel.test.mjs
 ```
 
-Expected: FAIL because `./projectDiscussionChannel.ts` cannot be resolved and the implicit project's `projectChannelId` is still `null`.
+Expected: FAIL with `ERR_MODULE_NOT_FOUND` for `projectDiscussionChannel.ts`.
 
-- [ ] **Step 3: Write the minimal implementation**
+- [ ] **Step 3: Implement the pure resolver and merge**
 
-Create `desktop/src/features/projects/lib/projectDiscussionChannel.ts`:
+Create `desktop/src/features/projects/lib/projectDiscussionChannel.ts` with this complete content:
 
 ```ts
 import type { DiscussionChannel } from "@/features/projects/lib/discussionChannels";
 import { isValidProjectChannelId } from "@/features/projects/projectModels";
 import type { Channel } from "@/shared/api/types";
 
-/** Bound Stream channel a Projects surface may open. */
+/** Viewer-resolvable channel used by project discussion routing. */
 export type ProjectDiscussionChannel = {
   id: string;
   name: string;
-  source: "repository" | "project";
 };
 
 type ResolvableChannel = Pick<
@@ -350,65 +311,43 @@ type ResolvableChannel = Pick<
 >;
 
 function isUsableDiscussionChannel(channel: ResolvableChannel): boolean {
-  return channel.channelType !== "dm" && channel.archivedAt == null;
+  return channel.archivedAt === null && channel.channelType !== "dm";
 }
 
 /**
- * Pick the Stream channel Projects should open for discussion.
- * Repository `buzz-channel` wins because it is the git ACL binding.
- * Unresolvable, archived, or DM values are skipped rather than rendered
- * as broken links (NIP-MP client rule).
+ * Resolves the selected repository binding first and the project binding second.
+ * Invalid or unreadable metadata is omitted instead of becoming a broken link.
  */
 export function resolveProjectDiscussionChannel(input: {
   repositoryChannelId: string | null | undefined;
   projectChannelId: string | null | undefined;
   channels: readonly ResolvableChannel[];
 }): ProjectDiscussionChannel | null {
-  const candidates: Array<{
-    id: string;
-    source: ProjectDiscussionChannel["source"];
-  }> = [];
-  if (input.repositoryChannelId) {
-    candidates.push({
-      id: input.repositoryChannelId,
-      source: "repository",
-    });
-  }
-  if (
-    input.projectChannelId &&
-    input.projectChannelId !== input.repositoryChannelId
-  ) {
-    candidates.push({
-      id: input.projectChannelId,
-      source: "project",
-    });
-  }
+  const candidates = [input.repositoryChannelId, input.projectChannelId];
 
   for (const candidate of candidates) {
-    if (!isValidProjectChannelId(candidate.id)) continue;
-    const channel = input.channels.find((item) => item.id === candidate.id);
+    if (!candidate || !isValidProjectChannelId(candidate)) continue;
+    const channel = input.channels.find((item) => item.id === candidate);
     if (!channel || !isUsableDiscussionChannel(channel)) continue;
-    return {
-      id: channel.id,
-      name: channel.name,
-      source: candidate.source,
-    };
+    return { id: channel.id, name: channel.name };
   }
+
   return null;
 }
 
 /**
- * Put the bound discussion channel first on the Channels tab.
- * Preserve FTS rows for other channels that mentioned the entity.
+ * Pins the bound channel before FTS-discovered rows while preserving hit data.
  */
 export function mergeBoundDiscussionChannel(
   bound: ProjectDiscussionChannel | null,
   discovered: readonly DiscussionChannel[],
 ): DiscussionChannel[] {
   if (!bound) return [...discovered];
+
   const existing = discovered.find((channel) => channel.id === bound.id);
   const remainder = discovered.filter((channel) => channel.id !== bound.id);
   if (existing) return [existing, ...remainder];
+
   return [
     {
       id: bound.id,
@@ -420,134 +359,139 @@ export function mergeBoundDiscussionChannel(
     ...remainder,
   ];
 }
-
-/** List/chrome copy for whether a resolvable discussion channel exists. */
-export function getDiscussionLabel(
-  channel: ProjectDiscussionChannel | null,
-): string {
-  return channel ? "Discussion linked" : "No discussion";
-}
 ```
 
-In `desktop/src/features/projects/projectModels.ts`, change `repositoryToLegacyProject` so `projectChannelId` is no longer hardcoded `null`:
-
-```ts
-projectChannelId: repository.channelId ?? null,
-```
-
-Keep every other field in that object unchanged.
-
-Replace `desktop/src/features/projects/lib/projectLabels.ts` with:
-
-```ts
-export { getDiscussionLabel } from "./projectDiscussionChannel";
-```
-
-- [ ] **Step 4: Run tests to verify they pass**
+- [ ] **Step 4: Run the focused test green and lint the new files**
 
 Run:
 
 ```bash
-. ./bin/activate-hermit && cd desktop && node --import ./test-loader.mjs --experimental-strip-types --test src/features/projects/lib/projectDiscussionChannel.test.mjs src/features/projects/projectModels.test.mjs
+. ./bin/activate-hermit && cd desktop && node --import ./test-loader.mjs --experimental-strip-types --test src/features/projects/lib/projectDiscussionChannel.test.mjs && pnpm exec biome check src/features/projects/lib/projectDiscussionChannel.ts src/features/projects/lib/projectDiscussionChannel.test.mjs
 ```
 
-Expected: PASS.
+Expected: PASS with no Biome diagnostics.
 
-- [ ] **Step 5: Refactor if needed, then commit**
-
-If the helper re-export in `projectLabels.ts` is unused besides the new module, keep it: it is the existing public path and must not drift.
+- [ ] **Step 5: Stage, inspect the GitNexus change map, and commit**
 
 Run:
 
 ```bash
-. ./bin/activate-hermit && git add desktop/src/features/projects/lib/projectDiscussionChannel.ts desktop/src/features/projects/lib/projectDiscussionChannel.test.mjs desktop/src/features/projects/lib/projectLabels.ts desktop/src/features/projects/projectModels.ts desktop/src/features/projects/projectModels.test.mjs && git commit -s -m "$(cat <<'EOF'
-feat(projects): resolve bound buzz-channel for discussion routing
+. ./bin/activate-hermit && git add desktop/src/features/projects/lib/projectDiscussionChannel.ts desktop/src/features/projects/lib/projectDiscussionChannel.test.mjs
+```
 
-EOF
-)"
+Run `detect_changes({ scope: "staged" })` and confirm that only the new resolver symbols and their test are reported.
+
+Run:
+
+```bash
+. ./bin/activate-hermit && git commit -s -m "feat(projects): resolve bound discussion channels"
 ```
 
 ---
 
-### Task 2: Pin the bound channel on the Channels tab
+### Task 2: Pin the bound channel in the Channels tab
 
 **Files:**
+
 - Create: `desktop/src/features/projects/useProjectDiscussionChannel.ts`
 - Modify: `desktop/src/features/projects/ui/DiscussionChannels.tsx`
 - Modify: `desktop/src/features/projects/ui/ProjectWorkspaceTabs.tsx`
-- Modify: `desktop/src/features/projects/ui/ProjectDetailScreen.tsx` (pass `boundChannel`; do not add the chrome button yet)
+- Modify: `desktop/src/features/projects/ui/ProjectDetailScreen.tsx`
+- Create: `desktop/tests/e2e/project-channel-routing.spec.ts`
+- Modify: `desktop/playwright.config.ts`
 
 **Interfaces:**
-- Consumes: `resolveProjectDiscussionChannel`, `mergeBoundDiscussionChannel`, `useChannelsQuery` from `desktop/src/features/channels/hooks.ts`
-- Produces:
-  - `export function shouldShowDiscussionEmptyState(bound: ProjectDiscussionChannel | null, discovered: readonly DiscussionChannel[]): boolean`
-  - `export function useProjectDiscussionChannel(project: Project | null | undefined, repository: Repository | null | undefined): ProjectDiscussionChannel | null`
-  - `DiscussionChannelsPanel` gains `boundChannel: ProjectDiscussionChannel | null`
-  - `WorkspaceTabs` gains `boundChannel: ProjectDiscussionChannel | null`
 
-- [ ] **Step 1: Write the failing panel test**
+- Consumes: `resolveProjectDiscussionChannel` and `mergeBoundDiscussionChannel` from Task 1.
+- Produces: `useProjectDiscussionChannel(project, repository): ProjectDiscussionChannel | null`.
+- Changes: `DiscussionChannelsPanel` requires `boundChannel: ProjectDiscussionChannel | null`.
+- Changes: `WorkspaceTabs` requires `boundChannel: ProjectDiscussionChannel | null`.
 
-Add this test to `desktop/src/features/projects/lib/projectDiscussionChannel.test.mjs` (same file as Task 1; do not create a React test for the panel):
+- [ ] **Step 1: Run required impact analysis before touching existing symbols**
 
-```js
-test("zero-hit bound channel still produces a Channels-tab row", () => {
-  const merged = mergeBoundDiscussionChannel(
-    {
-      id: GENERAL,
-      name: "general",
-      source: "repository",
-    },
-    [],
+Run `impact({ target: "DiscussionChannelsPanel", direction: "upstream" })`.
+
+Run `impact({ target: "WorkspaceTabs", direction: "upstream" })`.
+
+Run `impact({ target: "ProjectDetailScreen", direction: "upstream" })`.
+
+Report each direct caller, affected process, and risk before editing.
+
+Expected repository shape: `DiscussionChannelsPanel` is called by `WorkspaceTabs`, and `WorkspaceTabs` is called by `ProjectDetailScreen`.
+
+- [ ] **Step 2: Write and register the failing Channels-tab smoke test**
+
+Create `desktop/tests/e2e/project-channel-routing.spec.ts` with this complete content:
+
+```ts
+import { expect, test } from "@playwright/test";
+
+import { installMockBridge } from "../helpers/bridge";
+
+const GENERAL_CHANNEL_ID = "9a1657ac-f7aa-5db0-b632-d8bbeb6dfb50";
+
+async function enableProjectsFeature(page: import("@playwright/test").Page) {
+  await page.addInitScript(() => {
+    window.localStorage.setItem(
+      "buzz-feature-overrides-v1",
+      JSON.stringify({ projects: true }),
+    );
+  });
+}
+
+async function openBuzzProject(page: import("@playwright/test").Page) {
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByTestId("open-projects-view").click();
+  await page.getByTestId("projects-section-projects").click();
+  const projectEntry = page
+    .locator(
+      '[data-testid="project-card-buzz"], [data-testid="project-row-buzz"]',
+    )
+    .first();
+  await expect(projectEntry).toBeVisible({ timeout: 10_000 });
+  await projectEntry.click();
+}
+
+test("Channels tab pins and opens the zero-hit repository binding", async ({
+  page,
+}) => {
+  await enableProjectsFeature(page);
+  await installMockBridge(page);
+  await openBuzzProject(page);
+
+  await page.getByRole("tab", { name: "Channels" }).click();
+  const list = page.getByTestId("discussion-channels");
+  const firstRow = list.locator("li").first();
+  const bound = firstRow.getByTestId("project-bound-discussion-channel");
+  await expect(bound).toBeVisible({ timeout: 10_000 });
+  await expect(bound).toContainText("#general");
+  await expect(bound).toContainText("Linked discussion channel");
+
+  await bound.click();
+  await expect(page).toHaveURL(
+    new RegExp(`/#/channels/${GENERAL_CHANNEL_ID}$`),
   );
-  assert.equal(merged.length, 1);
-  assert.equal(merged[0].id, GENERAL);
-  assert.equal(merged[0].name, "general");
+  await expect(page.getByTestId("chat-title")).toHaveText("general");
 });
 ```
 
-Add `shouldShowDiscussionEmptyState` to the existing import from `./projectDiscussionChannel.ts` in that test file.
-Then append:
+Add `"**/project-channel-routing.spec.ts"` to the smoke `testMatch` array in `desktop/playwright.config.ts` immediately after `"**/projects-v3-screenshots.spec.ts"`.
 
-```js
-test("Channels tab is empty only when there is no bound channel and no hits", () => {
-  assert.equal(shouldShowDiscussionEmptyState(null, []), true);
-  assert.equal(
-    shouldShowDiscussionEmptyState(
-      { id: GENERAL, name: "general", source: "repository" },
-      [],
-    ),
-    false,
-  );
-});
-```
-
-Do not add `shouldShowDiscussionEmptyState` to the implementation yet.
-
-- [ ] **Step 2: Run the new empty-state test to verify it fails**
+- [ ] **Step 3: Run the smoke test and verify the expected red state**
 
 Run:
 
 ```bash
-. ./bin/activate-hermit && cd desktop && node --import ./test-loader.mjs --experimental-strip-types --test src/features/projects/lib/projectDiscussionChannel.test.mjs
+. ./bin/activate-hermit && cd desktop && pnpm test:e2e:smoke -- project-channel-routing.spec.ts
 ```
 
-Expected: FAIL with `shouldShowDiscussionEmptyState` is not exported / not defined.
+Expected: FAIL because the current Channels tab has no `project-bound-discussion-channel` row when the repository search has zero hits.
 
-- [ ] **Step 3: Implement the helper, hook, and panel wiring**
+Do not proceed if the test fails earlier during app boot; fix only test setup until the failure reaches the missing row.
 
-Append to `projectDiscussionChannel.ts`:
+- [ ] **Step 4: Add the channel-resolution hook**
 
-```ts
-/** True when the Channels tab has neither a bound channel nor FTS hits. */
-export function shouldShowDiscussionEmptyState(
-  bound: ProjectDiscussionChannel | null,
-  discovered: readonly DiscussionChannel[],
-): boolean {
-  return bound == null && discovered.length === 0;
-}
-```
-
-Create `desktop/src/features/projects/useProjectDiscussionChannel.ts`:
+Create `desktop/src/features/projects/useProjectDiscussionChannel.ts` with this complete content:
 
 ```ts
 import * as React from "react";
@@ -559,7 +503,7 @@ import {
   resolveProjectDiscussionChannel,
 } from "@/features/projects/lib/projectDiscussionChannel";
 
-/** Live bound discussion channel for the open project and selected repository. */
+/** Resolves the viewer-readable discussion channel for the active project repository. */
 export function useProjectDiscussionChannel(
   project: Project | null | undefined,
   repository: Repository | null | undefined,
@@ -577,38 +521,52 @@ export function useProjectDiscussionChannel(
 }
 ```
 
-In `DiscussionChannels.tsx`, import `mergeBoundDiscussionChannel`, `shouldShowDiscussionEmptyState`, and `ProjectDiscussionChannel`.
-Change `DiscussionChannelsPanel` to:
+- [ ] **Step 5: Replace the Channels panel with bound-channel-aware rendering**
+
+Add this import to `desktop/src/features/projects/ui/DiscussionChannels.tsx`:
 
 ```ts
+import {
+  mergeBoundDiscussionChannel,
+  type ProjectDiscussionChannel,
+} from "@/features/projects/lib/projectDiscussionChannel";
+```
+
+Replace only the existing `DiscussionChannelsPanel` function with this implementation and leave `DiscussedInChannels` unchanged:
+
+```tsx
 export function DiscussionChannelsPanel({
-  boundChannel = null,
+  boundChannel,
   query,
 }: {
-  boundChannel?: ProjectDiscussionChannel | null;
+  boundChannel: ProjectDiscussionChannel | null;
   query: string;
 }) {
-  const { channels, isLoading, isTruncated } = useDiscussionChannels(query);
+  const {
+    channels: discoveredChannels,
+    isLoading,
+    isTruncated,
+  } = useDiscussionChannels(query);
   const { goChannel } = useAppNavigation();
-  const merged = React.useMemo(
-    () => mergeBoundDiscussionChannel(boundChannel, channels),
-    [boundChannel, channels],
+  const channels = React.useMemo(
+    () => mergeBoundDiscussionChannel(boundChannel, discoveredChannels),
+    [boundChannel, discoveredChannels],
   );
-  const channelName = useChannelNameLookup(merged.length > 0);
+  const channelName = useChannelNameLookup(channels.length > 0);
   const profilesQuery = useUsersBatchQuery(
-    merged.flatMap((channel) => channel.participants),
-    { enabled: merged.length > 0 },
+    channels.flatMap((channel) => channel.participants),
+    { enabled: channels.length > 0 },
   );
   const profiles = profilesQuery.data?.profiles;
 
-  if (isLoading && shouldShowDiscussionEmptyState(boundChannel, channels)) {
+  if (isLoading && boundChannel === null) {
     return (
       <p className="px-4 py-6 text-sm text-muted-foreground">
         Searching channel discussions…
       </p>
     );
   }
-  if (shouldShowDiscussionEmptyState(boundChannel, merged)) {
+  if (channels.length === 0) {
     return (
       <p className="px-4 py-6 text-sm text-muted-foreground">
         No channels reference this repository yet. Paste its link (or a PR or
@@ -623,7 +581,7 @@ export function DiscussionChannelsPanel({
         className="divide-y divide-border/50"
         data-testid="discussion-channels"
       >
-        {merged.map((channel) => {
+        {channels.map((channel) => {
           const name = channelName(channel.id, channel.name);
           const isBound = boundChannel?.id === channel.id;
           const speakers = channel.participants
@@ -670,7 +628,9 @@ export function DiscussionChannelsPanel({
                   data-testid="project-channel-row-date"
                   title={
                     channel.lastActivityAt > 0
-                      ? new Date(channel.lastActivityAt * 1_000).toLocaleString()
+                      ? new Date(
+                          channel.lastActivityAt * 1_000,
+                        ).toLocaleString()
                       : undefined
                   }
                 >
@@ -694,99 +654,175 @@ export function DiscussionChannelsPanel({
 }
 ```
 
-In `ProjectDetailScreen.tsx`, import `useProjectDiscussionChannel` and call it next to `selectProjectRepository`:
+- [ ] **Step 6: Thread the resolved value through the workspace**
+
+Add this type import to `desktop/src/features/projects/ui/ProjectWorkspaceTabs.tsx`:
 
 ```ts
+import type { ProjectDiscussionChannel } from "@/features/projects/lib/projectDiscussionChannel";
+```
+
+Insert this field immediately after the opening line of the `WorkspaceTabs` destructuring, before `commitDiff`:
+
+```ts
+boundChannel,
+```
+
+Insert this declaration immediately after the opening line of the inline props type, before `commitDiff: ProjectRepoDiff | null | undefined;`:
+
+```ts
+boundChannel: ProjectDiscussionChannel | null;
+```
+
+Replace the existing Channels-tab call with:
+
+```tsx
+<DiscussionChannelsPanel
+  boundChannel={boundChannel}
+  query={repositoryDiscussionQuery(project)}
+/>
+```
+
+Import `useProjectDiscussionChannel` in `desktop/src/features/projects/ui/ProjectDetailScreen.tsx`:
+
+```ts
+import { useProjectDiscussionChannel } from "@/features/projects/useProjectDiscussionChannel";
+```
+
+Immediately after the existing `selectProjectRepository` call, resolve the channel once:
+
+```ts
+const repository = selectProjectRepository(project, routeRepositoryId);
 const discussionChannel = useProjectDiscussionChannel(project, repository);
 ```
 
-Pass `boundChannel={discussionChannel}` into `WorkspaceTabs`.
+Insert this prop immediately after the opening `<WorkspaceTabs` line:
 
-In `ProjectWorkspaceTabs.tsx`, add `boundChannel` to the props object (type `ProjectDiscussionChannel | null`, default `null`) and pass it to `DiscussionChannelsPanel`.
+```tsx
+boundChannel={discussionChannel}
+```
 
-Do not add the Open Discussion button in this task.
-
-- [ ] **Step 4: Run unit tests**
+- [ ] **Step 7: Run the unit, type, size, and smoke tests green**
 
 Run:
 
 ```bash
-. ./bin/activate-hermit && cd desktop && node --import ./test-loader.mjs --experimental-strip-types --test src/features/projects/lib/projectDiscussionChannel.test.mjs src/features/projects/projectModels.test.mjs
+. ./bin/activate-hermit && cd desktop && node --import ./test-loader.mjs --experimental-strip-types --test src/features/projects/lib/projectDiscussionChannel.test.mjs && pnpm typecheck && pnpm check:file-sizes && pnpm exec biome check src/features/projects/lib/projectDiscussionChannel.ts src/features/projects/lib/projectDiscussionChannel.test.mjs src/features/projects/useProjectDiscussionChannel.ts src/features/projects/ui/DiscussionChannels.tsx src/features/projects/ui/ProjectWorkspaceTabs.tsx src/features/projects/ui/ProjectDetailScreen.tsx tests/e2e/project-channel-routing.spec.ts playwright.config.ts
 ```
 
-Expected: PASS.
+Expected: PASS, and both `ProjectDetailScreen.tsx` and `ProjectWorkspaceTabs.tsx` remain within the file-size gate.
 
-Run typecheck:
+Run:
 
 ```bash
-. ./bin/activate-hermit && cd desktop && pnpm typecheck
+. ./bin/activate-hermit && cd desktop && pnpm test:e2e:smoke -- project-channel-routing.spec.ts
 ```
 
-Expected: PASS.
-If `ProjectDetailScreen.tsx` exceeds 1000 lines, stop and move the hook call plus `WorkspaceTabs` prop wiring into `ProjectDetailChromeActions.tsx` instead of raising the ratchet.
+Expected: PASS with `#general` first, `Linked discussion channel` visible, a `/#/channels/9a1657ac-f7aa-5db0-b632-d8bbeb6dfb50` URL, and chat title `general`.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 8: Stage, inspect the GitNexus change map, and commit**
+
+Run:
 
 ```bash
-. ./bin/activate-hermit && git add desktop/src/features/projects/lib/projectDiscussionChannel.ts desktop/src/features/projects/lib/projectDiscussionChannel.test.mjs desktop/src/features/projects/useProjectDiscussionChannel.ts desktop/src/features/projects/ui/DiscussionChannels.tsx desktop/src/features/projects/ui/ProjectWorkspaceTabs.tsx desktop/src/features/projects/ui/ProjectDetailScreen.tsx && git commit -s -m "$(cat <<'EOF'
-feat(projects): pin bound buzz-channel on the Channels tab
+. ./bin/activate-hermit && git add desktop/src/features/projects/useProjectDiscussionChannel.ts desktop/src/features/projects/ui/DiscussionChannels.tsx desktop/src/features/projects/ui/ProjectWorkspaceTabs.tsx desktop/src/features/projects/ui/ProjectDetailScreen.tsx desktop/tests/e2e/project-channel-routing.spec.ts desktop/playwright.config.ts
+```
 
-EOF
-)"
+Run `detect_changes({ scope: "staged" })` and confirm that the affected flow is limited to project detail rendering, project Channels-tab rendering, and channel navigation.
+
+Run:
+
+```bash
+. ./bin/activate-hermit && git commit -s -m "feat(projects): pin the bound discussion channel"
 ```
 
 ---
 
-### Task 3: Open Discussion chrome control
+### Task 3: Add the Open Discussion chrome control
 
 **Files:**
+
 - Create: `desktop/src/features/projects/ui/OpenDiscussionButton.tsx`
-- Modify: `desktop/src/features/projects/ui/ProjectDetailChrome.tsx`
 - Modify: `desktop/src/features/projects/ui/ProjectDetailScreen.tsx`
+- Modify: `desktop/tests/e2e/project-channel-routing.spec.ts`
+- Modify: `desktop/tests/e2e/projects-v3-screenshots.spec.ts`
 
 **Interfaces:**
-- Consumes: `useProjectDiscussionChannel`, `useAppNavigation().goChannel`, `getDiscussionLabel`
-- Produces: chrome button with `aria-label="Open Discussion"` and `data-testid="project-open-discussion"` that calls `goChannel(discussionChannel.id)`
 
-- [ ] **Step 1: Write the failing unit test for the button module**
+- Consumes: `ProjectDiscussionChannel` from Task 1.
+- Consumes: the existing `ProjectDetailChrome.actions` node and `ProjectDetailScreen`'s existing `goChannel` callback.
+- Produces: `OpenDiscussionButton({ channel, onOpen })`, which renders nothing for `null` and otherwise invokes `onOpen(channel.id)`.
 
-Create `desktop/src/features/projects/ui/OpenDiscussionButton.test.mjs`:
+- [ ] **Step 1: Run required impact analysis before editing the screen**
 
-```js
-import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { test } from "node:test";
+Run `impact({ target: "ProjectDetailScreen", direction: "upstream" })` again against the post-Task-2 index state.
 
-const source = readFileSync(new URL("./OpenDiscussionButton.tsx", import.meta.url), "utf8");
+Report direct callers, affected processes, and risk before editing.
 
-test("Open Discussion control uses the issue 3611 accessible name", () => {
-  assert.match(source, /aria-label="Open Discussion"/);
-  assert.match(source, /data-testid="project-open-discussion"/);
-  assert.match(source, /goChannel/);
+- [ ] **Step 2: Add the failing Open Discussion smoke test and positive screenshot assertion**
+
+Append this test to `desktop/tests/e2e/project-channel-routing.spec.ts`:
+
+```ts
+test("Open Discussion routes the repository binding to Stream", async ({
+  page,
+}) => {
+  await enableProjectsFeature(page);
+  await installMockBridge(page);
+  await openBuzzProject(page);
+
+  const openDiscussion = page.getByRole("button", {
+    name: "Open Discussion",
+  });
+  await expect(openDiscussion).toBeVisible({ timeout: 10_000 });
+  await openDiscussion.click();
+
+  await expect(page).toHaveURL(
+    new RegExp(`/#/channels/${GENERAL_CHANNEL_ID}$`),
+  );
+  await expect(page.getByTestId("chat-title")).toHaveText("general");
 });
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+In `desktop/tests/e2e/projects-v3-screenshots.spec.ts`, replace:
+
+```ts
+await expect(
+  page.getByRole("button", { name: "Open Discussion" }),
+).toHaveCount(0);
+```
+
+with:
+
+```ts
+await expect(
+  page.getByRole("button", { name: "Open Discussion" }),
+).toBeVisible();
+```
+
+- [ ] **Step 3: Run the new test and verify the expected red state**
 
 Run:
 
 ```bash
-. ./bin/activate-hermit && cd desktop && node --import ./test-loader.mjs --experimental-strip-types --test src/features/projects/ui/OpenDiscussionButton.test.mjs
+. ./bin/activate-hermit && cd desktop && pnpm test:e2e:smoke -- project-channel-routing.spec.ts --grep "Open Discussion"
 ```
 
-Expected: FAIL because `OpenDiscussionButton.tsx` does not exist.
+Expected: FAIL because no button named Open Discussion exists.
 
-- [ ] **Step 3: Implement the button and chrome wiring**
+Do not replace this with a source-text assertion; the Playwright test must prove the real control and router integration.
 
-Create `desktop/src/features/projects/ui/OpenDiscussionButton.tsx`:
+- [ ] **Step 4: Implement the icon control**
+
+Create `desktop/src/features/projects/ui/OpenDiscussionButton.tsx` with this complete content:
 
 ```tsx
 import { Hash } from "lucide-react";
 
 import type { ProjectDiscussionChannel } from "@/features/projects/lib/projectDiscussionChannel";
-import { cn } from "@/shared/lib/cn";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
 
+/** Opens the resolved discussion channel from the project detail chrome. */
 export function OpenDiscussionButton({
   channel,
   onOpen,
@@ -795,14 +831,13 @@ export function OpenDiscussionButton({
   onOpen: (channelId: string) => void;
 }) {
   if (!channel) return null;
+
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <button
           aria-label="Open Discussion"
-          className={cn(
-            "flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
-          )}
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
           data-testid="project-open-discussion"
           onClick={() => onOpen(channel.id)}
           type="button"
@@ -816,154 +851,40 @@ export function OpenDiscussionButton({
 }
 ```
 
-In `ProjectDetailChrome.tsx`, import `OpenDiscussionButton` and add props:
+- [ ] **Step 5: Use the existing chrome actions slot**
+
+Import the button in `desktop/src/features/projects/ui/ProjectDetailScreen.tsx`:
 
 ```ts
-discussionChannel: ProjectDiscussionChannel | null;
-onOpenDiscussion: (channelId: string) => void;
+import { OpenDiscussionButton } from "./OpenDiscussionButton";
 ```
 
-Render `<OpenDiscussionButton channel={discussionChannel} onOpen={onOpenDiscussion} />` immediately before `<ShareLinkButton … />`.
+Add this `actions` prop to the existing `ProjectDetailChrome` call before `activeTabCrumb`:
 
-In `ProjectDetailScreen.tsx`, pass:
-
-```ts
-discussionChannel={discussionChannel}
-onOpenDiscussion={(channelId) => {
-  void goChannel(channelId);
-}}
+```tsx
+<ProjectDetailChrome
+  actions={
+    <OpenDiscussionButton
+      channel={discussionChannel}
+      onOpen={(channelId) => {
+        void goChannel(channelId);
+      }}
+    />
+  }
+  activeTabCrumb={activeTabCrumb}
 ```
 
-`discussionChannel` is the value from Task 2's `useProjectDiscussionChannel` call.
-Do not call the hook twice.
+Do not modify `ProjectDetailChrome.tsx`; its existing actions slot already places the control immediately before the share button.
 
-Confirm `ProjectDetailScreen.tsx` line count stays ≤ 1000:
-
-```bash
-. ./bin/activate-hermit && wc -l desktop/src/features/projects/ui/ProjectDetailScreen.tsx
-```
-
-Expected: a number ≤ 1000.
-
-- [ ] **Step 4: Run tests and typecheck**
+- [ ] **Step 6: Run focused validation and both smoke specs**
 
 Run:
 
 ```bash
-. ./bin/activate-hermit && cd desktop && node --import ./test-loader.mjs --experimental-strip-types --test src/features/projects/ui/OpenDiscussionButton.test.mjs src/features/projects/lib/projectDiscussionChannel.test.mjs && pnpm typecheck
+. ./bin/activate-hermit && cd desktop && node --import ./test-loader.mjs --experimental-strip-types --test src/features/projects/lib/projectDiscussionChannel.test.mjs && pnpm typecheck && pnpm check:file-sizes && pnpm check:px-text && pnpm exec biome check src/features/projects/lib/projectDiscussionChannel.ts src/features/projects/lib/projectDiscussionChannel.test.mjs src/features/projects/useProjectDiscussionChannel.ts src/features/projects/ui/OpenDiscussionButton.tsx src/features/projects/ui/DiscussionChannels.tsx src/features/projects/ui/ProjectWorkspaceTabs.tsx src/features/projects/ui/ProjectDetailScreen.tsx tests/e2e/project-channel-routing.spec.ts tests/e2e/projects-v3-screenshots.spec.ts playwright.config.ts
 ```
 
-Expected: PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-. ./bin/activate-hermit && git add desktop/src/features/projects/ui/OpenDiscussionButton.tsx desktop/src/features/projects/ui/OpenDiscussionButton.test.mjs desktop/src/features/projects/ui/ProjectDetailChrome.tsx desktop/src/features/projects/ui/ProjectDetailScreen.tsx && git commit -s -m "$(cat <<'EOF'
-feat(projects): open the bound buzz-channel from project chrome
-
-EOF
-)"
-```
-
----
-
-### Task 4: Smoke e2e and screenshot contract
-
-**Files:**
-- Create: `desktop/tests/e2e/project-channel-routing.spec.ts`
-- Modify: `desktop/tests/e2e/projects-v3-screenshots.spec.ts`
-- Modify: `desktop/playwright.config.ts` (smoke `testMatch` array)
-
-**Interfaces:**
-- Consumes: mock repo `buzz-channel` `9a1657ac-f7aa-5db0-b632-d8bbeb6dfb50` (`STARTER_GENERAL_CHANNEL_ID` / `#general`) already seeded in `desktop/src/testing/e2eBridge.ts`
-- Produces: smoke coverage that Open Discussion navigates to `/channels/9a1657ac-f7aa-5db0-b632-d8bbeb6dfb50`
-
-- [ ] **Step 1: Write the failing smoke spec and update the screenshot assertion**
-
-Create `desktop/tests/e2e/project-channel-routing.spec.ts`:
-
-```ts
-import { expect, test } from "@playwright/test";
-
-import { waitForAnimations } from "../helpers/animations";
-import { installMockBridge } from "../helpers/bridge";
-
-const GENERAL_CHANNEL_ID = "9a1657ac-f7aa-5db0-b632-d8bbeb6dfb50";
-
-async function enableProjectsFeature(page: import("@playwright/test").Page) {
-  await page.addInitScript(() => {
-    window.localStorage.setItem(
-      "buzz-feature-overrides-v1",
-      JSON.stringify({ projects: true }),
-    );
-  });
-}
-
-async function openBuzzProject(page: import("@playwright/test").Page) {
-  await page.goto("/", { waitUntil: "domcontentloaded" });
-  await page.getByTestId("open-projects-view").click();
-  await page.getByTestId("projects-section-projects").click();
-  const projectEntry = page
-    .locator(
-      '[data-testid="project-card-buzz"], [data-testid="project-row-buzz"]',
-    )
-    .first();
-  await expect(projectEntry).toBeVisible({ timeout: 10_000 });
-  await projectEntry.click();
-}
-
-test("Open Discussion routes the bound buzz-channel to Stream", async ({
-  page,
-}) => {
-  await enableProjectsFeature(page);
-  await installMockBridge(page);
-  await openBuzzProject(page);
-
-  const openDiscussion = page.getByRole("button", { name: "Open Discussion" });
-  await expect(openDiscussion).toBeVisible({ timeout: 10_000 });
-  await waitForAnimations(page);
-  await openDiscussion.click();
-
-  await expect(page).toHaveURL(new RegExp(`/#/channels/${GENERAL_CHANNEL_ID}`));
-  await expect(page.getByTestId("chat-title")).toHaveText("general");
-});
-
-test("Channels tab lists the bound channel first", async ({ page }) => {
-  await enableProjectsFeature(page);
-  await installMockBridge(page);
-  await openBuzzProject(page);
-
-  await page.getByRole("tab", { name: "Channels" }).click();
-  const bound = page.getByTestId("project-bound-discussion-channel");
-  await expect(bound).toBeVisible({ timeout: 10_000 });
-  await expect(bound).toContainText("#general");
-  await bound.click();
-  await expect(page).toHaveURL(new RegExp(`/#/channels/${GENERAL_CHANNEL_ID}`));
-});
-```
-
-In `desktop/tests/e2e/projects-v3-screenshots.spec.ts`, replace:
-
-```ts
-  await expect(
-    page.getByRole("button", { name: "Open Discussion" }),
-  ).toHaveCount(0);
-```
-
-with:
-
-```ts
-  await expect(
-    page.getByRole("button", { name: "Open Discussion" }),
-  ).toBeVisible();
-```
-
-Add `"**/project-channel-routing.spec.ts"` to the smoke `testMatch` array in `desktop/playwright.config.ts` immediately after `"**/projects-v3-screenshots.spec.ts"`.
-
-- [ ] **Step 2: Run the smoke spec to verify the old screenshot assertion is gone and the new spec exists**
-
-If Task 3 is not wired, this run is the red proof.
-After Task 3 it should be green.
+Expected: PASS with no arbitrary text-size violations and no file-size violation.
 
 Run:
 
@@ -971,12 +892,7 @@ Run:
 . ./bin/activate-hermit && cd desktop && pnpm test:e2e:smoke -- project-channel-routing.spec.ts
 ```
 
-Expected after Task 3: PASS.
-`addInitScript` must run before `installMockBridge` (Projects feature flag is localStorage, read on mount).
-
-If the spec fails because Projects is gated, keep `enableProjectsFeature` before `installMockBridge` and do not invert that order.
-
-- [ ] **Step 3: Run the screenshot spec smoke file too**
+Expected: both routing tests PASS.
 
 Run:
 
@@ -984,73 +900,93 @@ Run:
 . ./bin/activate-hermit && cd desktop && pnpm test:e2e:smoke -- projects-v3-screenshots.spec.ts
 ```
 
-Expected: PASS.
-The overview screenshot will now include the Hash chrome button.
-That pixel change is required, not a regression.
+Expected: PASS, and `01-workspace-overview.png` now includes the Hash control next to the project share control.
 
-- [ ] **Step 4: Run desktop unit tests and typecheck once more**
+If a stale preview server is serving an old E2E build, identify the listener with `. ./bin/activate-hermit && lsof -nP -iTCP:4173 -sTCP:LISTEN`, terminate only that PID, and rerun the command so `pnpm build:e2e` serves the current code.
+
+- [ ] **Step 7: Stage, inspect the GitNexus change map, and commit**
 
 Run:
 
 ```bash
-. ./bin/activate-hermit && cd desktop && node --import ./test-loader.mjs --experimental-strip-types --test src/features/projects/lib/projectDiscussionChannel.test.mjs src/features/projects/projectModels.test.mjs src/features/projects/ui/OpenDiscussionButton.test.mjs && pnpm typecheck && pnpm exec biome check src/features/projects/lib/projectDiscussionChannel.ts src/features/projects/useProjectDiscussionChannel.ts src/features/projects/ui/OpenDiscussionButton.tsx src/features/projects/ui/ProjectDetailChrome.tsx src/features/projects/ui/DiscussionChannels.tsx
+. ./bin/activate-hermit && git add desktop/src/features/projects/ui/OpenDiscussionButton.tsx desktop/src/features/projects/ui/ProjectDetailScreen.tsx desktop/tests/e2e/project-channel-routing.spec.ts desktop/tests/e2e/projects-v3-screenshots.spec.ts
 ```
 
-Expected: PASS.
+Run `detect_changes({ scope: "staged" })` and confirm that the affected flow is limited to project detail chrome rendering and navigation to the resolved channel.
 
-- [ ] **Step 5: Commit**
+Run:
 
 ```bash
-. ./bin/activate-hermit && git add desktop/tests/e2e/project-channel-routing.spec.ts desktop/tests/e2e/projects-v3-screenshots.spec.ts desktop/playwright.config.ts && git commit -s -m "$(cat <<'EOF'
-test(projects): cover bound buzz-channel discussion routing
-
-EOF
-)"
+. ./bin/activate-hermit && git commit -s -m "feat(projects): open the bound discussion channel"
 ```
 
 ---
 
-## Acceptance criteria
+## Acceptance Criteria
 
-- Opening the mock `buzz` project shows an `Open Discussion` control.
-- Clicking it navigates to `/#/channels/9a1657ac-f7aa-5db0-b632-d8bbeb6dfb50` and the chat title is `general`.
-- The Channels tab shows `#general` as `project-bound-discussion-channel` even when NIP-50 FTS returns no hits.
-- Clicking that row also opens `#general`.
-- Implicit/legacy projects whose kind:30617 has a valid `buzz-channel` expose that UUID as `projectChannelId`.
-- Malformed, archived, DM, or viewer-unresolved bindings render no Open Discussion button and no broken `#uuid` text.
-- `buzz://project?tab=channels` and `buzz://repo?tab=channels` still open the Projects workspace Channels tab (existing `workspaceTabForShareTab` path).
-- Relay ingest still treats kind:30621 as global-only.
-- `ProjectDetailScreen.tsx` stays ≤ 1000 lines.
+- The selected repository's usable `buzz-channel` takes precedence over the project container's usable `buzz-channel`.
+- The project container binding is used when the selected repository binding is absent, malformed, unresolved, archived, or a DM.
+- A malformed, viewer-unresolved, archived, or DM-only binding produces no Open Discussion control and no synthetic Channels row.
+- A viewer-readable stream or forum binding resolves even when `isMember` is false.
+- The mock `buzz` project displays an Open Discussion Hash control with accessible name `Open Discussion`.
+- Clicking Open Discussion navigates to `/#/channels/9a1657ac-f7aa-5db0-b632-d8bbeb6dfb50` and renders chat title `general`.
+- The Channels tab pins `#general` as its first row when NIP-50 has zero matching hits.
+- The zero-hit row displays `Linked discussion channel` and no fabricated message count, participant, or activity date.
+- Clicking the bound Channels row navigates to the same `#general` route.
+- An already-discovered bound row keeps its real NIP-50 count, participants, and activity timestamp while moving first.
+- With no resolved binding, the existing loading, empty, and FTS-discovered Channels behavior is unchanged.
+- Project and repository share links keep `tab=channels` workspace semantics because no share-link or router vocabulary file changes.
+- No relay, CLI, mobile, web, event-writer, or project-model file changes.
+- `ProjectDetailScreen.tsx` and `ProjectWorkspaceTabs.tsx` remain within the 1000-line limit.
 
-## Validation commands
+## Final Handoff Gates
+
+- [ ] Run the repository-wide gate from the repository root:
 
 ```bash
-. ./bin/activate-hermit && cd desktop && node --import ./test-loader.mjs --experimental-strip-types --test src/features/projects/lib/projectDiscussionChannel.test.mjs src/features/projects/projectModels.test.mjs src/features/projects/ui/OpenDiscussionButton.test.mjs
-. ./bin/activate-hermit && cd desktop && pnpm typecheck
-. ./bin/activate-hermit && cd desktop && pnpm exec biome check src/features/projects/lib/projectDiscussionChannel.ts src/features/projects/useProjectDiscussionChannel.ts src/features/projects/ui/OpenDiscussionButton.tsx src/features/projects/ui/ProjectDetailChrome.tsx src/features/projects/ui/DiscussionChannels.tsx src/features/projects/ui/ProjectWorkspaceTabs.tsx src/features/projects/ui/ProjectDetailScreen.tsx
-. ./bin/activate-hermit && cd desktop && pnpm test:e2e:smoke -- project-channel-routing.spec.ts
+. ./bin/activate-hermit && just ci
 ```
 
-Always `pnpm build:e2e` (the `test:e2e:smoke` script already does) after UI changes.
-Kill port 4173 if a stale Vite preview is serving an old bundle.
+Expected: PASS.
+
+- [ ] Confirm the implementation changed only the planned files:
+
+```bash
+. ./bin/activate-hermit && git diff --name-only main...HEAD
+```
+
+Expected files:
+
+```text
+desktop/playwright.config.ts
+desktop/src/features/projects/lib/projectDiscussionChannel.test.mjs
+desktop/src/features/projects/lib/projectDiscussionChannel.ts
+desktop/src/features/projects/ui/DiscussionChannels.tsx
+desktop/src/features/projects/ui/OpenDiscussionButton.tsx
+desktop/src/features/projects/ui/ProjectDetailScreen.tsx
+desktop/src/features/projects/ui/ProjectWorkspaceTabs.tsx
+desktop/src/features/projects/useProjectDiscussionChannel.ts
+desktop/tests/e2e/project-channel-routing.spec.ts
+desktop/tests/e2e/projects-v3-screenshots.spec.ts
+docs/superpowers/plans/2026-08-20-project-channel-routing.md
+```
+
+The plan path appears because this branch already contains the reviewed plan commit on top of `main` before implementation begins.
+
+- [ ] Run `detect_changes({ scope: "compare", base_ref: "main" })` and confirm that no relay ingest, git authorization, share-link parsing, mobile, or web execution flow is affected.
+
+- [ ] Report the device and workflow exercised as: Desktop Playwright mock bridge, mock community, open `buzz` project, open Channels, route through bound `#general`, return to project, and route through Open Discussion.
 
 ## Open Questions
 
-1. Should `buzz://…&tab=channels` skip Projects and call `goChannel` when a bound channel exists?
-   Provisional default: no.
-   Share links already mean the workspace Channels tab, and changing that would break copied links.
+None.
 
-2. Should Open Discussion appear for an open channel the viewer has not joined?
-   Provisional default: yes, if the channel is in `useChannelsQuery` data.
-   That matches `ProjectReadmePanel` access-restricted copy, which already links open unbound-membership channels.
+The repository facts resolve channel type, precedence, membership, icon treatment, share-link behavior, and mock fixture choices without an implementation-time decision.
 
-3. Should the chrome control be labeled text instead of a Hash icon?
-   Provisional default: Hash icon with accessible name `Open Discussion`.
-   The detail chrome is icon-dense (`ShareLinkButton` is icon-only) and the screenshot/e2e contract keys off the accessible name, not visible text.
+## Self-Review
 
-## Self-review
-
-- Spec coverage: bound-tag spelling, writer/reader mismatch from #3611, NIP-MP no-broken-link rule, VISION discussion binding, Open Discussion affordance, Channels tab, legacy implicit projects, e2e on mock `general`.
-- Non-coverage (intentional): branch channels, git-event fan-in to Stream, mobile, web, relay ingest, CLI bind.
-- Placeholder scan: no TBD/TODO/implement later.
-- Type consistency: `ProjectDiscussionChannel` is the only discussion-channel type used by the hook, chrome, panel, and tests.
+- Spec coverage: NIP-MP metadata-only routing, broken-link omission, repository-first precedence, project fallback, Channels-tab pinning, Open Discussion routing, and viewer-readable resolution are each assigned to a test and implementation task.
+- Scope coverage: existing canonical writers and readers remain untouched, and the file whitelist excludes relay, CLI, mobile, web, project model, project labels, and share-link code.
+- TDD order: Task 1 starts with a missing-module unit failure, Task 2 starts with a missing-row Playwright failure, and Task 3 starts with a missing-control Playwright failure.
+- Type consistency: `ProjectDiscussionChannel` has one definition and is consumed by the hook, panel, workspace props, and button.
+- Placeholder scan: no unresolved marker, deferred implementation, generic error-handling instruction, or unnamed test remains.
