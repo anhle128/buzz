@@ -14,6 +14,7 @@ import {
   listGithubIssues,
   listProjectLocalRepositories,
 } from "@/shared/api/projectGit";
+import { listGithubPullRequests } from "@/shared/api/projectGithubPulls";
 import { createGithubIssueComment } from "@/shared/api/projectGithubIssueWrites";
 import {
   KIND_DELETION,
@@ -32,6 +33,7 @@ import {
   fetchProjectIssuesWith,
   type GithubIssueListState,
 } from "@/features/projects/lib/projectGithubIssues";
+import { fetchProjectPullRequestsWith } from "@/features/projects/lib/projectGithubPullRequests";
 import {
   createProjectIssueCommentWith,
   projectIssueWriteInvalidationKeys,
@@ -228,7 +230,7 @@ async function fetchBuzzProjectIssues(
   );
 }
 
-async function fetchProjectPullRequests(
+async function fetchBuzzProjectPullRequests(
   project: Repository,
 ): Promise<ProjectPullRequest[]> {
   const [pullRequestEvents, updateEvents, commentEvents, statusEvents] =
@@ -808,7 +810,10 @@ export function useProjectPullRequestsQuery(
     queryKey: ["project", project?.id ?? "none", "pull-requests"],
     queryFn: () => {
       if (!project) throw new Error("No project selected.");
-      return fetchProjectPullRequests(project);
+      return fetchProjectPullRequestsWith(project, {
+        loadGithub: listGithubPullRequests,
+        loadBuzz: () => fetchBuzzProjectPullRequests(project),
+      });
     },
     staleTime: 30_000,
   });

@@ -15,6 +15,7 @@ export type ProjectPullRequestComment = {
   content: string;
   tags: string[][];
   author: string;
+  authorAvatarUrl: string | null;
   createdAt: number;
   commit: string | null;
   anchor: ProjectPullRequestCommentAnchor | null;
@@ -74,6 +75,7 @@ export type ProjectPullRequest = {
   content: string;
   tags: string[][];
   author: string;
+  authorAvatarUrl: string | null;
   createdAt: number;
   repoAddress: string | null;
   /** Channel where the pull request originated (`h` tag), when provided. */
@@ -93,6 +95,7 @@ export type ProjectPullRequest = {
   statusCreatedAt: number | null;
   branchName: string | null;
   targetBranch: string | null;
+  headRepoFullName: string | null;
   initialCommit: string | null;
   commit: string | null;
   cloneUrls: string[];
@@ -100,6 +103,8 @@ export type ProjectPullRequest = {
   updatedAt: number;
   updates: ProjectPullRequestUpdate[];
   comments: ProjectPullRequestComment[];
+  commentCount: number;
+  htmlUrl: string | null;
 };
 
 export function eventToProjectPullRequest(

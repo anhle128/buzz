@@ -64,6 +64,7 @@ import {
   type GithubIssueListState,
   issueIdentityPubkeys,
 } from "@/features/projects/lib/projectGithubIssues";
+import { pullRequestIdentityPubkeys } from "@/features/projects/lib/projectGithubPullRequests";
 import { nextGithubIssueListState } from "@/features/projects/lib/projectGithubIssueWrites";
 import { githubRepositoryStateUnresolved } from "@/features/projects/lib/projectRepoState";
 import { normalizeRepositoryUrl } from "@/features/projects/lib/projectsViewHelpers";
@@ -157,6 +158,10 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
   );
   const repoStateQuery = useRepoStateQuery(repository);
   const pullRequestsQuery = useProjectPullRequestsQuery(repository);
+  const pullRequests = React.useMemo(
+    () => pullRequestsQuery.data?.pullRequests ?? [],
+    [pullRequestsQuery.data?.pullRequests],
+  );
   // GitHub pending/error must not fall back to the announcement default ("main").
   const githubHosted = isGitHubCloneUrl(repository?.cloneUrls[0]);
   const githubStateUnresolved = githubRepositoryStateUnresolved(
@@ -179,9 +184,7 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
       projectId: repository?.id ?? projectId,
       referencedBranches: githubStateUnresolved
         ? []
-        : (pullRequestsQuery.data?.map(
-            (pullRequest) => pullRequest.branchName ?? null,
-          ) ?? []),
+        : pullRequests.map((pullRequest) => pullRequest.branchName ?? null),
     });
   const repoTags = githubStateUnresolved
     ? []
@@ -258,23 +261,22 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
     const projectRepositories = new Set(
       (repository?.cloneUrls ?? []).map(normalizeRepositoryUrl),
     );
-    const matches =
-      pullRequestsQuery.data?.filter(
-        (pullRequest) =>
-          pullRequest.branchName === activeBranch &&
-          pullRequest.cloneUrls.some((cloneUrl) =>
-            projectRepositories.has(normalizeRepositoryUrl(cloneUrl)),
-          ),
-      ) ?? [];
+    const matches = pullRequests.filter(
+      (pullRequest) =>
+        pullRequest.branchName === activeBranch &&
+        pullRequest.cloneUrls.some((cloneUrl) =>
+          projectRepositories.has(normalizeRepositoryUrl(cloneUrl)),
+        ),
+    );
     return matches.length === 1 ? matches[0] : null;
-  }, [activeBranch, pullRequestsQuery.data, repository?.cloneUrls]);
+  }, [activeBranch, pullRequests, repository?.cloneUrls]);
   const openBranchPullRequest =
     selectedBranchPullRequest?.status === "Open" ||
     selectedBranchPullRequest?.status === "Draft"
       ? selectedBranchPullRequest
       : null;
   const activeRepoPullRequest =
-    pullRequestsQuery.data?.find((item) => item.id === selectedPullRequestId) ??
+    pullRequests.find((item) => item.id === selectedPullRequestId) ??
     selectedBranchPullRequest;
   const [repoSource, setRepoSource] = React.useState<"remote" | "local">(
     "remote",
@@ -363,7 +365,7 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
       activeBranch,
       branches: managedBranches,
       defaultBranch,
-      hasOpenPullRequest: (pullRequestsQuery.data ?? []).some(
+      hasOpenPullRequest: pullRequests.some(
         (pullRequest) =>
           pullRequest.branchName === activeBranch &&
           (pullRequest.status === "Open" || pullRequest.status === "Draft"),
@@ -435,15 +437,7 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
     if (!repository) return [];
     // Include PR authors/updaters so commit rows can resolve avatars for
     // publishers who are not listed as project contributors.
-    const pullRequestPubkeys = (pullRequestsQuery.data ?? []).flatMap(
-      (pullRequest) => [
-        pullRequest.author,
-        ...pullRequest.updates.map((update) => update.author),
-        ...pullRequest.comments.map((comment) => comment.author),
-        ...pullRequest.reviewers,
-        ...pullRequest.approvals.map((approval) => approval.author),
-      ],
-    );
+    const pullRequestPubkeys = pullRequestIdentityPubkeys(pullRequests);
     const issuePubkeys = issueIdentityPubkeys(issuesQuery.data?.issues ?? []);
     return [
       ...new Set([
@@ -452,7 +446,7 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
         ...issuePubkeys,
       ]),
     ];
-  }, [issuesQuery.data, pullRequestsQuery.data, repository]);
+  }, [issuesQuery.data, pullRequests, repository]);
   const profilesQuery = useUsersBatchQuery(peoplePubkeys, {
     enabled: peoplePubkeys.length > 0,
   });
@@ -755,8 +749,7 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
 
   const repoContributors = repoSnapshotQuery.data?.contributors ?? [];
   const selectedPullRequest =
-    pullRequestsQuery.data?.find((item) => item.id === selectedPullRequestId) ??
-    null;
+    pullRequests.find((item) => item.id === selectedPullRequestId) ?? null;
   const selectedIssue =
     issuesQuery.data?.issues.find((item) => item.id === selectedIssueId) ??
     null;
@@ -913,7 +906,7 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
                 repoDiff={displayedRepoDiff}
                 repoDiffError={displayedRepoDiffError}
                 repoDiffLoading={displayedRepoDiffLoading}
-                pullRequests={pullRequestsQuery.data ?? []}
+                pullRequests={pullRequests}
                 pullRequestsError={pullRequestsQuery.error}
                 pullRequestsLoading={pullRequestsQuery.isLoading}
                 repoContributors={repoContributors}

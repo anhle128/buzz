@@ -61,6 +61,10 @@ export function CreatePullRequestDialog({
   const repository = selection?.repository;
   const repoStateQuery = useRepoStateQuery(repository);
   const pullRequestsQuery = useProjectPullRequestsQuery(repository);
+  const pullRequests = React.useMemo(
+    () => pullRequestsQuery.data?.pullRequests ?? [],
+    [pullRequestsQuery.data?.pullRequests],
+  );
   const githubHosted = isGitHubCloneUrl(repository?.cloneUrls[0]);
   const githubStateUnresolved = githubRepositoryStateUnresolved(
     githubHosted,
@@ -139,7 +143,7 @@ export function CreatePullRequestDialog({
     (sourceSyncQuery.data?.remoteBranch === sourceBranch
       ? sourceSyncQuery.data.remoteHead
       : null);
-  const hasOpenPullRequest = (pullRequestsQuery.data ?? []).some(
+  const hasOpenPullRequest = pullRequests.some(
     (pullRequest) =>
       (pullRequest.status === "Open" || pullRequest.status === "Draft") &&
       pullRequest.branchName === sourceBranch &&
