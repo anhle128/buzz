@@ -48,6 +48,8 @@ pub mod tenant;
 pub mod tunnel;
 /// Webhook secret generation and constant-time comparison.
 pub mod webhook_secret;
+/// Webhook repository identity resolution and project claim authorization.
+pub mod workflow_route;
 /// Workflow action sink — relay-side implementation of [`buzz_workflow::ActionSink`].
 pub mod workflow_sink;
 
