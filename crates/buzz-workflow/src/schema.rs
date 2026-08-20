@@ -961,7 +961,10 @@ mod tests {
         let err = parse_yaml(yaml).unwrap_err();
         match err {
             WorkflowError::InvalidDefinition(msg) => {
-                assert!(msg.contains("webhook"), "expected webhook-only routing, got {msg}");
+                assert!(
+                    msg.contains("webhook"),
+                    "expected webhook-only routing, got {msg}"
+                );
             }
             other => panic!("expected InvalidDefinition, got {other}"),
         }
@@ -1007,6 +1010,20 @@ mod tests {
         );
         let (_, json) = parse_yaml(yaml).expect("static workflow should parse");
         assert!(!json.contains("\"routing\""));
+    }
+
+    #[test]
+    fn static_message_posted_workflow_does_not_grow_routing_fields() {
+        let yaml = concat!(
+            "name: 'Incident Alert'\n",
+            "trigger:\n  on: message_posted\n",
+            "steps:\n  - id: notify\n    action: send_message\n    text: 'P1 alert'\n",
+        );
+        let (def, json) = parse_yaml(yaml).expect("static parse");
+        assert!(!def.has_project_channel_routing());
+        assert!(!json.contains("\"routing\""));
+        assert!(!json.contains("project_channel_by_repository"));
+        assert!(!json.contains("idempotency_key"));
     }
 
     #[test]
