@@ -31,6 +31,17 @@ test("repository binding wins over the project binding", () => {
   );
 });
 
+test("UUID binding lookup is case-insensitive and returns the canonical channel id", () => {
+  assert.deepEqual(
+    resolveProjectDiscussionChannel({
+      repositoryChannelId: "9A1657AC-F7AA-5DB0-B632-D8BBEB6DFB50",
+      projectChannelId: DESIGN,
+      channels: [channel(GENERAL), channel(DESIGN)],
+    }),
+    { id: GENERAL, name: "general" },
+  );
+});
+
 test("project binding is the fallback when the repository has no binding", () => {
   assert.deepEqual(
     resolveProjectDiscussionChannel({

@@ -30,7 +30,10 @@ export function resolveProjectDiscussionChannel(input: {
 
   for (const candidate of candidates) {
     if (!candidate || !isValidProjectChannelId(candidate)) continue;
-    const channel = input.channels.find((item) => item.id === candidate);
+    const normalizedCandidate = candidate.toLowerCase();
+    const channel = input.channels.find(
+      (item) => item.id.toLowerCase() === normalizedCandidate,
+    );
     if (!channel || !isUsableDiscussionChannel(channel)) continue;
     return { id: channel.id, name: channel.name };
   }
