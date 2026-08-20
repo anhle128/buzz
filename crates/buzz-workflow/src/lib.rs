@@ -36,7 +36,7 @@ pub mod executor;
 pub mod routing;
 pub mod schema;
 
-pub use action_sink::{ActionSink, ActionSinkError};
+pub use action_sink::{route_provenance_tags, ActionSink, ActionSinkError, WorkflowMessageRoute};
 pub use error::{PartialProgress, WorkflowError};
 pub use executor::ExecutionResult;
 pub use routing::{RepositoryCoordinate, RouteFailure, RoutingDef, RoutingMode};

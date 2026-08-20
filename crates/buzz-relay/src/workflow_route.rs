@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use buzz_sdk::ProjectMemberCoord;
 use buzz_workflow::routing::parse_repository_coordinate;
 use buzz_workflow::RouteFailure;
+use uuid::Uuid;
 
 /// Latest live kind `30617` repository identity used by webhook routing.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -244,6 +245,31 @@ pub fn authorize_unique_project_route<'a>(
         [] => Err(RouteFailure::ProjectMissing),
         [only] => Ok(*only),
         _ => Err(RouteFailure::ProjectAmbiguous),
+    }
+}
+
+/// Require the unique claim-valid project to still be the stored coordinate
+/// whose one valid `buzz-channel` UUID equals `channel_id`.
+///
+/// A replacement project or a changed destination is stale: the side effect
+/// must not reroute.
+pub fn require_exact_stored_project_channel<'a>(
+    repository: &RepositoryHead,
+    projects: &'a [ProjectHead],
+    stored_project_coordinate: &str,
+    channel_id: Uuid,
+) -> Result<&'a ProjectHead, RouteFailure> {
+    let project = authorize_unique_project_route(repository, projects)?;
+    if project.coordinate != stored_project_coordinate {
+        return Err(RouteFailure::RouteStale);
+    }
+    match project
+        .buzz_channel
+        .as_deref()
+        .and_then(|value| Uuid::parse_str(value).ok())
+    {
+        Some(project_channel) if project_channel == channel_id => Ok(project),
+        _ => Err(RouteFailure::RouteStale),
     }
 }
 
@@ -490,6 +516,49 @@ mod tests {
             listed: true,
         }];
         authorize_unique_project_route(&repository, &projects).expect("maintainer claim");
+    }
+
+    #[test]
+    fn stored_project_mismatch_or_channel_change_is_stale() {
+        let repository = repo("agentic-os-plan", &owner());
+        let dest = Uuid::parse_str("9a1657ac-f7aa-5db0-b632-d8bbeb6dfb50").expect("uuid");
+        let project = ProjectHead {
+            coordinate: format!("30621:{}:gigo-harness", owner()),
+            signer_hex: owner(),
+            member_coordinates: vec![repository.coordinate.clone()],
+            buzz_channel: Some(dest.to_string()),
+            listed: true,
+        };
+        require_exact_stored_project_channel(
+            &repository,
+            std::slice::from_ref(&project),
+            &project.coordinate,
+            dest,
+        )
+        .expect("exact stored route");
+
+        assert_eq!(
+            require_exact_stored_project_channel(
+                &repository,
+                std::slice::from_ref(&project),
+                &format!("30621:{}:replacement", owner()),
+                dest,
+            )
+            .unwrap_err(),
+            RouteFailure::RouteStale
+        );
+
+        let other_channel = Uuid::parse_str("11111111-1111-1111-1111-111111111111").expect("uuid");
+        assert_eq!(
+            require_exact_stored_project_channel(
+                &repository,
+                std::slice::from_ref(&project),
+                &format!("30621:{}:gigo-harness", owner()),
+                other_channel,
+            )
+            .unwrap_err(),
+            RouteFailure::RouteStale
+        );
     }
 
     #[test]
