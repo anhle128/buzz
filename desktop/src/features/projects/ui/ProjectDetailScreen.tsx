@@ -72,6 +72,7 @@ import {
   workspaceTabForShareTab,
 } from "@/features/projects/lib/projectShareLinks";
 import { selectProjectRepository } from "@/features/projects/projectModels";
+import { useProjectDiscussionChannel } from "@/features/projects/useProjectDiscussionChannel";
 import { KIND_REPO_ANNOUNCEMENT } from "@/shared/constants/kinds";
 import type { EntityLinkTab } from "@/shared/lib/entityLink";
 import { useProjectRepoPresentation } from "@/features/projects/useProjectRepoHost";
@@ -83,6 +84,7 @@ import {
 } from "./useOpenProjectTerminal";
 import type { CreateIssueDialogInput } from "./CreateIssueDialog";
 import { ProjectBranchActionDialogs } from "./ProjectBranchActionDialogs";
+import { OpenDiscussionButton } from "./OpenDiscussionButton";
 import { ProjectDetailChrome } from "./ProjectDetailChrome";
 import { ProjectDetailChromeActions } from "./ProjectDetailChromeActions";
 import { UnavailableProjectRepositories } from "./UnavailableProjectRepositories";
@@ -151,6 +153,7 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
     return projectId.slice(kindStr.length);
   }, [projectId, repositoryId]);
   const repository = selectProjectRepository(project, routeRepositoryId);
+  const discussionChannel = useProjectDiscussionChannel(project, repository);
   const repoRemote = useProjectRepoPresentation(repository);
   const { applyPatch: applyRepositorySearch } = useHistorySearchState(
     PROJECT_REPOSITORY_SEARCH_KEYS,
@@ -831,6 +834,14 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
       <div className="flex min-h-0 min-w-0 flex-1 flex-row overflow-hidden">
         <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
           <ProjectDetailChrome
+            actions={
+              <OpenDiscussionButton
+                channel={discussionChannel}
+                onOpen={(channelId) => {
+                  void goChannel(channelId);
+                }}
+              />
+            }
             activeTabCrumb={activeTabCrumb}
             activeWorkItemCrumb={activeWorkItemCrumb}
             chromeRef={projectDetailHeaderChromeRef}
@@ -849,6 +860,7 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
           <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto px-4 pb-4">
             <div className="w-full space-y-3 pt-[calc(var(--buzz-channel-content-top-padding,5.75rem)_+_1px)]">
               <WorkspaceTabs
+                boundChannel={discussionChannel}
                 key={`${project.id}:${repository.id}:${tabsResetKey}`}
                 initialTab={
                   requestedTab

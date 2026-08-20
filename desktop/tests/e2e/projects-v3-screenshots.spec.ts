@@ -26,7 +26,7 @@ test("projects v3 workspace screenshot states", async ({ page }) => {
   await openBuzzProject(page);
   await expect(
     page.getByRole("button", { name: "Open Discussion" }),
-  ).toHaveCount(0);
+  ).toBeVisible();
 
   // Single-box workspace: tabs sit above the pickers, which only appear for
   // the README overview and Files.
