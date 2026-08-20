@@ -1,9 +1,4 @@
 //! Serialized webhook admission for project-channel routing.
-//!
-//! `handle_workflow_webhook` is compiled and unit-tested here but is not
-//! wired from `api/bridge.rs` until Task 7.
-
-#![allow(dead_code)]
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -225,8 +220,7 @@ fn spawn_admitted_run(
         let def: WorkflowDef = match serde_json::from_value(definition) {
             Ok(d) => d,
             Err(e) => {
-                tracing::error!("webhook: failed to parse definition: {e}");
-                if let Err(db_err) = db
+                let _ = db
                     .update_workflow_run(
                         community_id,
                         run_id,
@@ -238,10 +232,7 @@ fn spawn_admitted_run(
                             message: &format!("definition parse error: {e}"),
                         }),
                     )
-                    .await
-                {
-                    tracing::error!("webhook: failed to mark run as failed: {db_err}");
-                }
+                    .await;
                 return;
             }
         };
@@ -262,7 +253,7 @@ fn spawn_admitted_run(
     });
 }
 
-/// Webhook trigger handler kept dormant until the live route is switched over.
+/// Handle a webhook trigger after the bridge extracts its route and query data.
 pub(crate) async fn handle_workflow_webhook(
     state: Arc<AppState>,
     id_str: String,
@@ -317,7 +308,12 @@ pub(crate) async fn handle_workflow_webhook(
     match &stored_secret {
         Some(secret) => {
             if !crate::webhook_secret::verify_secret(&provided_secret, secret) {
-                tracing::warn!("webhook: invalid secret for workflow {id}");
+                record_admission_observation(AdmissionObservation::without_run(
+                    Some(id),
+                    Some(*community_id.as_uuid()),
+                    "rejected",
+                    "none",
+                ));
                 return Err(api_error(StatusCode::UNAUTHORIZED, "authentication failed"));
             }
         }
@@ -582,7 +578,7 @@ async fn handle_dynamic_webhook(
             ));
             return Err(route_failure_response(failure));
         }
-        Err(ResolveRouteError::Transient(_)) => {
+        Err(ResolveRouteError::Transient(_error)) => {
             drop(guard);
             record_admission_observation(AdmissionObservation::without_run(
                 Some(id),

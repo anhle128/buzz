@@ -145,8 +145,8 @@ pub fn project_head_from_event(event: &nostr::Event) -> Option<ProjectHead> {
     }
     let d_tag = d_tag[1].clone();
     let signer_hex = event.pubkey.to_hex();
-    let member_coordinates = all_tag_values(event, "a")
-        .into_iter()
+    let member_coordinates = tags_named(event, "a")
+        .filter_map(|tag| tag.get(1))
         .filter_map(|value| ProjectMemberCoord::parse_full(value).ok().map(|m| m.coord))
         .collect();
     let listed = first_tag_value(event, "buzz-visibility") != Some("unlisted");
@@ -643,6 +643,23 @@ mod tests {
             .sign_with_keys(&keys)
             .unwrap();
         assert!(!project_head_from_event(&unlisted).unwrap().listed);
+    }
+
+    #[test]
+    fn project_event_ignores_relay_hint_that_looks_like_a_member_coordinate() {
+        let keys = nostr::Keys::generate();
+        let actual_member = coord(&owner(), "actual-member");
+        let relay_hint = coord(&other(), "hint-only");
+        let event = nostr::EventBuilder::new(nostr::Kind::Custom(30621), "")
+            .tags(vec![
+                nostr::Tag::parse(["d", "gigo-harness"]).unwrap(),
+                nostr::Tag::parse(["a", actual_member.as_str(), relay_hint.as_str()]).unwrap(),
+            ])
+            .sign_with_keys(&keys)
+            .unwrap();
+
+        let parsed = project_head_from_event(&event).expect("project head");
+        assert_eq!(parsed.member_coordinates, vec![actual_member]);
     }
 
     #[test]
