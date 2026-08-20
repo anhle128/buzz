@@ -33,7 +33,10 @@ import {
   fetchProjectIssuesWith,
   type GithubIssueListState,
 } from "@/features/projects/lib/projectGithubIssues";
-import { fetchProjectPullRequestsWith } from "@/features/projects/lib/projectGithubPullRequests";
+import {
+  fetchProjectPullRequestsWith,
+  requireNostrPullRequestId,
+} from "@/features/projects/lib/projectGithubPullRequests";
 import {
   createProjectIssueCommentWith,
   projectIssueWriteInvalidationKeys,
@@ -292,6 +295,7 @@ async function createProjectPullRequestComment({
   project: Repository;
   pullRequest: ProjectPullRequest;
 }): Promise<void> {
+  const pullRequestId = requireNostrPullRequestId(pullRequest.id);
   const body = content.trim();
   if (!body) {
     throw new Error("Comment cannot be empty.");
@@ -313,7 +317,7 @@ async function createProjectPullRequestComment({
     ...mentionPubkeys.map((pubkey) => pubkey.toLowerCase()),
   ]);
   const tags = [
-    ["e", pullRequest.id, "", "root"],
+    ["e", pullRequestId, "", "root"],
     ["a", project.repoAddress],
     ...[...recipients].map((recipient) => ["p", recipient]),
     ...(normalizedAnchor
