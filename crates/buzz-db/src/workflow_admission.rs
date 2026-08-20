@@ -24,7 +24,7 @@ const INSERT_ADMITTED_RUN: &str = r#"
             INSERT INTO workflow_runs (
                 community_id, id, workflow_id, status, trigger_event_id, current_step,
                 execution_trace, trigger_context, started_at, completed_at,
-                error_message, error_code, idempotency_key_hash, payload_hash, route_snapshot
+                error_code, error_message, idempotency_key_hash, payload_hash, route_snapshot
             )
             VALUES (
                 $1, $2, $3, $4::run_status, NULL, 0,

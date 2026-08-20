@@ -2511,6 +2511,11 @@ pub(crate) mod tests {
             )
             .await
             .expect("persist deterministic rejection");
+        assert_eq!(created.error_code.as_deref(), Some("repository_missing"));
+        assert_eq!(
+            created.error_message.as_deref(),
+            Some("repository could not be resolved")
+        );
 
         let second = begin_workflow_admission(&pool, community, workflow_id, &key, &payload)
             .await
