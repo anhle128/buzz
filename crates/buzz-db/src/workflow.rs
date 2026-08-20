@@ -223,6 +223,13 @@ pub struct WorkflowRunRecord {
     pub error_code: Option<String>,
     /// When the run record was created.
     pub created_at: DateTime<Utc>,
+    /// SHA-256 of the control-plane idempotency key. NULL for non-dynamic runs.
+    pub idempotency_key_hash: Option<Vec<u8>>,
+    /// SHA-256 of the sanitized payload admitted with the key. NULL for non-dynamic runs.
+    pub payload_hash: Option<Vec<u8>>,
+    /// Server-resolved route captured at dynamic admission. NULL until accept, and
+    /// for non-dynamic runs.
+    pub route_snapshot: Option<crate::workflow_admission::WorkflowRouteSnapshot>,
 }
 
 /// A winning scheduled workflow fire claim.
@@ -834,7 +841,8 @@ pub async fn get_workflow_run(
     let row = sqlx::query(
         r#"
         SELECT community_id, id, workflow_id, status::text AS status, trigger_event_id, current_step,
-               execution_trace, trigger_context, started_at, completed_at, error_message, error_code, created_at
+               execution_trace, trigger_context, started_at, completed_at, error_message, error_code, created_at,
+               idempotency_key_hash, payload_hash, route_snapshot
         FROM workflow_runs
         WHERE community_id = $1 AND id = $2
         "#,
@@ -866,7 +874,8 @@ pub async fn list_workflow_runs_page(
     let rows = sqlx::query(
         r#"
         SELECT community_id, id, workflow_id, status::text AS status, trigger_event_id, current_step,
-               execution_trace, trigger_context, started_at, completed_at, error_message, error_code, created_at
+               execution_trace, trigger_context, started_at, completed_at, error_message, error_code, created_at,
+               idempotency_key_hash, payload_hash, route_snapshot
         FROM workflow_runs
         WHERE community_id = $1 AND workflow_id = $2
           AND (
@@ -1190,13 +1199,19 @@ fn row_to_workflow_record(row: sqlx::postgres::PgRow) -> Result<WorkflowRecord> 
     })
 }
 
-fn row_to_run_record(row: sqlx::postgres::PgRow) -> Result<WorkflowRunRecord> {
+pub(crate) fn row_to_run_record(row: sqlx::postgres::PgRow) -> Result<WorkflowRunRecord> {
     let id: Uuid = row.try_get("id")?;
     let community_id: Uuid = row.try_get("community_id")?;
     let workflow_id: Uuid = row.try_get("workflow_id")?;
 
     let status_str: String = row.try_get("status")?;
     let status = status_str.parse::<RunStatus>()?;
+    let route_snapshot = match row.try_get::<Option<serde_json::Value>, _>("route_snapshot")? {
+        Some(value) => Some(crate::workflow_admission::route_snapshot_from_stored_json(
+            value,
+        )?),
+        None => None,
+    };
 
     Ok(WorkflowRunRecord {
         id,
@@ -1212,6 +1227,9 @@ fn row_to_run_record(row: sqlx::postgres::PgRow) -> Result<WorkflowRunRecord> {
         error_message: row.try_get("error_message")?,
         error_code: row.try_get("error_code")?,
         created_at: row.try_get("created_at")?,
+        idempotency_key_hash: row.try_get("idempotency_key_hash")?,
+        payload_hash: row.try_get("payload_hash")?,
+        route_snapshot,
     })
 }
 
@@ -1269,8 +1287,11 @@ pub async fn find_by_owner_and_name(
 // -- Tests --------------------------------------------------------------------
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+    use crate::workflow_admission::{
+        begin_workflow_admission, BeginWorkflowAdmission, WorkflowRouteSnapshot,
+    };
     use chrono::TimeZone;
 
     // -- WorkflowStatus enum --------------------------------------------------
@@ -1517,6 +1538,9 @@ mod tests {
             error_message: None,
             error_code: None,
             created_at: now,
+            idempotency_key_hash: None,
+            payload_hash: None,
+            route_snapshot: None,
         };
 
         assert_eq!(record.id, id);
@@ -1546,6 +1570,9 @@ mod tests {
             error_message: None,
             error_code: None,
             created_at: now,
+            idempotency_key_hash: None,
+            payload_hash: None,
+            route_snapshot: None,
         };
 
         assert!(record.trigger_event_id.is_none());
@@ -1570,6 +1597,9 @@ mod tests {
             error_message: Some("step timeout exceeded".to_owned()),
             error_code: Some("step_timeout".to_owned()),
             created_at: now,
+            idempotency_key_hash: None,
+            payload_hash: None,
+            route_snapshot: None,
         };
 
         assert_eq!(record.status, RunStatus::Failed);
@@ -1602,6 +1632,9 @@ mod tests {
             error_message: None,
             error_code: None,
             created_at: now,
+            idempotency_key_hash: None,
+            payload_hash: None,
+            route_snapshot: None,
         };
 
         assert!(record.execution_trace.is_array());
@@ -1625,6 +1658,9 @@ mod tests {
             error_message: None,
             error_code: None,
             created_at: now,
+            idempotency_key_hash: None,
+            payload_hash: None,
+            route_snapshot: None,
         };
 
         let mut cloned = record.clone();
@@ -1776,7 +1812,7 @@ mod tests {
 
     const TEST_DB_URL: &str = "postgres://buzz:buzz_dev@localhost:5432/buzz";
 
-    async fn setup_pool() -> PgPool {
+    pub(crate) async fn setup_pool() -> PgPool {
         let database_url = std::env::var("BUZZ_TEST_DATABASE_URL")
             .or_else(|_| std::env::var("DATABASE_URL"))
             .unwrap_or_else(|_| TEST_DB_URL.to_owned());
@@ -1787,7 +1823,7 @@ mod tests {
     }
 
     /// Insert a community with a unique host. Returns its `CommunityId`.
-    async fn make_community(pool: &PgPool) -> CommunityId {
+    pub(crate) async fn make_community(pool: &PgPool) -> CommunityId {
         let id = Uuid::new_v4();
         let host = format!("test-{}.example", id.simple());
         sqlx::query("INSERT INTO communities (id, host) VALUES ($1, $2)")
@@ -1821,7 +1857,10 @@ mod tests {
     /// Insert a workflow whose tenant is `community`'s channel. Returns the
     /// workflow id and the owning community for callers that want to assert
     /// the resolved tenant.
-    async fn make_workflow_in(pool: &PgPool, community: CommunityId) -> (Uuid, CommunityId) {
+    pub(crate) async fn make_workflow_in(
+        pool: &PgPool,
+        community: CommunityId,
+    ) -> (Uuid, CommunityId) {
         let owner = vec![0xa1; 32];
         ensure_user(pool, community, &owner)
             .await
@@ -2445,5 +2484,233 @@ mod tests {
             enabled_b.iter().any(|w| w.id == wf_departing_b),
             "same owner's workflow in a different channel must be untouched"
         );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn admission_same_key_same_payload_returns_existing_row() {
+        let pool = setup_pool().await;
+        let community = make_community(&pool).await;
+        let (workflow_id, _) = make_workflow_in(&pool, community).await;
+        let key = [1_u8; 32];
+        let payload = [9_u8; 32];
+
+        let first = begin_workflow_admission(&pool, community, workflow_id, &key, &payload)
+            .await
+            .expect("begin first admission");
+        let BeginWorkflowAdmission::Vacant(guard) = first else {
+            panic!("first admission must be vacant");
+        };
+        let created = guard
+            .reject(
+                &serde_json::json!({"webhook_fields": {}}),
+                WorkflowRunFailure {
+                    code: "repository_missing",
+                    message: "repository could not be resolved",
+                },
+            )
+            .await
+            .expect("persist deterministic rejection");
+
+        let second = begin_workflow_admission(&pool, community, workflow_id, &key, &payload)
+            .await
+            .expect("begin duplicate admission");
+        let BeginWorkflowAdmission::Existing(existing) = second else {
+            panic!("same payload must return existing");
+        };
+        assert_eq!(existing.id, created.id);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn admission_same_key_different_payload_is_conflict() {
+        let pool = setup_pool().await;
+        let community = make_community(&pool).await;
+        let (workflow_id, _) = make_workflow_in(&pool, community).await;
+        let key = [2_u8; 32];
+        let original_payload = [8_u8; 32];
+        let first =
+            begin_workflow_admission(&pool, community, workflow_id, &key, &original_payload)
+                .await
+                .expect("begin first admission");
+        let BeginWorkflowAdmission::Vacant(guard) = first else {
+            panic!("first admission must be vacant");
+        };
+        let created = guard
+            .reject(
+                &serde_json::json!({"webhook_fields": {}}),
+                WorkflowRunFailure {
+                    code: "repository_missing",
+                    message: "repository could not be resolved",
+                },
+            )
+            .await
+            .expect("persist first admission");
+
+        let second = begin_workflow_admission(&pool, community, workflow_id, &key, &[7_u8; 32])
+            .await
+            .expect("begin conflicting admission");
+        let BeginWorkflowAdmission::PayloadConflict { existing } = second else {
+            panic!("changed payload must conflict");
+        };
+        assert_eq!(existing.id, created.id);
+        assert_eq!(
+            existing.payload_hash.as_deref(),
+            Some(original_payload.as_slice())
+        );
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*)::bigint FROM workflow_runs WHERE community_id = $1 AND workflow_id = $2",
+        )
+        .bind(community.as_uuid())
+        .bind(workflow_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count workflow runs");
+        assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn admission_same_key_waits_for_first_guard_before_existing_decision() {
+        let pool = setup_pool().await;
+        let community = make_community(&pool).await;
+        let (workflow_id, _) = make_workflow_in(&pool, community).await;
+        let key = [3_u8; 32];
+        let payload = [7_u8; 32];
+        let first = begin_workflow_admission(&pool, community, workflow_id, &key, &payload)
+            .await
+            .expect("begin first admission");
+        let BeginWorkflowAdmission::Vacant(guard) = first else {
+            panic!("first admission must be vacant");
+        };
+
+        let second_pool = pool.clone();
+        let mut second = tokio::spawn(async move {
+            begin_workflow_admission(&second_pool, community, workflow_id, &key, &payload).await
+        });
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), &mut second)
+                .await
+                .is_err(),
+            "duplicate admission must wait for the first transaction"
+        );
+
+        let created = guard
+            .reject(
+                &serde_json::json!({"webhook_fields": {}}),
+                WorkflowRunFailure {
+                    code: "project_missing",
+                    message: "project could not be resolved",
+                },
+            )
+            .await
+            .expect("finish first admission");
+        let second = second
+            .await
+            .expect("join second admission")
+            .expect("begin second admission");
+        let BeginWorkflowAdmission::Existing(existing) = second else {
+            panic!("second admission must observe the committed row");
+        };
+        assert_eq!(existing.id, created.id);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn admission_guard_rollback_leaves_no_row_and_allows_retry() {
+        let pool = setup_pool().await;
+        let community = make_community(&pool).await;
+        let (workflow_id, _) = make_workflow_in(&pool, community).await;
+        let key = [4_u8; 32];
+        let payload = [6_u8; 32];
+        let first = begin_workflow_admission(&pool, community, workflow_id, &key, &payload)
+            .await
+            .expect("begin first admission");
+        let BeginWorkflowAdmission::Vacant(guard) = first else {
+            panic!("first admission must be vacant");
+        };
+        drop(guard);
+
+        let retry = begin_workflow_admission(&pool, community, workflow_id, &key, &payload)
+            .await
+            .expect("retry admission after rollback");
+        let BeginWorkflowAdmission::Vacant(retry_guard) = retry else {
+            panic!("rollback must leave the key vacant");
+        };
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*)::bigint FROM workflow_runs WHERE community_id = $1 AND workflow_id = $2",
+        )
+        .bind(community.as_uuid())
+        .bind(workflow_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count workflow runs");
+        assert_eq!(count, 0);
+        drop(retry_guard);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn admission_identity_columns_are_immutable_after_insert() {
+        let pool = setup_pool().await;
+        let community = make_community(&pool).await;
+        let (workflow_id, _) = make_workflow_in(&pool, community).await;
+        let first =
+            begin_workflow_admission(&pool, community, workflow_id, &[5_u8; 32], &[5_u8; 32])
+                .await
+                .expect("begin admission");
+        let BeginWorkflowAdmission::Vacant(guard) = first else {
+            panic!("first admission must be vacant");
+        };
+        let snapshot = WorkflowRouteSnapshot {
+            community_id: *community.as_uuid(),
+            repository_coordinate: format!("30617:{}:agentic-os-plan", "ab".repeat(32)),
+            project_coordinate: format!("30621:{}:gigo-harness", "ab".repeat(32)),
+            channel_id: Uuid::new_v4(),
+            matched_identity_tier: "d_tag".into(),
+        };
+        let run = guard
+            .accept(&serde_json::json!({"webhook_fields": {}}), &snapshot)
+            .await
+            .expect("persist accepted admission");
+
+        let hash_error = sqlx::query(
+            "UPDATE workflow_runs SET idempotency_key_hash = $1 WHERE community_id = $2 AND id = $3",
+        )
+        .bind([9_u8; 32].as_slice())
+        .bind(community.as_uuid())
+        .bind(run.id)
+        .execute(&pool)
+        .await
+        .expect_err("idempotency hash update must fail");
+        assert!(hash_error
+            .to_string()
+            .contains("admission identity is immutable"));
+
+        let payload_error = sqlx::query(
+            "UPDATE workflow_runs SET payload_hash = $1 WHERE community_id = $2 AND id = $3",
+        )
+        .bind([8_u8; 32].as_slice())
+        .bind(community.as_uuid())
+        .bind(run.id)
+        .execute(&pool)
+        .await
+        .expect_err("payload hash update must fail");
+        assert!(payload_error
+            .to_string()
+            .contains("admission identity is immutable"));
+
+        let route_error = sqlx::query(
+            "UPDATE workflow_runs SET route_snapshot = $1 WHERE community_id = $2 AND id = $3",
+        )
+        .bind(serde_json::json!({"tampered": true}))
+        .bind(community.as_uuid())
+        .bind(run.id)
+        .execute(&pool)
+        .await
+        .expect_err("route snapshot update must fail");
+        assert!(route_error
+            .to_string()
+            .contains("admission identity is immutable"));
     }
 }

@@ -55,6 +55,8 @@ pub mod usage;
 pub mod user;
 /// Workflow, run, and approval persistence.
 pub mod workflow;
+/// Serialized idempotent admission for dynamically routed webhook workflow runs.
+pub mod workflow_admission;
 
 pub use error::{DbError, Result};
 pub use event::{EventQuery, ReactionEventInsertOutcome, DEFAULT_MAX_PAGE_LIMIT};
@@ -4048,6 +4050,25 @@ impl Db {
             workflow_id,
             trigger_event_id,
             trigger_context,
+        )
+        .await
+    }
+
+    /// Begin serialized idempotent admission for a dynamically routed workflow run.
+    #[datastore_span(name = "begin_workflow_admission", system = "postgresql")]
+    pub async fn begin_workflow_admission(
+        &self,
+        community_id: CommunityId,
+        workflow_id: Uuid,
+        idempotency_key_hash: &[u8; 32],
+        payload_hash: &[u8; 32],
+    ) -> Result<workflow_admission::BeginWorkflowAdmission> {
+        workflow_admission::begin_workflow_admission(
+            &self.pool,
+            community_id,
+            workflow_id,
+            idempotency_key_hash,
+            payload_hash,
         )
         .await
     }
