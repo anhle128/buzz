@@ -1,11 +1,12 @@
 //! Serialized idempotent admission for dynamically routed webhook workflow runs.
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sqlx::{PgPool, Postgres, Transaction};
+use sqlx::{PgPool, Postgres, Row, Transaction};
 use uuid::Uuid;
 
-use buzz_core::CommunityId;
+use buzz_core::{CommunityId, StoredEvent};
 
 use crate::error::{DbError, Result};
 use crate::workflow::{row_to_run_record, RunStatus, WorkflowRunFailure, WorkflowRunRecord};
@@ -78,7 +79,71 @@ pub struct WorkflowAdmissionGuard {
     payload_hash: [u8; 32],
 }
 
+/// Destination channel fields needed while an admission transaction is open.
+pub struct WorkflowAdmissionChannel {
+    /// Channel identifier.
+    pub id: Uuid,
+    /// When the channel was archived, if applicable.
+    pub archived_at: Option<DateTime<Utc>>,
+}
+
 impl WorkflowAdmissionGuard {
+    /// List latest live global parameterized heads of `kind` on this transaction.
+    pub async fn list_latest_parameterized_heads(&mut self, kind: i32) -> Result<Vec<StoredEvent>> {
+        crate::project_heads::list_latest_parameterized_heads_on(
+            &mut self.tx,
+            self.community_id,
+            kind,
+        )
+        .await
+    }
+
+    /// Load destination channel `id` and `archived_at` in this admission community.
+    ///
+    /// Soft-deleted rows are excluded. A channel that exists only in another
+    /// community is not visible.
+    pub async fn load_destination_channel(
+        &mut self,
+        channel_id: Uuid,
+    ) -> Result<Option<WorkflowAdmissionChannel>> {
+        let row = sqlx::query(
+            "SELECT id, archived_at FROM channels \
+             WHERE community_id = $1 AND id = $2 AND deleted_at IS NULL",
+        )
+        .bind(self.community_id.as_uuid())
+        .bind(channel_id)
+        .fetch_optional(&mut *self.tx)
+        .await?;
+        row.map(|row| {
+            Ok(WorkflowAdmissionChannel {
+                id: row.try_get("id")?,
+                archived_at: row.try_get("archived_at")?,
+            })
+        })
+        .transpose()
+    }
+
+    /// Active membership role for `pubkey` in `channel_id` in this community.
+    ///
+    /// Uses the same predicates as [`crate::channel::get_member_role`].
+    pub async fn destination_member_role(
+        &mut self,
+        channel_id: Uuid,
+        pubkey: &[u8],
+    ) -> Result<Option<String>> {
+        let row = sqlx::query(
+            "SELECT cm.role::text AS role FROM channel_members cm \
+             JOIN channels c ON cm.community_id = c.community_id AND cm.channel_id = c.id AND c.deleted_at IS NULL \
+             WHERE cm.community_id = $1 AND cm.channel_id = $2 AND cm.pubkey = $3 AND cm.removed_at IS NULL",
+        )
+        .bind(self.community_id.as_uuid())
+        .bind(channel_id)
+        .bind(pubkey)
+        .fetch_optional(&mut *self.tx)
+        .await?;
+        Ok(row.map(|r| r.try_get("role")).transpose()?)
+    }
+
     /// Persist a pending run with the resolved route snapshot and commit.
     pub async fn accept(
         self,
