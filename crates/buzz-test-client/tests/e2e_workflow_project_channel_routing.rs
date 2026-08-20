@@ -805,7 +805,7 @@ async fn ambiguous_claim_valid_projects_return_422_and_no_message() {
         &fx.repo_owner,
         &unique("proj-a"),
         "proj-a",
-        &[coord.clone()],
+        std::slice::from_ref(&coord),
         Some(&dest_a.to_string()),
     )
     .await;
