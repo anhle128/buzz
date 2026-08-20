@@ -1291,6 +1291,8 @@ declare global {
     __BUZZ_E2E_GITHUB_USER_ERROR__?: { code: string; message: string };
     /** Shared in-memory GitHub issue store for list, create, and writes. */
     __BUZZ_E2E_GITHUB_ISSUE_STORE__?: E2eGithubIssueStore;
+    __BUZZ_E2E_GITHUB_PULLS_ERROR__?: { code: string; message: string };
+    __BUZZ_E2E_GITHUB_PULL_COMMENTS_ERROR__?: { code: string; message: string };
     /** Shared in-memory GitHub pull-request store for list, create, and comments. */
     __BUZZ_E2E_GITHUB_PULL_REQUEST_STORE__?: E2eGithubPullRequestStore;
     /** Overrides the first mock repository owner for delegated-owner tests. */
@@ -12067,6 +12069,9 @@ export function maybeInstallE2eTauriMocks() {
         }
         return cloneE2eGithubIssueUser(e2eGithubIssueStore().authenticatedUser);
       case "list_github_pull_requests": {
+        if (window.__BUZZ_E2E_GITHUB_PULLS_ERROR__) {
+          throw window.__BUZZ_E2E_GITHUB_PULLS_ERROR__;
+        }
         return {
           pulls: e2eGithubPullRequestStore().pulls.map(
             cloneE2eGithubPullRequest,
@@ -12075,6 +12080,9 @@ export function maybeInstallE2eTauriMocks() {
         };
       }
       case "create_github_pull_request": {
+        if (window.__BUZZ_E2E_GITHUB_PULLS_ERROR__) {
+          throw window.__BUZZ_E2E_GITHUB_PULLS_ERROR__;
+        }
         const input = payload as {
           title?: string;
           body?: string;
@@ -12116,6 +12124,9 @@ export function maybeInstallE2eTauriMocks() {
         return cloneE2eGithubPullRequest(created);
       }
       case "list_github_pull_request_comments": {
+        if (window.__BUZZ_E2E_GITHUB_PULL_COMMENTS_ERROR__) {
+          throw window.__BUZZ_E2E_GITHUB_PULL_COMMENTS_ERROR__;
+        }
         const input = payload as { number?: number };
         return (
           e2eGithubPullRequestStore().commentsByNumber[input.number ?? 0] ?? []

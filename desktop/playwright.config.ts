@@ -118,6 +118,7 @@ export default defineConfig({
         "**/github-issue-writes.spec.ts",
         "**/github-snapshot-and-fetch.spec.ts",
         "**/github-pull-push-and-branches.spec.ts",
+        "**/github-pull-requests.spec.ts",
         "**/persona-model-combobox-screenshots.spec.ts",
         "**/drafts-screenshots.spec.ts",
         "**/drafts-all-fix-screenshots.spec.ts",

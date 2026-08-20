@@ -118,3 +118,88 @@ test("GitHub pull requests list, open read-only detail, and create #N", async ({
     signed.some((event) => event.kind === 1618 || event.kind === 1613),
   ).toBe(false);
 });
+
+test("GitHub pull request auth failure renders recovery before empty state", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    window.__BUZZ_E2E_GITHUB_PULLS_ERROR__ = {
+      code: "github_auth_required",
+      message:
+        "Authenticate GitHub CLI with: gh auth login --hostname github.com",
+    };
+  });
+  await openGithubPullRequests(page);
+  await expect(page.getByText("GitHub authentication required")).toBeVisible({
+    timeout: 10_000,
+  });
+  await expect(page.getByText("No pull requests yet.")).toHaveCount(0);
+  await expect(page.getByText("No open pull requests.")).toHaveCount(0);
+});
+
+test("GitHub comment failure keeps the PR body and retries only comments", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    window.__BUZZ_E2E_GITHUB_PULL_COMMENTS_ERROR__ = {
+      code: "github_pulls_failed",
+      message: "Comment request failed.",
+    };
+  });
+  await openGithubPullRequests(page);
+  await page
+    .getByTestId("project-github-pull-request-row")
+    .first()
+    .getByRole("button", { name: "#42" })
+    .click();
+  await expect(
+    page.getByText("GitHub pull request body", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Could not load GitHub pull request comments", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  const before = await page.evaluate(() => window.__BUZZ_E2E_COMMANDS__ ?? []);
+  const listBefore = before.filter(
+    (command) => command === "list_github_pull_requests",
+  ).length;
+  const commentsBefore = before.filter(
+    (command) => command === "list_github_pull_request_comments",
+  ).length;
+  await page
+    .locator('[aria-labelledby="github-pull-comments-recovery-title"]')
+    .getByRole("button", { name: "Retry" })
+    .click();
+  const after = await page.evaluate(() => window.__BUZZ_E2E_COMMANDS__ ?? []);
+  expect(
+    after.filter((command) => command === "list_github_pull_requests").length,
+  ).toBe(listBefore);
+  expect(
+    after.filter((command) => command === "list_github_pull_request_comments")
+      .length,
+  ).toBe(commentsBefore + 1);
+});
+
+test("GitHub pull comment 404 reports not found and returns to the list", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    window.__BUZZ_E2E_GITHUB_PULL_COMMENTS_ERROR__ = {
+      code: "github_pr_unavailable",
+      message: "Not Found",
+    };
+  });
+  await openGithubPullRequests(page);
+  await page
+    .getByTestId("project-github-pull-request-row")
+    .first()
+    .getByRole("button", { name: "#42" })
+    .click();
+  await expect(
+    page.getByText("Pull request not found.", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByTestId("project-github-pull-request-row").first(),
+  ).toBeVisible();
+});
