@@ -8,6 +8,8 @@ const RECOVERY_SHOTS = "test-results/project-pr-conflict-recovery";
 const REVIEWER_AGENT_PUBKEY = "a".repeat(64);
 const DEFAULT_MOCK_PUBKEY = "deadbeef".repeat(8);
 const KIND_GIT_PULL_REQUEST = 1618;
+const SKIP_OBSOLETE_GITHUB_CLONE_BUZZ_PR_MERGE =
+  "host-exclusive GitHub PR list; Merge hidden on GitHub rows until a later merge-by-number slice";
 
 // The projects surface is a preview feature — opt in before the app mounts.
 // Must run before installMockBridge so React reads the override on mount.
@@ -512,6 +514,7 @@ test("PR creator/owner can toggle draft, request reviews, and approve", async ({
 test("sends GitHub merge payload unchanged through native boundary", async ({
   page,
 }) => {
+  test.skip(true, SKIP_OBSOLETE_GITHUB_CLONE_BUZZ_PR_MERGE);
   const markdownBody =
     "  Keep leading whitespace.\n\n- preserve **Markdown**\n";
   const title = "Preserve GitHub PR body";
@@ -620,6 +623,7 @@ test("sends GitHub merge payload unchanged through native boundary", async ({
 });
 
 test("GitHub merge success publishes one merged status", async ({ page }) => {
+  test.skip(true, SKIP_OBSOLETE_GITHUB_CLONE_BUZZ_PR_MERGE);
   await enableProjectsFeature(page);
   await page.addInitScript(() => {
     window.__BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__ =
@@ -675,6 +679,7 @@ test("GitHub merge success publishes one merged status", async ({ page }) => {
 });
 
 test("GitHub merged-status retry skips the merge command", async ({ page }) => {
+  test.skip(true, SKIP_OBSOLETE_GITHUB_CLONE_BUZZ_PR_MERGE);
   await enableProjectsFeature(page);
   await page.addInitScript(() => {
     window.__BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__ =
@@ -726,6 +731,7 @@ test("GitHub merged-status retry skips the merge command", async ({ page }) => {
 });
 
 test("GitHub CLI guidance persists with retry", async ({ page }) => {
+  test.skip(true, SKIP_OBSOLETE_GITHUB_CLONE_BUZZ_PR_MERGE);
   await enableProjectsFeature(page);
   await page.addInitScript(() => {
     window.__BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__ =
@@ -750,6 +756,7 @@ test("GitHub CLI guidance persists with retry", async ({ page }) => {
 test("GitHub blocked recovery opens the exact pull request and retries", async ({
   page,
 }) => {
+  test.skip(true, SKIP_OBSOLETE_GITHUB_CLONE_BUZZ_PR_MERGE);
   await enableProjectsFeature(page);
   await page.addInitScript(() => {
     window.__BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__ =
@@ -791,6 +798,7 @@ test("GitHub blocked recovery opens the exact pull request and retries", async (
 test("GitHub branch changes require refresh without a stale merge action", async ({
   page,
 }) => {
+  test.skip(true, SKIP_OBSOLETE_GITHUB_CLONE_BUZZ_PR_MERGE);
   await enableProjectsFeature(page);
   await page.addInitScript(() => {
     window.__BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__ =
@@ -820,6 +828,7 @@ test("GitHub branch changes require refresh without a stale merge action", async
 test("GitHub ambiguous recovery opens the exact pull-request list", async ({
   page,
 }) => {
+  test.skip(true, SKIP_OBSOLETE_GITHUB_CLONE_BUZZ_PR_MERGE);
   await enableProjectsFeature(page);
   await page.addInitScript(() => {
     window.__BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__ =
@@ -847,6 +856,7 @@ test("GitHub ambiguous recovery opens the exact pull-request list", async ({
 test("invalid GitHub recovery URLs never render an open action", async ({
   page,
 }) => {
+  test.skip(true, SKIP_OBSOLETE_GITHUB_CLONE_BUZZ_PR_MERGE);
   await enableProjectsFeature(page);
   await page.addInitScript(() => {
     window.__BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__ =
@@ -872,6 +882,7 @@ test("invalid GitHub recovery URLs never render an open action", async ({
 
 for (const theme of ["buzz", "buzz-dark"] as const) {
   test(`renders GitHub merge recovery in ${theme}`, async ({ page }) => {
+    test.skip(true, SKIP_OBSOLETE_GITHUB_CLONE_BUZZ_PR_MERGE);
     await page.addInitScript((selectedTheme) => {
       window.localStorage.setItem("buzz-theme", selectedTheme);
       window.__BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__ =
