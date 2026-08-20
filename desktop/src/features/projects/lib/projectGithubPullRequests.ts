@@ -243,6 +243,7 @@ export function useGithubPullRequestCommentsQuery(
   });
 }
 
+/** Keep a GitHub selection until a successful, settled list proves it absent. */
 export function selectedGithubPullRequestAfterListLoad(input: {
   selectedPullRequestId: string | null;
   pullRequestIds: readonly string[];

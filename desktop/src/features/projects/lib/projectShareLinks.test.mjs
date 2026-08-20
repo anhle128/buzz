@@ -180,6 +180,7 @@ test("pullRequestShareLink accepts only a matching canonical GitHub PR URL", () 
     "https://github.com/acme/app/pull/42?x=1",
     "https://github.com/acme/app/pull/42#x",
     "https://github.com/acme/app/pull/42/",
+    "https://github.com:443/acme/app/pull/42",
     "https://github.com/acme/app/issues/42",
   ]) {
     assert.equal(pullRequestShareLink({ ...base, htmlUrl }), null, htmlUrl);

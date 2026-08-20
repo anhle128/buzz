@@ -1291,10 +1291,12 @@ declare global {
     __BUZZ_E2E_GITHUB_USER_ERROR__?: { code: string; message: string };
     /** Shared in-memory GitHub issue store for list, create, and writes. */
     __BUZZ_E2E_GITHUB_ISSUE_STORE__?: E2eGithubIssueStore;
+    /** Structured error thrown by GitHub pull-request list/create mocks. */
     __BUZZ_E2E_GITHUB_PULLS_ERROR__?: { code: string; message: string };
+    /** Structured error thrown only by the GitHub PR comments mock. */
     __BUZZ_E2E_GITHUB_PULL_COMMENTS_ERROR__?: { code: string; message: string };
     /** Shared in-memory GitHub pull-request store for list, create, and comments. */
-    __BUZZ_E2E_GITHUB_PULL_REQUEST_STORE__?: E2eGithubPullRequestStore;
+    __BUZZ_E2E_GITHUB_PULL_STORE__?: E2eGithubPullRequestStore;
     /** Overrides the first mock repository owner for delegated-owner tests. */
     __BUZZ_E2E_PROJECT_OWNER_OVERRIDE__?: string;
     __BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__?: string;
@@ -10489,9 +10491,9 @@ function createDefaultE2eGithubPullRequestStore(): E2eGithubPullRequestStore {
 }
 
 function e2eGithubPullRequestStore(): E2eGithubPullRequestStore {
-  window.__BUZZ_E2E_GITHUB_PULL_REQUEST_STORE__ ??=
+  window.__BUZZ_E2E_GITHUB_PULL_STORE__ ??=
     createDefaultE2eGithubPullRequestStore();
-  return window.__BUZZ_E2E_GITHUB_PULL_REQUEST_STORE__;
+  return window.__BUZZ_E2E_GITHUB_PULL_STORE__;
 }
 
 function cloneE2eGithubPullRequest(
@@ -10592,7 +10594,7 @@ export function maybeInstallE2eTauriMocks() {
   window.__BUZZ_E2E_COMMAND_PAYLOADS__ = [];
   window.__BUZZ_E2E_COMMAND_LOG__ = [];
   window.__BUZZ_E2E_GITHUB_ISSUE_STORE__ ??= createDefaultE2eGithubIssueStore();
-  window.__BUZZ_E2E_GITHUB_PULL_REQUEST_STORE__ ??=
+  window.__BUZZ_E2E_GITHUB_PULL_STORE__ ??=
     createDefaultE2eGithubPullRequestStore();
   mockMediaProxyPort = config.mock?.mediaProxyInitiallyUnavailable
     ? 0

@@ -175,7 +175,11 @@ pub(crate) fn github_pull_api_json<T: DeserializeOwned>(
 }
 
 fn parse_github_html_url(raw: &str) -> Option<Url> {
-    if raw != raw.trim() || raw.contains('\\') || raw.contains('%') {
+    if raw != raw.trim()
+        || !raw.starts_with("https://github.com/")
+        || raw.contains('\\')
+        || raw.contains('%')
+    {
         return None;
     }
     let url = Url::parse(raw).ok()?;
@@ -480,6 +484,7 @@ pub(crate) fn list_github_pull_request_comments_with(
         .collect())
 }
 
+/// List GitHub pull requests after resolving an injected CLI runner.
 pub(crate) fn list_github_pull_requests_with_runner(
     clone_url: String,
     gh: Result<GhRunner, ProjectPullRequestMergeError>,
@@ -488,6 +493,7 @@ pub(crate) fn list_github_pull_requests_with_runner(
     list_github_pull_requests_with(&gh, &clone_url)
 }
 
+/// Create a GitHub pull request after resolving an injected CLI runner.
 pub(crate) fn create_github_pull_request_with_runner(
     clone_url: String,
     title: String,
@@ -500,6 +506,7 @@ pub(crate) fn create_github_pull_request_with_runner(
     create_github_pull_request_with(&gh, &clone_url, &title, &body, &head, &base)
 }
 
+/// List GitHub PR comments after resolving an injected CLI runner.
 pub(crate) fn list_github_pull_request_comments_with_runner(
     clone_url: String,
     number: u64,
@@ -688,6 +695,7 @@ mod tests {
             ("https://github.com/acme/other/pull/42", 42, false),
             ("https://evil.example/acme/app/pull/42", 42, false),
             ("https://user@github.com/acme/app/pull/42", 42, false),
+            ("https://github.com:443/acme/app/pull/42", 42, false),
             ("https://github.com/acme/app/pull/42?x=1", 42, false),
             ("https://github.com/acme/app/pull/42#x", 42, false),
             ("https://github.com/acme/app/pull/42/", 42, false),
@@ -858,6 +866,7 @@ mod tests {
             ("https://github.com/acme/app/pull/43#issuecomment-9", 42, 9, false),
             ("https://github.com/acme/app/pull/42#issuecomment-8", 42, 9, false),
             ("https://github.com/acme/app/pull/42?x=1#issuecomment-9", 42, 9, false),
+            ("https://github.com:443/acme/app/pull/42#issuecomment-9", 42, 9, false),
         ] {
             assert_eq!(is_pull_comment_html_url(&repo, raw, number, id), expected, "{raw}");
         }

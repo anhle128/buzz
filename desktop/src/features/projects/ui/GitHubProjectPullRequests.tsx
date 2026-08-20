@@ -19,7 +19,7 @@ import {
 } from "@/features/projects/lib/projectsViewHelpers";
 import type { ProjectPullRequestComment } from "@/features/projects/projectPullRequests.mjs";
 import { parseProjectPullRequestMergeError } from "@/shared/api/projectGit";
-import { Tabs, TabsContent } from "@/shared/ui/tabs";
+import { TabsContent } from "@/shared/ui/tabs";
 import { GitHubLoginIdentity } from "./GitHubIssueIdentity";
 import { GitHubRepoStateRecovery } from "./GitHubRepoStateRecovery";
 import { CopyCommitHashButton } from "./ProjectCommitCopyButton";
@@ -306,69 +306,67 @@ export function GitHubPullRequestDetail(props: {
             </span>
           </p>
         </header>
-        <Tabs defaultValue="pr-conversation">
-          <div className="border-b border-border/60 px-4">
-            <PullRequestTabsList
-              filesCount={0}
-              githubHosted
-              pullRequest={hydratedPullRequest}
-            />
-          </div>
-          <TabsContent className="m-0" value="pr-conversation">
-            <div>
-              {hydratedPullRequest.content ? (
-                <header className="p-4">
-                  <ProjectRichContent
-                    content={hydratedPullRequest.content}
-                    tags={[]}
-                  />
-                </header>
-              ) : null}
-              <section className="space-y-3 p-4">
-                {commentsQuery.isLoading ? (
-                  <p className="text-sm text-muted-foreground">
-                    Loading comments…
-                  </p>
-                ) : commentsQuery.isError && !isUnavailable ? (
-                  <GitHubRepoStateRecovery
-                    error={commentsQuery.error}
-                    onRetry={() => void commentsQuery.refetch()}
-                    titleId="github-pull-comments-recovery-title"
-                    unavailableTitle="Could not load GitHub pull request comments"
-                  />
-                ) : (
-                  <ProjectIssueCommentTimeline
-                    comments={comments}
-                    githubMode
-                    key={props.pullRequest.id}
-                  />
-                )}
-              </section>
-            </div>
-          </TabsContent>
-          <TabsContent className="m-0" value="pr-commits">
-            <section>
-              <header className="flex min-h-10 items-center gap-2 border-b border-border/50 bg-muted/20 px-4">
-                <GitCommitHorizontal className="h-4 w-4 text-muted-foreground" />
-                <h4 className="text-sm font-medium text-foreground">Commits</h4>
-                <span className="rounded-full bg-muted px-1.5 py-0.5 text-2xs text-muted-foreground">
-                  1
-                </span>
-              </header>
-              <div className="divide-y divide-border/50">
-                <GitHubPullRequestCommitRow
-                  onOpenCommit={props.onOpenCommit}
-                  pullRequest={hydratedPullRequest}
+        <div className="border-b border-border/60 px-4">
+          <PullRequestTabsList
+            filesCount={0}
+            githubHosted
+            pullRequest={hydratedPullRequest}
+          />
+        </div>
+        <TabsContent className="m-0" value="pr-conversation">
+          <div>
+            {hydratedPullRequest.content ? (
+              <header className="p-4">
+                <ProjectRichContent
+                  content={hydratedPullRequest.content}
+                  tags={[]}
                 />
-              </div>
+              </header>
+            ) : null}
+            <section className="space-y-3 p-4">
+              {commentsQuery.isLoading ? (
+                <p className="text-sm text-muted-foreground">
+                  Loading comments…
+                </p>
+              ) : commentsQuery.isError && !isUnavailable ? (
+                <GitHubRepoStateRecovery
+                  error={commentsQuery.error}
+                  onRetry={() => void commentsQuery.refetch()}
+                  titleId="github-pull-comments-recovery-title"
+                  unavailableTitle="Could not load GitHub pull request comments"
+                />
+              ) : (
+                <ProjectIssueCommentTimeline
+                  comments={comments}
+                  githubMode
+                  key={props.pullRequest.id}
+                />
+              )}
             </section>
-          </TabsContent>
-          <TabsContent className="m-0" value="pr-checks">
-            <p className="p-4 text-sm text-muted-foreground">
-              No checks have been reported for this pull request yet.
-            </p>
-          </TabsContent>
-        </Tabs>
+          </div>
+        </TabsContent>
+        <TabsContent className="m-0" value="pr-commits">
+          <section>
+            <header className="flex min-h-10 items-center gap-2 border-b border-border/50 bg-muted/20 px-4">
+              <GitCommitHorizontal className="h-4 w-4 text-muted-foreground" />
+              <h4 className="text-sm font-medium text-foreground">Commits</h4>
+              <span className="rounded-full bg-muted px-1.5 py-0.5 text-2xs text-muted-foreground">
+                1
+              </span>
+            </header>
+            <div className="divide-y divide-border/50">
+              <GitHubPullRequestCommitRow
+                onOpenCommit={props.onOpenCommit}
+                pullRequest={hydratedPullRequest}
+              />
+            </div>
+          </section>
+        </TabsContent>
+        <TabsContent className="m-0" value="pr-checks">
+          <p className="p-4 text-sm text-muted-foreground">
+            No checks have been reported for this pull request yet.
+          </p>
+        </TabsContent>
       </div>
       <aside className="min-w-0 space-y-6 border-border/60 border-t p-4 xl:border-l xl:border-t-0">
         <OverviewRailSection title="Status">
