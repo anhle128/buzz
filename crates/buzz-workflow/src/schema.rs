@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 
 use crate::error::WorkflowError;
+use crate::routing::{parse_repository_coordinate, RoutingDef, RoutingMode};
 
 /// Top-level workflow definition, authored in YAML and stored as canonical JSON.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -19,6 +20,12 @@ pub struct WorkflowDef {
     pub description: Option<String>,
     /// The event trigger that starts this workflow.
     pub trigger: TriggerDef,
+    /// Optional inbound routing contract.
+    ///
+    /// Present only for webhook workflows that opt into
+    /// `project_channel_by_repository`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing: Option<RoutingDef>,
     /// Ordered list of steps to execute when triggered.
     pub steps: Vec<Step>,
     /// Whether this workflow is active. Defaults to `true`.
@@ -160,6 +167,13 @@ impl WorkflowDef {
             .any(|s| matches!(s.action, ActionDef::CallWebhook { .. }))
     }
 
+    /// True when this workflow opts into `project_channel_by_repository` routing.
+    pub fn has_project_channel_routing(&self) -> bool {
+        self.routing
+            .as_ref()
+            .is_some_and(|r| r.mode == RoutingMode::ProjectChannelByRepository)
+    }
+
     /// Validate the workflow definition. Returns `Err` with a descriptive message
     /// if any invariant is violated.
     pub fn validate(&self) -> Result<(), WorkflowError> {
@@ -202,6 +216,38 @@ impl WorkflowDef {
                     "duplicate step id: {}",
                     step.id
                 )));
+            }
+        }
+
+        if let Some(routing) = &self.routing {
+            if !matches!(self.trigger, TriggerDef::Webhook) {
+                return Err(WorkflowError::InvalidDefinition(
+                    "routing is valid only with trigger.on: webhook".into(),
+                ));
+            }
+            if routing.mode != RoutingMode::ProjectChannelByRepository {
+                return Err(WorkflowError::InvalidDefinition(
+                    "unsupported routing.mode".into(),
+                ));
+            }
+            for (alias_key, target) in &routing.aliases {
+                if alias_key.is_empty() {
+                    return Err(WorkflowError::InvalidDefinition(
+                        "routing alias keys must be non-empty".into(),
+                    ));
+                }
+                parse_repository_coordinate(target)?;
+            }
+            for step in &self.steps {
+                if let ActionDef::SendMessage {
+                    channel: Some(_), ..
+                } = &step.action
+                {
+                    return Err(WorkflowError::InvalidDefinition(
+                        "send_message.channel is invalid when routing.mode is project_channel_by_repository"
+                            .into(),
+                    ));
+                }
             }
         }
 
@@ -887,5 +933,106 @@ mod tests {
             trigger,
             TriggerDef::DiffPosted { filter: Some(_) }
         ));
+    }
+
+    #[test]
+    fn parse_project_channel_routing_with_empty_aliases() {
+        let yaml = concat!(
+            "name: Multi Repo Notify\n",
+            "trigger:\n  on: webhook\n",
+            "routing:\n  mode: project_channel_by_repository\n",
+            "steps:\n  - id: notify\n    action: send_message\n    text: hi\n",
+        );
+        let (def, json) = parse_yaml(yaml).expect("dynamic workflow should parse");
+        assert!(def.has_project_channel_routing());
+        let reparsed: WorkflowDef = serde_json::from_str(&json).expect("json round-trip");
+        assert!(reparsed.has_project_channel_routing());
+        assert!(reparsed.routing.unwrap().aliases.is_empty());
+    }
+
+    #[test]
+    fn routing_rejected_on_non_webhook_trigger() {
+        let yaml = concat!(
+            "name: Bad Routing\n",
+            "trigger:\n  on: message_posted\n",
+            "routing:\n  mode: project_channel_by_repository\n",
+            "steps:\n  - id: notify\n    action: send_message\n    text: hi\n",
+        );
+        let err = parse_yaml(yaml).unwrap_err();
+        match err {
+            WorkflowError::InvalidDefinition(msg) => {
+                assert!(msg.contains("webhook"), "expected webhook-only routing, got {msg}");
+            }
+            other => panic!("expected InvalidDefinition, got {other}"),
+        }
+    }
+
+    #[test]
+    fn routing_rejects_send_message_channel_override() {
+        let yaml = concat!(
+            "name: Routed Channel Override\n",
+            "trigger:\n  on: webhook\n",
+            "routing:\n  mode: project_channel_by_repository\n",
+            "steps:\n  - id: notify\n    action: send_message\n    text: hi\n    channel: general\n",
+        );
+        let err = parse_yaml(yaml).unwrap_err();
+        match err {
+            WorkflowError::InvalidDefinition(msg) => {
+                assert!(
+                    msg.contains("send_message.channel"),
+                    "expected channel prohibition, got {msg}"
+                );
+            }
+            other => panic!("expected InvalidDefinition, got {other}"),
+        }
+    }
+
+    #[test]
+    fn static_webhook_without_routing_still_allows_channel_override_field() {
+        let yaml = concat!(
+            "name: Static Webhook\n",
+            "trigger:\n  on: webhook\n",
+            "steps:\n  - id: notify\n    action: send_message\n    text: hi\n    channel: general\n",
+        );
+        let (def, _) = parse_yaml(yaml).expect("static webhook remains valid");
+        assert!(!def.has_project_channel_routing());
+    }
+
+    #[test]
+    fn static_workflow_canonical_json_omits_routing() {
+        let yaml = concat!(
+            "name: Static\n",
+            "trigger:\n  on: message_posted\n",
+            "steps:\n  - id: notify\n    action: send_message\n    text: hi\n",
+        );
+        let (_, json) = parse_yaml(yaml).expect("static workflow should parse");
+        assert!(!json.contains("\"routing\""));
+    }
+
+    #[test]
+    fn duplicate_alias_keys_are_rejected() {
+        let target = format!("30617:{}:harness-service", "ab".repeat(32));
+        let yaml = format!(
+            "name: Duplicate Alias\n\
+             trigger:\n  on: webhook\n\
+             routing:\n  mode: project_channel_by_repository\n\
+             \x20 aliases:\n    hs: {target}\n    hs: {target}\n\
+             steps:\n  - id: notify\n    action: send_message\n    text: hi\n"
+        );
+        assert!(parse_yaml(&yaml).is_err());
+    }
+
+    #[test]
+    fn distinct_alias_keys_may_share_one_coordinate() {
+        let target = format!("30617:{}:harness-service", "ab".repeat(32));
+        let yaml = format!(
+            "name: Shared Alias Target\n\
+             trigger:\n  on: webhook\n\
+             routing:\n  mode: project_channel_by_repository\n\
+             \x20 aliases:\n    hs: {target}\n    harness: {target}\n\
+             steps:\n  - id: notify\n    action: send_message\n    text: hi\n"
+        );
+        let (def, _) = parse_yaml(&yaml).expect("distinct aliases are valid");
+        assert_eq!(def.routing.expect("routing").aliases.len(), 2);
     }
 }

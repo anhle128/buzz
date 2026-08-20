@@ -33,11 +33,13 @@
 pub mod action_sink;
 pub mod error;
 pub mod executor;
+pub mod routing;
 pub mod schema;
 
 pub use action_sink::{ActionSink, ActionSinkError};
 pub use error::{PartialProgress, WorkflowError};
 pub use executor::ExecutionResult;
+pub use routing::{RepositoryCoordinate, RouteFailure, RoutingDef, RoutingMode};
 pub use schema::{ActionDef, Step, TriggerDef, WorkflowDef};
 
 use std::collections::HashMap;
