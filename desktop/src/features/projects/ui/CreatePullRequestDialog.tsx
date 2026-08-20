@@ -154,9 +154,9 @@ export function CreatePullRequestDialog({
         : sourceBranch === targetBranch
           ? "The base and compare branches must be different."
           : hasOpenPullRequest
-            ? "An open pull request already compares these branches."
+            ? "An open review already compares these branches."
             : !sourceCommit
-              ? "The compare branch must be pushed before opening a pull request."
+              ? "The compare branch must be pushed before opening a review."
               : null;
   const description =
     repository && sourceBranch && targetBranch
@@ -165,9 +165,7 @@ export function CreatePullRequestDialog({
 
   async function handleCreate(input: CreatePullRequestDialogInput) {
     if (!project || !repository || !sourceCommit || selectionError) {
-      throw new Error(
-        selectionError ?? "Pull request branches are incomplete.",
-      );
+      throw new Error(selectionError ?? "Review branches are incomplete.");
     }
     const pullRequestId = await createMutation.mutateAsync({
       ...input,
@@ -177,7 +175,7 @@ export function CreatePullRequestDialog({
       mergeBase: sourceSyncQuery.data?.mergeBase ?? null,
       reviewers: [],
     });
-    toast.success("Pull request created.");
+    toast.success("Review created.");
     await onCreated(project, repository, pullRequestId);
   }
 
@@ -194,7 +192,7 @@ export function CreatePullRequestDialog({
       }}
       open={open}
       submitDisabled={Boolean(selectionError)}
-      title="Open a pull request"
+      title="Open a review"
       titlePlaceholder="Describe the change"
     >
       <div className="grid gap-3 rounded-xl border border-border/60 bg-muted/25 p-3 sm:grid-cols-2">

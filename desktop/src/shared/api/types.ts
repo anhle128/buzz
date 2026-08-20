@@ -62,10 +62,6 @@ export type CreateChannelInput = {
   ttlSeconds?: number;
 };
 
-export type OpenDmInput = {
-  pubkeys: string[];
-};
-
 export type UpdateChannelInput = {
   channelId: string;
   name?: string;

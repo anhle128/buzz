@@ -1,4 +1,5 @@
 import { parseProjectPullRequestMergeError } from "@/shared/api/projectGit";
+import type { ProjectRepoUnavailableReason } from "./projectRepoAvailability";
 
 export type ProjectGitErrorPresentation = {
   title: string;
@@ -23,6 +24,7 @@ export function isGitHubCloneUrl(cloneUrl: string | null | undefined) {
 export function projectCloneErrorPresentation(
   error: unknown,
   cloneUrl?: string | null,
+  unavailableReason?: ProjectRepoUnavailableReason,
 ): ProjectGitErrorPresentation {
   const message = errorText(error);
   const github = isGitHubCloneUrl(cloneUrl);
@@ -49,6 +51,13 @@ export function projectCloneErrorPresentation(
     }
   }
 
+  if (unavailableReason === "access") {
+    return {
+      title: "Repository access restricted",
+      description:
+        "You need access to the repository’s channel before you can clone it.",
+    };
+  }
   if (
     /\b(?:401|403)\b|authenticat|authoriz|permission denied|access denied|ssh certificate/.test(
       message,

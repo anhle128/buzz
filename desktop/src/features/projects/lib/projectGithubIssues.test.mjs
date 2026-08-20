@@ -49,6 +49,7 @@ test("GitHub issue mapper fills the complete ProjectIssue contract", () => {
     channelId: null,
     originAgentName: null,
     labels: ["bug"],
+    category: "issue",
     recipients: [],
     assignees: ["linus"],
     assigneeAvatars: { linus: "https://avatars.githubusercontent.com/u/2" },

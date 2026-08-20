@@ -9,10 +9,12 @@ import { githubIssueId } from "@/features/projects/lib/projectGithubIssues";
 import { projectIssueWriteInvalidationKeys } from "@/features/projects/lib/projectGithubIssueWrites";
 import type { Repository as Project } from "./hooks";
 import { buildGitIssueTags } from "./projectIssues.mjs";
+import type { ProjectTaskCategory } from "./projectTaskCategories";
 
 type CreateProjectIssueInput = {
   title: string;
   body: string;
+  category?: ProjectTaskCategory;
 };
 
 export async function publishProjectIssue(
@@ -26,12 +28,13 @@ export async function publishProjectIssue(
       repoAddress: project.repoAddress,
       repoOwner: project.owner,
       title: input.title,
+      labels: [input.category ?? "issue"],
     }),
   });
   await relayClient.publishEvent(
     event,
-    "Timed out creating issue.",
-    "Failed to create issue.",
+    "Timed out creating task.",
+    "Failed to create task.",
   );
   return event.id;
 }

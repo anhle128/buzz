@@ -8,6 +8,7 @@ import {
   type GithubIssueDto,
   type GithubIssueListDto,
 } from "@/shared/api/projectGit";
+import { projectTaskCategoryFromLabels } from "../projectTaskCategories";
 import { isGitHubCloneUrl } from "./projectGitError";
 
 /** Host-routed issue list consumed by the repository Issues tab. */
@@ -41,6 +42,7 @@ export function mapGithubIssueToProjectIssue(
     channelId: null,
     originAgentName: null,
     labels: [...dto.labels],
+    category: projectTaskCategoryFromLabels(dto.labels),
     recipients: [],
     assignees: dto.assignees.map((assignee) => assignee.login),
     assigneeAvatars: Object.fromEntries(

@@ -10,6 +10,7 @@ import {
   buildInitialProjectEventTemplates,
   isUnsupportedProjectKindError,
 } from "@/features/projects/projectCreation";
+import { addProjectToSidebar } from "@/features/projects/lib/projectSidebarMembership";
 import { buildProjectReadModels } from "@/features/projects/projectModels";
 import { relayClient } from "@/shared/api/relayClient";
 import type { RelayEvent } from "@/shared/api/types";
@@ -188,6 +189,11 @@ export function useCreateProjectMutation() {
     mutationFn: (input: CreateProjectInput) =>
       createProject(input, resumableProjectsRef.current),
     onSuccess: ({ project }) => {
+      addProjectToSidebar(
+        project.projectAddress,
+        getCachedRelayOrigin(),
+        project.owner,
+      );
       queryClient.setQueryData<Project[]>(projectsQueryKey, (current = []) => [
         project,
         ...current.filter(

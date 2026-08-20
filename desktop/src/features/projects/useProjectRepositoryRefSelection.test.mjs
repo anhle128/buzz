@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { after, before, test } from "node:test";
+import { after, afterEach, before, test } from "node:test";
 
 import { JSDOM } from "jsdom";
 
@@ -16,26 +16,57 @@ before(() => {
   });
 });
 
+afterEach(async () => {
+  const { cleanup } = await import("@testing-library/react");
+  cleanup();
+});
+
 after(() => dom.window.close());
 
-test("follows GitHub HEAD after pending announced main stays in the option list", async () => {
-  const { renderHook } = await import("@testing-library/react");
-  const { useProjectRepositoryRefSelection } = await import(
-    "./useProjectRepositoryRefSelection.ts"
-  );
+const REPO_A = {
+  branchOptions: ["main", "release"],
+  defaultBranch: "main",
+  projectAvailable: true,
+  projectPending: false,
+  repositoryId: "30617:owner:repo-a",
+  tags: [{ name: "v1" }],
+};
 
-  const { result, rerender, unmount } = renderHook(
-    (input) => useProjectRepositoryRefSelection(input),
-    {
-      initialProps: {
-        branchOptions: ["main"],
-        defaultBranch: "main",
-        projectAvailable: true,
-        projectPending: false,
-        tags: [],
-      },
+const REPO_B = {
+  branchOptions: ["trunk", "release"],
+  defaultBranch: "trunk",
+  projectAvailable: true,
+  projectPending: false,
+  repositoryId: "30617:owner:repo-b",
+  tags: [{ name: "v1" }],
+};
+
+async function renderSelection(initialProps) {
+  const { act, renderHook } = await import("@testing-library/react");
+  const rendered = renderHook(
+    (props) => {
+      const { useProjectRepositoryRefSelection } = hookModule;
+      return useProjectRepositoryRefSelection(props);
     },
+    { initialProps },
   );
+  return { act, ...rendered };
+}
+
+let hookModule;
+before(async () => {
+  hookModule = await import("./useProjectRepositoryRefSelection.ts");
+});
+
+test("follows GitHub HEAD after pending announced main stays in the option list", async () => {
+  const { rerender, result } = await renderSelection({
+    branchOptions: ["main"],
+    defaultBranch: "main",
+    projectAvailable: true,
+    projectPending: false,
+    repositoryId: "30617:owner:github-repo",
+    tags: [],
+  });
 
   assert.equal(result.current.activeBranch, "main");
 
@@ -44,35 +75,24 @@ test("follows GitHub HEAD after pending announced main stays in the option list"
     defaultBranch: "develop",
     projectAvailable: true,
     projectPending: false,
+    repositoryId: "30617:owner:github-repo",
     tags: [],
   });
 
   assert.equal(result.current.activeBranch, "develop");
-  unmount();
 });
 
 test("keeps an explicit main pick after GitHub HEAD becomes develop", async () => {
-  const { act, renderHook } = await import("@testing-library/react");
-  const { useProjectRepositoryRefSelection } = await import(
-    "./useProjectRepositoryRefSelection.ts"
-  );
-
-  const { result, rerender, unmount } = renderHook(
-    (input) => useProjectRepositoryRefSelection(input),
-    {
-      initialProps: {
-        branchOptions: ["develop", "main"],
-        defaultBranch: "develop",
-        projectAvailable: true,
-        projectPending: false,
-        tags: [],
-      },
-    },
-  );
-
-  act(() => {
-    result.current.selectBranch("main");
+  const { act, rerender, result } = await renderSelection({
+    branchOptions: ["develop", "main"],
+    defaultBranch: "develop",
+    projectAvailable: true,
+    projectPending: false,
+    repositoryId: "30617:owner:github-repo",
+    tags: [],
   });
+
+  act(() => result.current.selectBranch("main"));
   assert.equal(result.current.activeBranch, "main");
 
   rerender({
@@ -80,9 +100,45 @@ test("keeps an explicit main pick after GitHub HEAD becomes develop", async () =
     defaultBranch: "develop",
     projectAvailable: true,
     projectPending: false,
+    repositoryId: "30617:owner:github-repo",
     tags: [],
   });
 
   assert.equal(result.current.activeBranch, "main");
-  unmount();
+});
+
+test("a repository switch resets a same-named branch selection to the new default", async () => {
+  const { act, rerender, result } = await renderSelection(REPO_A);
+
+  act(() => result.current.selectBranch("release"));
+  assert.equal(result.current.activeBranch, "release");
+
+  // Repo B also has a `release` branch; it must not survive the switch.
+  rerender(REPO_B);
+  assert.equal(result.current.activeBranch, "trunk");
+  assert.equal(result.current.selectedTag, null);
+});
+
+test("a repository switch resets a same-named tag selection", async () => {
+  const { act, rerender, result } = await renderSelection(REPO_A);
+
+  act(() => result.current.selectTag("v1"));
+  assert.equal(result.current.selectedTag, "v1");
+
+  // Repo B also has a `v1` tag; it must not survive the switch.
+  rerender(REPO_B);
+  assert.equal(result.current.selectedTag, null);
+  assert.equal(result.current.activeBranch, "trunk");
+});
+
+test("selections survive option refreshes within the same repository", async () => {
+  const { act, rerender, result } = await renderSelection(REPO_A);
+
+  act(() => result.current.selectBranch("release"));
+  act(() => result.current.selectTag("v1"));
+
+  // Same repository, new option arrays from a refetch; selection is kept.
+  rerender({ ...REPO_A, branchOptions: ["main", "release", "feature"] });
+  assert.equal(result.current.activeBranch, "release");
+  assert.equal(result.current.selectedTag, "v1");
 });

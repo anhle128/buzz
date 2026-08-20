@@ -7,7 +7,6 @@ import {
   fromRawInstallRuntimeResult,
   type RawInstallRuntimeResult,
 } from "@/shared/api/installTypes";
-import type { RawSendChannelMessageResult } from "@/shared/api/tauriMessageTypes";
 import type {
   AddChannelMembersInput,
   AddChannelMembersResult,
@@ -25,7 +24,6 @@ import type {
   RelayEvent,
   SearchMessagesInput,
   SearchMessagesResponse,
-  SendChannelMessageResult,
   SetCanvasInput,
   SetCanvasResult,
   ThreadCursor,
@@ -46,6 +44,7 @@ import { fromRawManagedAgent, type RawManagedAgent } from "./managedAgentWire";
 export { fromRawManagedAgent, type RawManagedAgent };
 
 export * from "@/shared/api/tauriChannels";
+export { sendChannelMessage } from "@/shared/api/tauriMessages";
 
 type RawPresenceLookup = Record<string, PresenceStatus>;
 
@@ -486,42 +485,6 @@ export async function getThreadReplies(
           eventId: response.next_cursor.event_id,
         }
       : null,
-  };
-}
-
-export async function sendChannelMessage(
-  channelId: string,
-  content: string,
-  parentEventId?: string | null,
-  mediaTags?: string[][],
-  mentionPubkeys?: string[],
-  kind?: number,
-  emojiTags?: string[][],
-  mentionTags?: string[][],
-  linkPreviewTags?: string[][],
-  sentFromThreadTag?: string[],
-): Promise<SendChannelMessageResult> {
-  const response = await invokeTauri<RawSendChannelMessageResult>(
-    "send_channel_message",
-    {
-      channelId,
-      content,
-      parentEventId,
-      mediaTags: mediaTags ?? null,
-      emojiTags: emojiTags ?? null,
-      mentionTags: mentionTags ?? null,
-      linkPreviewTags,
-      sentFromThreadTag: sentFromThreadTag ?? null,
-      mentionPubkeys: mentionPubkeys ?? null,
-      kind: kind ?? null,
-    },
-  );
-  return {
-    eventId: response.event_id,
-    parentEventId: response.parent_event_id,
-    rootEventId: response.root_event_id,
-    depth: response.depth,
-    createdAt: response.created_at,
   };
 }
 
