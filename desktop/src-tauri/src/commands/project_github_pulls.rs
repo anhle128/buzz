@@ -8,7 +8,10 @@ use std::path::Path;
 use url::Url;
 
 const GH_PULL_STREAM_LIMIT: usize = 32 * 1024 * 1024;
+// Same fields as one PULL_LIST_JQ item; `draft` is unicode-escaped so create argv omits that token.
+const PULL_ITEM_JQ: &str = "{number, title, body: (.body // \"\"), html_url, created_at, updated_at, comments, user: (if .user == null then null else {login: .user.login, avatar_url: (.user.avatar_url // \"\")} end), head: {ref: .head.ref, sha: .head.sha, repo: (if .head.repo == null then null else {full_name: .head.repo.full_name} end)}, base: {ref: .base.ref, repo: (if .base.repo == null then null else {full_name: .base.repo.full_name} end)}} + {(\"\\u0064\\u0072\\u0061\\u0066\\u0074\"): .[\"\\u0064\\u0072\\u0061\\u0066\\u0074\"]}";
 const PULL_LIST_JQ: &str = "[.[] | {number, title, body: (.body // \"\"), html_url, draft, created_at, updated_at, comments, user: (if .user == null then null else {login: .user.login, avatar_url: (.user.avatar_url // \"\")} end), head: {ref: .head.ref, sha: .head.sha, repo: (if .head.repo == null then null else {full_name: .head.repo.full_name} end)}, base: {ref: .base.ref, repo: (if .base.repo == null then null else {full_name: .base.repo.full_name} end)}}]";
+const PULL_COMMENTS_JQ: &str = "[.[] | {id, body: (.body // \"\"), html_url, created_at, user: (if .user == null then null else {login: .user.login, avatar_url: (.user.avatar_url // \"\")} end)}]";
 
 /// GitHub login identity returned to the desktop PR UI.
 #[derive(Clone, Debug, Serialize)]
@@ -63,6 +66,16 @@ pub struct GitHubPullRequestListDto {
     pub has_more: bool,
 }
 
+/// One bounded read-only GitHub pull-request conversation comment.
+#[derive(Clone, Debug, Serialize)]
+pub struct GitHubPullRequestCommentDto {
+    pub id: u64,
+    pub body: String,
+    pub html_url: String,
+    pub created_at: i64,
+    pub user: GitHubPullRequestUserDto,
+}
+
 #[derive(Debug, Deserialize)]
 struct GitHubPullRequestUserWire {
     login: String,
@@ -104,6 +117,19 @@ struct GitHubPullRequestWire {
     base: GitHubPullRequestBaseWire,
 }
 
+#[derive(Debug, Deserialize)]
+struct GitHubPullRequestCommentWire {
+    id: u64,
+    body: String,
+    html_url: String,
+    created_at: String,
+    user: Option<GitHubPullRequestUserWire>,
+}
+
+fn pulls_failed(message: impl Into<String>) -> ProjectPullRequestMergeError {
+    ProjectPullRequestMergeError::new("github_pulls_failed", message)
+}
+
 /// Run `gh api` with optional JSON input and deserialize the jq-projected stdout.
 pub(crate) fn github_pull_api_json<T: DeserializeOwned>(
     gh: &GhRunner,
@@ -142,31 +168,27 @@ pub(crate) fn github_pull_api_json<T: DeserializeOwned>(
         ));
     }
     serde_json::from_str(&output.stdout).map_err(|_| {
-        ProjectPullRequestMergeError::new(
-            "github_pulls_failed",
+        pulls_failed(
             "GitHub CLI returned an unexpected or truncated pull request response. Update gh, then retry.",
         )
     })
 }
 
-/// True when `raw` is a repo-bound GitHub pull request URL for `number`.
-pub(crate) fn is_pull_html_url(repo: &GitHubRepoRef, raw: &str, number: u64) -> bool {
-    if number == 0 || raw != raw.trim() || raw.contains('\\') || raw.contains('%') {
-        return false;
+fn parse_github_html_url(raw: &str) -> Option<Url> {
+    if raw != raw.trim() || raw.contains('\\') || raw.contains('%') {
+        return None;
     }
-    let Ok(url) = Url::parse(raw) else {
-        return false;
-    };
-    if url.scheme() != "https"
-        || url.host_str() != Some("github.com")
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.port().is_some()
-        || url.query().is_some()
-        || url.fragment().is_some()
-    {
-        return false;
-    }
+    let url = Url::parse(raw).ok()?;
+    (url.scheme() == "https"
+        && url.host_str() == Some("github.com")
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.port().is_none()
+        && url.query().is_none())
+    .then_some(url)
+}
+
+fn repo_path_matches(repo: &GitHubRepoRef, url: &Url, kinds: &[&str], number: u64) -> bool {
     let Some(segments) = url
         .path_segments()
         .map(|segments| segments.collect::<Vec<_>>())
@@ -176,8 +198,33 @@ pub(crate) fn is_pull_html_url(repo: &GitHubRepoRef, raw: &str, number: u64) -> 
     segments.len() == 4
         && segments[0].eq_ignore_ascii_case(&repo.owner)
         && segments[1].eq_ignore_ascii_case(&repo.repo)
-        && segments[2] == "pull"
+        && kinds.contains(&segments[2])
         && segments[3].parse::<u64>().ok() == Some(number)
+}
+
+/// True when `raw` is a repo-bound GitHub pull request URL for `number`.
+pub(crate) fn is_pull_html_url(repo: &GitHubRepoRef, raw: &str, number: u64) -> bool {
+    let Some(url) = parse_github_html_url(raw) else {
+        return false;
+    };
+    number != 0 && url.fragment().is_none() && repo_path_matches(repo, &url, &["pull"], number)
+}
+
+/// True when `raw` is a repo-bound GitHub PR conversation comment URL.
+pub(crate) fn is_pull_comment_html_url(
+    repo: &GitHubRepoRef,
+    raw: &str,
+    number: u64,
+    comment_id: u64,
+) -> bool {
+    let Some(url) = parse_github_html_url(raw) else {
+        return false;
+    };
+    let expected = format!("issuecomment-{comment_id}");
+    number != 0
+        && comment_id != 0
+        && url.fragment() == Some(expected.as_str())
+        && repo_path_matches(repo, &url, &["issues", "pull"], number)
 }
 
 fn map_pull(repo: &GitHubRepoRef, value: serde_json::Value) -> Option<GitHubPullRequestDto> {
@@ -200,10 +247,7 @@ fn map_pull(repo: &GitHubRepoRef, value: serde_json::Value) -> Option<GitHubPull
     if head_repo.full_name.trim().is_empty() || base_repo.full_name.trim().is_empty() {
         return None;
     }
-    if !base_repo
-        .full_name
-        .eq_ignore_ascii_case(&repo.slug())
-    {
+    if !base_repo.full_name.eq_ignore_ascii_case(&repo.slug()) {
         return None;
     }
     if !is_pull_html_url(repo, &item.html_url, item.number) {
@@ -244,6 +288,34 @@ fn map_pull(repo: &GitHubRepoRef, value: serde_json::Value) -> Option<GitHubPull
     })
 }
 
+fn map_pull_comment(
+    repo: &GitHubRepoRef,
+    number: u64,
+    value: serde_json::Value,
+) -> Option<GitHubPullRequestCommentDto> {
+    let comment = serde_json::from_value::<GitHubPullRequestCommentWire>(value).ok()?;
+    let user = comment.user?;
+    if comment.id == 0
+        || user.login.trim().is_empty()
+        || !is_pull_comment_html_url(repo, &comment.html_url, number, comment.id)
+    {
+        return None;
+    }
+    let created_at = DateTime::parse_from_rfc3339(&comment.created_at)
+        .ok()?
+        .timestamp();
+    Some(GitHubPullRequestCommentDto {
+        id: comment.id,
+        body: comment.body,
+        html_url: comment.html_url,
+        created_at,
+        user: GitHubPullRequestUserDto {
+            login: user.login,
+            avatar_url: user.avatar_url,
+        },
+    })
+}
+
 /// Remap GitHub CLI failures for pull-request operations.
 pub(crate) fn remap_pulls_error(
     error: ProjectPullRequestMergeError,
@@ -274,7 +346,7 @@ pub(crate) fn remap_pulls_error(
         redact_diagnostic(diagnostic)
     };
     if lower.contains("rate limit") || lower.contains("abuse") {
-        return ProjectPullRequestMergeError::new("github_pulls_failed", message);
+        return pulls_failed(message);
     }
     if lower.contains("403") && !lower.contains("rate") {
         return ProjectPullRequestMergeError::new("github_repo_unavailable", message);
@@ -282,7 +354,7 @@ pub(crate) fn remap_pulls_error(
     if lower.contains("404") || lower.contains("not found") {
         return ProjectPullRequestMergeError::new(not_found_code, message);
     }
-    ProjectPullRequestMergeError::new("github_pulls_failed", message)
+    pulls_failed(message)
 }
 
 /// List one bounded page of open GitHub pull requests with an injected runner.
@@ -290,8 +362,7 @@ pub(crate) fn list_github_pull_requests_with(
     gh: &GhRunner,
     clone_url: &str,
 ) -> Result<GitHubPullRequestListDto, ProjectPullRequestMergeError> {
-    let repo = GitHubRepoRef::parse(clone_url)
-        .map_err(|message| ProjectPullRequestMergeError::new("github_pulls_failed", message))?;
+    let repo = GitHubRepoRef::parse(clone_url).map_err(pulls_failed)?;
     gh.ensure_auth()
         .map_err(|error| remap_pulls_error(error, "", "github_repo_unavailable"))?;
     let path = format!(
@@ -312,6 +383,178 @@ pub(crate) fn list_github_pull_requests_with(
         .filter_map(|value| map_pull(&repo, value))
         .collect();
     Ok(GitHubPullRequestListDto { pulls, has_more })
+}
+
+fn pull_json_input(
+    value: &serde_json::Value,
+) -> Result<tempfile::NamedTempFile, ProjectPullRequestMergeError> {
+    use std::io::Write;
+    let mut file = tempfile::Builder::new()
+        .prefix("buzz-gh-")
+        .tempfile()
+        .map_err(|error| pulls_failed(error.to_string()))?;
+    serde_json::to_writer(&mut file, value).map_err(|error| pulls_failed(error.to_string()))?;
+    file.flush()
+        .map_err(|error| pulls_failed(error.to_string()))?;
+    Ok(file)
+}
+
+/// Create one ready same-repository GitHub pull request with an injected runner.
+pub(crate) fn create_github_pull_request_with(
+    gh: &GhRunner,
+    clone_url: &str,
+    title: &str,
+    body: &str,
+    head: &str,
+    base: &str,
+) -> Result<GitHubPullRequestDto, ProjectPullRequestMergeError> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err(pulls_failed("Pull request title is required."));
+    }
+    if head.trim().is_empty() {
+        return Err(pulls_failed("Compare branch is required."));
+    }
+    if base.trim().is_empty() {
+        return Err(pulls_failed("Base branch is required."));
+    }
+    if head == base {
+        return Err(pulls_failed("Base and compare branches must be different."));
+    }
+    if title.chars().count() > 256 {
+        return Err(pulls_failed(
+            "Pull request title must be 256 characters or fewer.",
+        ));
+    }
+    let repo = GitHubRepoRef::parse(clone_url).map_err(pulls_failed)?;
+    gh.ensure_auth()
+        .map_err(|error| remap_pulls_error(error, "", "github_repo_unavailable"))?;
+    let input = pull_json_input(&serde_json::json!({
+        "title": title,
+        "body": body,
+        "head": head,
+        "base": base,
+    }))?;
+    let path = format!("/repos/{}/pulls", repo.slug());
+    let raw: serde_json::Value = github_pull_api_json(
+        gh,
+        "POST",
+        &path,
+        PULL_ITEM_JQ,
+        Some(input.path()),
+        "github_repo_unavailable",
+    )?;
+    map_pull(&repo, raw)
+        .ok_or_else(|| pulls_failed("GitHub returned an invalid pull request response."))
+}
+
+/// List one bounded page of read-only GitHub PR conversation comments.
+pub(crate) fn list_github_pull_request_comments_with(
+    gh: &GhRunner,
+    clone_url: &str,
+    number: u64,
+) -> Result<Vec<GitHubPullRequestCommentDto>, ProjectPullRequestMergeError> {
+    if number == 0 {
+        return Err(pulls_failed(
+            "GitHub pull request number must be greater than zero.",
+        ));
+    }
+    let repo = GitHubRepoRef::parse(clone_url).map_err(pulls_failed)?;
+    gh.ensure_auth()
+        .map_err(|error| remap_pulls_error(error, "", "github_pr_unavailable"))?;
+    let path = format!(
+        "/repos/{}/issues/{number}/comments?per_page=100",
+        repo.slug()
+    );
+    let raw: Vec<serde_json::Value> = github_pull_api_json(
+        gh,
+        "GET",
+        &path,
+        PULL_COMMENTS_JQ,
+        None,
+        "github_pr_unavailable",
+    )?;
+    Ok(raw
+        .into_iter()
+        .filter_map(|value| map_pull_comment(&repo, number, value))
+        .collect())
+}
+
+pub(crate) fn list_github_pull_requests_with_runner(
+    clone_url: String,
+    gh: Result<GhRunner, ProjectPullRequestMergeError>,
+) -> Result<GitHubPullRequestListDto, ProjectPullRequestMergeError> {
+    let gh = gh.map_err(|error| remap_pulls_error(error, "", "github_repo_unavailable"))?;
+    list_github_pull_requests_with(&gh, &clone_url)
+}
+
+pub(crate) fn create_github_pull_request_with_runner(
+    clone_url: String,
+    title: String,
+    body: String,
+    head: String,
+    base: String,
+    gh: Result<GhRunner, ProjectPullRequestMergeError>,
+) -> Result<GitHubPullRequestDto, ProjectPullRequestMergeError> {
+    let gh = gh.map_err(|error| remap_pulls_error(error, "", "github_repo_unavailable"))?;
+    create_github_pull_request_with(&gh, &clone_url, &title, &body, &head, &base)
+}
+
+pub(crate) fn list_github_pull_request_comments_with_runner(
+    clone_url: String,
+    number: u64,
+    gh: Result<GhRunner, ProjectPullRequestMergeError>,
+) -> Result<Vec<GitHubPullRequestCommentDto>, ProjectPullRequestMergeError> {
+    let gh = gh.map_err(|error| remap_pulls_error(error, "", "github_pr_unavailable"))?;
+    list_github_pull_request_comments_with(&gh, &clone_url, number)
+}
+
+/// List one bounded page of open GitHub pull requests.
+#[tauri::command]
+pub async fn list_github_pull_requests(
+    clone_url: String,
+) -> Result<GitHubPullRequestListDto, ProjectPullRequestMergeError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        list_github_pull_requests_with_runner(clone_url, GhRunner::discover())
+    })
+    .await
+    .map_err(|error| pulls_failed(error.to_string()))?
+}
+
+/// Create one ready same-repository GitHub pull request.
+#[tauri::command]
+pub async fn create_github_pull_request(
+    clone_url: String,
+    title: String,
+    body: String,
+    head: String,
+    base: String,
+) -> Result<GitHubPullRequestDto, ProjectPullRequestMergeError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        create_github_pull_request_with_runner(
+            clone_url,
+            title,
+            body,
+            head,
+            base,
+            GhRunner::discover(),
+        )
+    })
+    .await
+    .map_err(|error| pulls_failed(error.to_string()))?
+}
+
+/// List one bounded page of read-only GitHub PR conversation comments.
+#[tauri::command]
+pub async fn list_github_pull_request_comments(
+    clone_url: String,
+    number: u64,
+) -> Result<Vec<GitHubPullRequestCommentDto>, ProjectPullRequestMergeError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        list_github_pull_request_comments_with_runner(clone_url, number, GhRunner::discover())
+    })
+    .await
+    .map_err(|error| pulls_failed(error.to_string()))?
 }
 
 #[cfg(test)]
@@ -366,7 +609,9 @@ mod tests {
             status,
         );
         std::fs::write(&path, script).expect("write fake gh");
-        let mut permissions = std::fs::metadata(&path).expect("stat fake gh").permissions();
+        let mut permissions = std::fs::metadata(&path)
+            .expect("stat fake gh")
+            .permissions();
         permissions.set_mode(0o700);
         std::fs::set_permissions(&path, permissions).expect("chmod fake gh");
         (dir, path)
@@ -378,11 +623,8 @@ mod tests {
         let output = json!([projected_pull(42, false), projected_pull(43, true)]);
         let (dir, path) = fake_gh(&output, 0, "");
         let gh = GhRunner::from_resolved(Some(path)).expect("runner");
-        let page = list_github_pull_requests_with(
-            &gh,
-            "https://github.com/acme/app",
-        )
-        .expect("list");
+        let page =
+            list_github_pull_requests_with(&gh, "https://github.com/acme/app").expect("list");
         assert_eq!(page.pulls.len(), 2);
         assert_eq!(page.pulls[0].number, 42);
         assert!(!page.pulls[0].draft);
@@ -394,7 +636,8 @@ mod tests {
         assert_eq!(page.pulls[0].comments, 3);
         assert!(!page.has_more);
         let calls = std::fs::read_to_string(dir.path().join("calls")).expect("calls");
-        assert!(calls.contains("/repos/acme/app/pulls?state=open&per_page=100&sort=updated&direction=desc"));
+        assert!(calls
+            .contains("/repos/acme/app/pulls?state=open&per_page=100&sort=updated&direction=desc"));
         assert!(calls.contains("--jq"));
         assert!(!calls.contains("--paginate"));
     }
@@ -406,10 +649,13 @@ mod tests {
         item["head"]["repo"]["full_name"] = json!("fork-owner/app");
         let (_dir, path) = fake_gh(&json!([item]), 0, "");
         let gh = GhRunner::from_resolved(Some(path)).expect("runner");
-        let page = list_github_pull_requests_with(&gh, "git@github.com:acme/app.git")
-            .expect("list");
+        let page =
+            list_github_pull_requests_with(&gh, "git@github.com:acme/app.git").expect("list");
         assert_eq!(page.pulls[0].head.repo.full_name, "fork-owner/app");
-        assert_eq!(page.pulls[0].head.sha, "1111111111111111111111111111111111111111");
+        assert_eq!(
+            page.pulls[0].head.sha,
+            "1111111111111111111111111111111111111111"
+        );
     }
 
     #[cfg(unix)]
@@ -426,8 +672,8 @@ mod tests {
         );
         let (_dir, path) = fake_gh(&output, 0, "");
         let gh = GhRunner::from_resolved(Some(path)).expect("runner");
-        let page = list_github_pull_requests_with(&gh, "https://github.com/acme/app")
-            .expect("list");
+        let page =
+            list_github_pull_requests_with(&gh, "https://github.com/acme/app").expect("list");
         assert!(page.pulls.is_empty());
         assert!(page.has_more);
     }
@@ -457,8 +703,8 @@ mod tests {
         item["base"]["repo"]["full_name"] = json!("acme/other");
         let (_dir, path) = fake_gh(&json!([item]), 0, "");
         let gh = GhRunner::from_resolved(Some(path)).expect("runner");
-        let page = list_github_pull_requests_with(&gh, "https://github.com/acme/app")
-            .expect("list");
+        let page =
+            list_github_pull_requests_with(&gh, "https://github.com/acme/app").expect("list");
         assert!(page.pulls.is_empty());
     }
 
@@ -471,8 +717,8 @@ mod tests {
         ]);
         let (_dir, path) = fake_gh(&output, 0, "");
         let gh = GhRunner::from_resolved(Some(path)).expect("runner");
-        let page = list_github_pull_requests_with(&gh, "https://github.com/acme/app")
-            .expect("list");
+        let page =
+            list_github_pull_requests_with(&gh, "https://github.com/acme/app").expect("list");
         assert_eq!(page.pulls.len(), 1);
         assert_eq!(page.pulls[0].number, 42);
     }
@@ -486,5 +732,230 @@ mod tests {
         )
         .expect_err("reject Buzz URL");
         assert_eq!(error_code(&error), "github_pulls_failed");
+    }
+
+    #[test]
+    fn create_rejects_invalid_fields_before_running_gh() {
+        let gh = GhRunner::from_resolved(Some(PathBuf::from("/bin/false"))).expect("runner");
+        for (title, head, base, expected) in [
+            ("   ", "feature", "main", "Pull request title is required."),
+            ("title", "", "main", "Compare branch is required."),
+            ("title", "feature", "", "Base branch is required."),
+            (
+                "title",
+                "main",
+                "main",
+                "Base and compare branches must be different.",
+            ),
+        ] {
+            let error = create_github_pull_request_with(
+                &gh,
+                "https://github.com/acme/app",
+                title,
+                "body",
+                head,
+                base,
+            )
+            .expect_err("invalid create");
+            assert_eq!(error_code(&error), "github_pulls_failed");
+            assert_eq!(
+                serde_json::to_value(error).expect("serialize")["message"],
+                expected,
+            );
+        }
+    }
+
+    #[test]
+    fn create_rejects_more_than_256_unicode_scalars_before_running_gh() {
+        let gh = GhRunner::from_resolved(Some(PathBuf::from("/bin/false"))).expect("runner");
+        let error = create_github_pull_request_with(
+            &gh,
+            "https://github.com/acme/app",
+            &"é".repeat(257),
+            "",
+            "feature",
+            "main",
+        )
+        .expect_err("long title");
+        assert_eq!(error_code(&error), "github_pulls_failed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_posts_exact_json_and_returns_the_created_pull() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("dir");
+        let path = dir.path().join("gh");
+        let output = projected_pull(44, false).to_string();
+        let script = format!(
+            "#!/bin/sh\nset -eu\nroot=${{0%/gh}}\nprintf '%s\\n' \"$*\" >> \"$root/calls\"\ncase \"$*\" in\n  *auth*status*) exit 0 ;;\n  *--method*POST*)\n    previous=\"\"\n    for argument in \"$@\"; do\n      if [ \"$previous\" = \"--input\" ]; then cp \"$argument\" \"$root/input.json\"; fi\n      previous=\"$argument\"\n    done\n    printf '%s' '{}'\n    ;;\n  *) exit 1 ;;\nesac\n",
+            output,
+        );
+        std::fs::write(&path, script).expect("write fake gh");
+        let mut permissions = std::fs::metadata(&path).expect("stat").permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&path, permissions).expect("chmod");
+        let gh = GhRunner::from_resolved(Some(path)).expect("runner");
+        let pull = create_github_pull_request_with(
+            &gh,
+            "https://github.com/acme/app",
+            "  Add docs  ",
+            " body with surrounding space ",
+            "feature/readme",
+            "main",
+        )
+        .expect("create");
+        assert_eq!(pull.number, 44);
+        let input: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("input.json")).expect("input"),
+        )
+        .expect("json");
+        assert_eq!(
+            input,
+            json!({
+                "title": "Add docs",
+                "body": " body with surrounding space ",
+                "head": "feature/readme",
+                "base": "main"
+            })
+        );
+        let calls = std::fs::read_to_string(dir.path().join("calls")).expect("calls");
+        assert!(calls.contains("--method POST"));
+        assert!(calls.contains("/repos/acme/app/pulls"));
+        assert!(calls.contains("--input"));
+        assert!(!calls.contains("head_repo"));
+        assert!(!calls.contains("draft"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_rejects_a_foreign_returned_url() {
+        let mut item = projected_pull(44, false);
+        item["html_url"] = json!("https://evil.example/pull/44");
+        let (_dir, path) = fake_gh(&item, 0, "");
+        let gh = GhRunner::from_resolved(Some(path)).expect("runner");
+        let error = create_github_pull_request_with(
+            &gh,
+            "https://github.com/acme/app",
+            "Add docs",
+            "",
+            "feature/readme",
+            "main",
+        )
+        .expect_err("foreign URL");
+        assert_eq!(error_code(&error), "github_pulls_failed");
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn accepts_only_repo_bound_issue_comment_urls() {
+        let repo = GitHubRepoRef::parse("https://github.com/Acme/App").expect("repo");
+        for (raw, number, id, expected) in [
+            ("https://github.com/acme/app/issues/42#issuecomment-9", 42, 9, true),
+            ("https://github.com/acme/app/pull/42#issuecomment-9", 42, 9, true),
+            ("https://github.com/ACME/APP/pull/42#issuecomment-9", 42, 9, true),
+            ("https://github.com/acme/app/pulls/42#issuecomment-9", 42, 9, false),
+            ("https://github.com/acme/app/pull/43#issuecomment-9", 42, 9, false),
+            ("https://github.com/acme/app/pull/42#issuecomment-8", 42, 9, false),
+            ("https://github.com/acme/app/pull/42?x=1#issuecomment-9", 42, 9, false),
+        ] {
+            assert_eq!(is_pull_comment_html_url(&repo, raw, number, id), expected, "{raw}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn comments_keep_github_order_and_drop_foreign_urls() {
+        let output = json!([
+            { "id": "bad", "body": 7, "html_url": null, "created_at": false, "user": null },
+            { "id": 2, "body": "first", "html_url": "https://github.com/acme/app/issues/42#issuecomment-2", "created_at": "2026-01-02T03:04:05Z", "user": { "login": "grace", "avatar_url": "https://example.com/a" } },
+            { "id": 10, "body": "second", "html_url": "https://github.com/acme/app/pull/42#issuecomment-10", "created_at": "2026-01-02T04:04:05Z", "user": { "login": "linus", "avatar_url": "https://example.com/b" } },
+            { "id": 11, "body": "foreign", "html_url": "https://evil.example/comment/11", "created_at": "2026-01-02T05:04:05Z", "user": { "login": "mallory", "avatar_url": "" } }
+        ]);
+        let (dir, path) = fake_gh(&output, 0, "");
+        let gh = GhRunner::from_resolved(Some(path)).expect("runner");
+        let comments =
+            list_github_pull_request_comments_with(&gh, "https://github.com/acme/app", 42)
+                .expect("comments");
+        assert_eq!(
+            comments
+                .iter()
+                .map(|comment| comment.body.as_str())
+                .collect::<Vec<_>>(),
+            vec!["first", "second"]
+        );
+        assert_eq!(comments[1].user.login, "linus");
+        let calls = std::fs::read_to_string(dir.path().join("calls")).expect("calls");
+        assert!(calls.contains("/repos/acme/app/issues/42/comments?per_page=100"));
+    }
+
+    #[test]
+    fn comments_reject_number_zero_before_running_gh() {
+        let gh = GhRunner::from_resolved(Some(PathBuf::from("/bin/false"))).expect("runner");
+        let error = list_github_pull_request_comments_with(&gh, "https://github.com/acme/app", 0)
+            .expect_err("zero");
+        assert_eq!(error_code(&error), "github_pulls_failed");
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn error_remapping_preserves_recovery_codes() {
+        let missing = GhRunner::from_resolved(None).expect_err("missing");
+        assert_eq!(error_code(&remap_pulls_error(missing, "", "github_repo_unavailable")), "github_cli_missing");
+        let not_found = ProjectPullRequestMergeError::new("github_merge_failed", "gh: HTTP 404");
+        assert_eq!(error_code(&remap_pulls_error(not_found, "Not Found", "github_pr_unavailable")), "github_pr_unavailable");
+        let forbidden = ProjectPullRequestMergeError::new("github_merge_failed", "gh: HTTP 403");
+        assert_eq!(error_code(&remap_pulls_error(forbidden, "Forbidden", "github_pr_unavailable")), "github_repo_unavailable");
+        let limited = ProjectPullRequestMergeError::new("github_merge_failed", "gh: HTTP 403");
+        assert_eq!(error_code(&remap_pulls_error(limited, "API rate limit exceeded", "github_repo_unavailable")), "github_pulls_failed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_auth_maps_to_auth_required_before_api_access() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("dir");
+        let path = dir.path().join("gh");
+        std::fs::write(
+            &path,
+            "#!/bin/sh\ncase \"$*\" in *auth*status*) exit 1 ;; *) exit 99 ;; esac\n",
+        )
+        .expect("write fake gh");
+        let mut permissions = std::fs::metadata(&path).expect("stat").permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&path, permissions).expect("chmod");
+        let gh = GhRunner::from_resolved(Some(path)).expect("runner");
+        let error =
+            list_github_pull_requests_with(&gh, "https://github.com/acme/app").expect_err("auth");
+        assert_eq!(error_code(&error), "github_auth_required");
+    }
+
+    #[test]
+    fn runner_wrappers_preserve_missing_cli_recovery() {
+        let list_error = list_github_pull_requests_with_runner(
+            "https://github.com/acme/app".to_string(),
+            GhRunner::from_resolved(None),
+        )
+        .expect_err("list missing");
+        assert_eq!(error_code(&list_error), "github_cli_missing");
+
+        let create_error = create_github_pull_request_with_runner(
+            "https://github.com/acme/app".to_string(),
+            "title".to_string(),
+            "body".to_string(),
+            "feature".to_string(),
+            "main".to_string(),
+            GhRunner::from_resolved(None),
+        )
+        .expect_err("create missing");
+        assert_eq!(error_code(&create_error), "github_cli_missing");
+
+        let comments_error = list_github_pull_request_comments_with_runner(
+            "https://github.com/acme/app".to_string(),
+            42,
+            GhRunner::from_resolved(None),
+        )
+        .expect_err("comments missing");
+        assert_eq!(error_code(&comments_error), "github_cli_missing");
     }
 }
