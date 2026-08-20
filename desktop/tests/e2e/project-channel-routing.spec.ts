@@ -47,3 +47,22 @@ test("Channels tab pins and opens the zero-hit repository binding", async ({
   );
   await expect(page.getByTestId("chat-title")).toHaveText("general");
 });
+
+test("Open Discussion routes the repository binding to Stream", async ({
+  page,
+}) => {
+  await enableProjectsFeature(page);
+  await installMockBridge(page);
+  await openBuzzProject(page);
+
+  const openDiscussion = page.getByRole("button", {
+    name: "Open Discussion",
+  });
+  await expect(openDiscussion).toBeVisible({ timeout: 10_000 });
+  await openDiscussion.click();
+
+  await expect(page).toHaveURL(
+    new RegExp(`/#/channels/${GENERAL_CHANNEL_ID}$`),
+  );
+  await expect(page.getByTestId("chat-title")).toHaveText("general");
+});

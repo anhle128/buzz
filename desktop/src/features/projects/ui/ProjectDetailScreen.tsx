@@ -84,6 +84,7 @@ import {
 } from "./useOpenProjectTerminal";
 import type { CreateIssueDialogInput } from "./CreateIssueDialog";
 import { ProjectBranchActionDialogs } from "./ProjectBranchActionDialogs";
+import { OpenDiscussionButton } from "./OpenDiscussionButton";
 import { ProjectDetailChrome } from "./ProjectDetailChrome";
 import { ProjectDetailChromeActions } from "./ProjectDetailChromeActions";
 import { UnavailableProjectRepositories } from "./UnavailableProjectRepositories";
@@ -833,6 +834,14 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
       <div className="flex min-h-0 min-w-0 flex-1 flex-row overflow-hidden">
         <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
           <ProjectDetailChrome
+            actions={
+              <OpenDiscussionButton
+                channel={discussionChannel}
+                onOpen={(channelId) => {
+                  void goChannel(channelId);
+                }}
+              />
+            }
             activeTabCrumb={activeTabCrumb}
             activeWorkItemCrumb={activeWorkItemCrumb}
             chromeRef={projectDetailHeaderChromeRef}
