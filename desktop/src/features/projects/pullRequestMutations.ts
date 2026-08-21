@@ -1,9 +1,16 @@
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 
+import { isGitHubCloneUrl } from "@/features/projects/lib/projectGitError";
 import {
+  githubPullRequestId,
+  requireNostrPullRequestId,
+} from "@/features/projects/lib/projectGithubPullRequests";
+import {
+  createGithubPullRequest,
   mergeProjectPullRequest,
   publishProjectPullRequestMergedStatus,
 } from "@/shared/api/projectGit";
+import { createGithubPullRequest } from "@/shared/api/projectGithubPulls";
 import { relayClient } from "@/shared/api/relayClient";
 import { signRelayEvent } from "@/shared/api/tauri";
 import { getIdentity } from "@/shared/api/tauriIdentity";
@@ -11,6 +18,11 @@ import {
   KIND_GIT_PR_UPDATE,
   KIND_GIT_PULL_REQUEST,
 } from "@/shared/constants/kinds";
+import { isGitHubCloneUrl } from "@/features/projects/lib/projectGitError";
+import {
+  githubPullRequestId,
+  requireBuzzPullRequestEventId,
+} from "@/features/projects/lib/projectGithubPulls";
 import { normalizePubkey } from "@/shared/lib/pubkey";
 import type { ProjectPullRequest, Repository as Project } from "./hooks";
 import { nextProjectPullRequestStatusCreatedAt } from "./projectPullRequests.mjs";
@@ -56,13 +68,14 @@ export function projectPullRequestUpdateTags(
   commit: string,
   mergeBase: string | null,
 ): string[][] {
+  const pullRequestId = requireNostrPullRequestId(pullRequest.id);
   const tags = [
     ["a", project.repoAddress],
     ...uniquePubkeys([project.owner, pullRequest.author]).map((pubkey) => [
       "p",
       pubkey,
     ]),
-    ["E", pullRequest.id],
+    ["E", pullRequestId],
     ["P", normalizePubkey(pullRequest.author)],
     ["c", commit],
     [
@@ -81,8 +94,9 @@ export function projectPullRequestMergedTags(
   pullRequest: ProjectPullRequest,
   mergeCommit: string,
 ): string[][] {
+  const pullRequestId = requireNostrPullRequestId(pullRequest.id);
   return [
-    ["e", pullRequest.id, "", "root"],
+    ["e", pullRequestId, "", "root"],
     ["a", project.repoAddress],
     ...uniquePubkeys([project.owner, pullRequest.author]).map((pubkey) => [
       "p",
@@ -106,7 +120,8 @@ export function canPublishProjectPullRequestUpdate(
   );
 }
 
-async function publishProjectPullRequest(
+/** Sign and publish a NIP-34 kind 1618 pull request for a Buzz-hosted repository. */
+export async function publishProjectPullRequest(
   project: Project,
   input: CreateProjectPullRequestInput,
 ) {
@@ -135,6 +150,43 @@ async function publishProjectPullRequest(
   return event.id;
 }
 
+/** Create a pull request through exactly one repository-native backend. */
+export async function createProjectPullRequestWith(
+  project: Project,
+  input: CreateProjectPullRequestInput,
+  backends: {
+    createGithub: typeof createGithubPullRequest;
+    publishBuzz: typeof publishProjectPullRequest;
+  },
+): Promise<string> {
+  const cloneUrl = project.cloneUrls[0] ?? "";
+  if (isGitHubCloneUrl(cloneUrl)) {
+    const pull = await backends.createGithub({
+      cloneUrl,
+      title: input.title,
+      body: input.body,
+      head: input.branch,
+      base: input.targetBranch,
+    });
+    return githubPullRequestId(pull.number);
+  }
+  return backends.publishBuzz(project, input);
+}
+
+/** Host-routed query keys invalidated after pull-request creation. */
+export function projectPullRequestInvalidationKeys(
+  project: Pick<Project, "id" | "cloneUrls">,
+): readonly unknown[][] {
+  const pullRequestsKey = ["project", project.id, "pull-requests"];
+  return isGitHubCloneUrl(project.cloneUrls[0])
+    ? [pullRequestsKey]
+    : [
+        pullRequestsKey,
+        ["projects", "work-items"],
+        ["projects", "activity-summaries"],
+      ];
+}
+
 export async function publishProjectPullRequestUpdate({
   commit,
   mergeBase,
@@ -146,6 +198,8 @@ export async function publishProjectPullRequestUpdate({
   project: Project;
   pullRequest: ProjectPullRequest;
 }): Promise<boolean> {
+  if (isGitHubCloneUrl(project.cloneUrls[0])) return false;
+  const pullRequestId = requireNostrPullRequestId(pullRequest.id);
   if (pullRequest.commit?.toLowerCase() === commit.toLowerCase()) return false;
   const identity = await getIdentity();
   if (
@@ -162,7 +216,12 @@ export async function publishProjectPullRequestUpdate({
       Math.floor(Date.now() / 1_000),
       ...pullRequest.updates.map((update) => update.createdAt + 1),
     ),
-    tags: projectPullRequestUpdateTags(project, pullRequest, commit, mergeBase),
+    tags: projectPullRequestUpdateTags(
+      project,
+      { ...pullRequest, id: pullRequestId },
+      commit,
+      mergeBase,
+    ),
   });
   await relayClient.publishEvent(
     event,
@@ -182,16 +241,69 @@ export async function publishProjectPullRequestMerged(
   });
 }
 
+/** Route pull-request creation to exactly one backend for the repository host. */
+export async function createProjectPullRequestWith(
+  project: Project,
+  input: CreateProjectPullRequestInput,
+  loaders: {
+    createGithub: (input: {
+      cloneUrl: string;
+      title: string;
+      body: string;
+      head: string;
+      base: string;
+    }) => Promise<{ number: number }>;
+    publishBuzz: typeof publishProjectPullRequest;
+  },
+): Promise<string> {
+  const cloneUrl = project.cloneUrls[0] ?? "";
+  if (isGitHubCloneUrl(cloneUrl)) {
+    const pull = await loaders.createGithub({
+      cloneUrl,
+      title: input.title,
+      body: input.body,
+      head: input.branch,
+      base: input.targetBranch,
+    });
+    return githubPullRequestId(pull.number);
+  }
+  return loaders.publishBuzz(project, input);
+}
+
+/** Query keys invalidated after a host-routed pull-request create. */
+export function projectPullRequestInvalidationKeys(
+  project: Pick<Project, "id" | "cloneUrls">,
+): readonly unknown[][] {
+  if (isGitHubCloneUrl(project.cloneUrls[0])) {
+    return [["project", project.id, "pull-requests"]];
+  }
+  return [
+    ["project", project.id, "pull-requests"],
+    ["projects", "work-items"],
+    ["projects", "activity-summaries"],
+  ];
+}
+
 export function useCreateProjectPullRequestMutation(
   project: Project | null | undefined,
 ) {
-  const invalidate = useProjectPullRequestWriteInvalidation(project);
+  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (input: CreateProjectPullRequestInput) => {
       if (!project) throw new Error("No project selected.");
-      return publishProjectPullRequest(project, input);
+      return createProjectPullRequestWith(project, input, {
+        createGithub: createGithubPullRequest,
+        publishBuzz: publishProjectPullRequest,
+      });
     },
-    onSuccess: invalidate,
+    onSuccess: async () => {
+      if (!project) return;
+      await Promise.all(
+        projectPullRequestInvalidationKeys(project).map((queryKey) =>
+          queryClient.invalidateQueries({ queryKey }),
+        ),
+      );
+    },
   });
 }
 
@@ -232,15 +344,17 @@ export function useMergeProjectPullRequestMutation(
       pullRequest: ProjectPullRequest;
     }) => {
       if (!project?.cloneUrls[0]) throw new Error("No project selected.");
+      requireBuzzPullRequestEventId(pullRequest.id);
       if (!pullRequest.branchName || !pullRequest.commit) {
         throw new Error("Review branch information is incomplete.");
       }
+      const pullRequestId = requireNostrPullRequestId(pullRequest.id);
       const result = await mergeProjectPullRequest({
         targetCloneUrl: project.cloneUrls[0],
         sourceCloneUrl: pullRequest.cloneUrls[0] ?? project.cloneUrls[0],
         targetOwner: project.owner,
         repoAddress: project.repoAddress,
-        pullRequestId: pullRequest.id,
+        pullRequestId,
         pullRequestAuthor: pullRequest.author,
         statusCreatedAt: nextProjectPullRequestStatusCreatedAt(
           pullRequest,

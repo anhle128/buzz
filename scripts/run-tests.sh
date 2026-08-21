@@ -99,6 +99,9 @@ run_unit_tests() {
   run_test_step "buzz-db unit tests" \
     cargo test -p buzz-db --lib -- --nocapture
 
+  run_test_step "buzz-workflow tests" \
+    cargo test -p buzz-workflow --lib -- --nocapture
+
   # Multi-tenant conformance gate: independent replay checker + golden
   # fixtures (buzz-conformance). Pure in-process trace replay, no infra.
   run_test_step "buzz-conformance tests" \

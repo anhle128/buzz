@@ -21,6 +21,17 @@ pub(crate) fn api_error(status: StatusCode, msg: &str) -> (StatusCode, Json<serd
     (status, Json(serde_json::json!({ "error": msg })))
 }
 
+pub(crate) fn api_error_with_code(
+    status: StatusCode,
+    msg: &str,
+    code: &str,
+) -> (StatusCode, Json<serde_json::Value>) {
+    (
+        status,
+        Json(serde_json::json!({ "error": msg, "code": code })),
+    )
+}
+
 pub(crate) fn internal_error(msg: &str) -> (StatusCode, Json<serde_json::Value>) {
     tracing::error!("Internal error: {msg}");
     api_error(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")

@@ -26,6 +26,7 @@ import {
 import type { ProjectIssue } from "../projectIssues.mjs";
 import type { Project, Repository } from "../projectModels";
 import type { ProjectPullRequest } from "../projectPullRequests.mjs";
+import { parseGithubPullRequestNumber } from "./projectGithubPullRequests";
 
 type Coordinate = { kind: number; owner: string; dtag: string };
 
@@ -184,9 +185,60 @@ export function issueShareLink(issue: ProjectIssue): string | null {
     : null;
 }
 
+function isSafeGitHubPullRequestUrl(
+  raw: string,
+  pullRequestId: string,
+): boolean {
+  const expectedNumber = parseGithubPullRequestNumber(pullRequestId);
+  if (
+    expectedNumber === null ||
+    raw !== raw.trim() ||
+    !raw.startsWith("https://github.com/") ||
+    raw.endsWith("/") ||
+    raw.includes("\\")
+  ) {
+    return false;
+  }
+  try {
+    const url = new URL(raw);
+    if (
+      url.protocol !== "https:" ||
+      url.hostname !== "github.com" ||
+      url.port !== "" ||
+      url.username !== "" ||
+      url.password !== "" ||
+      url.search !== "" ||
+      url.hash !== "" ||
+      url.pathname.includes("%") ||
+      url.pathname.includes("//")
+    ) {
+      return false;
+    }
+    const [owner, repo, kind, number, ...rest] = url.pathname
+      .split("/")
+      .filter(Boolean);
+    return (
+      rest.length === 0 &&
+      /^[A-Za-z0-9-]+$/.test(owner ?? "") &&
+      /^[A-Za-z0-9._-]+$/.test(repo ?? "") &&
+      kind === "pull" &&
+      parseGithubPullRequestNumber(number) === expectedNumber &&
+      `https://github.com/${owner}/${repo}/pull/${number}` === raw
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function pullRequestShareLink(
   pullRequest: ProjectPullRequest,
 ): string | null {
+  if (
+    pullRequest.htmlUrl &&
+    isSafeGitHubPullRequestUrl(pullRequest.htmlUrl, pullRequest.id)
+  ) {
+    return pullRequest.htmlUrl;
+  }
   const coordinate = repositoryCoordinate(pullRequest.repoAddress);
   return coordinate &&
     HEX64_RE.test(pullRequest.id) &&
