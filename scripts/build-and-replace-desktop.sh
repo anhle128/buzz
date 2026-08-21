@@ -17,6 +17,7 @@ SKIP_BUILD=0
 QUIT_APP=1
 BACKUP_EXISTING=1
 OPEN_AFTER=0
+CLEAN_BUILD=1
 
 usage() {
   cat <<'USAGE'
@@ -35,6 +36,8 @@ Options:
   --no-quit              Do not ask a running Buzz app to quit first.
   --no-backup            Remove the old app instead of moving it to a timestamped backup.
   --open                 Open the installed app after replacement.
+  --keep-build           Keep desktop/src-tauri/target after a successful install.
+                         Default: delete it to reclaim Rust build disk space.
   -h, --help             Show this help.
 
 Examples:
@@ -100,6 +103,10 @@ while [[ $# -gt 0 ]]; do
       OPEN_AFTER=1
       shift
       ;;
+    --keep-build)
+      CLEAN_BUILD=0
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -120,7 +127,8 @@ fi
 [[ -n "$TARGET" ]] || fail "could not determine host target from rustc -vV; pass --target"
 [[ "$TARGET" == *-apple-darwin ]] || fail "target must be a macOS target, got: $TARGET"
 
-SOURCE_APP="${REPO_ROOT}/desktop/src-tauri/target/${TARGET}/release/bundle/macos/${APP_NAME}"
+RUST_TARGET_DIR="${REPO_ROOT}/desktop/src-tauri/target"
+SOURCE_APP="${RUST_TARGET_DIR}/${TARGET}/release/bundle/macos/${APP_NAME}"
 DEST_APP="${INSTALL_DIR%/}/${APP_NAME}"
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 BACKUP_APP="${DEST_APP}.backup-${TIMESTAMP}"
@@ -199,6 +207,15 @@ fi
 
 if [[ "$DRY_RUN" -eq 0 ]]; then
   xattr -dr com.apple.quarantine "$DEST_APP" >/dev/null 2>&1 || true
+fi
+
+if [[ "$CLEAN_BUILD" -eq 1 ]]; then
+  if [[ "$DRY_RUN" -eq 1 || -d "$RUST_TARGET_DIR" ]]; then
+    log "Removing Rust build artifacts at $RUST_TARGET_DIR"
+    run rm -rf "$RUST_TARGET_DIR"
+  fi
+else
+  log "Keeping Rust build artifacts at $RUST_TARGET_DIR"
 fi
 
 if [[ "$OPEN_AFTER" -eq 1 ]]; then
