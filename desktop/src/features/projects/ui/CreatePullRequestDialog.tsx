@@ -9,7 +9,6 @@ import {
 } from "@/features/projects/hooks";
 import { resolveProjectDefaultBranch } from "@/features/projects/lib/projectBranches";
 import { isGitHubCloneUrl } from "@/features/projects/lib/projectGitError";
-import { hasOpenPullRequestForBranches } from "@/features/projects/lib/projectGithubPulls";
 import { githubRepositoryStateUnresolved } from "@/features/projects/lib/projectRepoState";
 import { selectProjectRepository } from "@/features/projects/projectModels";
 import { useCreateProjectPullRequestMutation } from "@/features/projects/pullRequestMutations";

@@ -15,7 +15,6 @@ import {
   listGithubPullRequests,
   listProjectLocalRepositories,
 } from "@/shared/api/projectGit";
-import { listGithubPullRequests } from "@/shared/api/projectGithubPulls";
 import { createGithubIssueComment } from "@/shared/api/projectGithubIssueWrites";
 import {
   KIND_DELETION,

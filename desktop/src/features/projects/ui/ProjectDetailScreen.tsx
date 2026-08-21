@@ -140,7 +140,7 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
       projectId: repository?.id ?? projectId,
       referencedBranches: githubStateUnresolved
         ? []
-        : (pullRequestsQuery.data?.map(
+        : (pullRequestsQuery.data?.pullRequests.map(
             (pullRequest) => pullRequest.branchName ?? null,
           ) ?? []),
     });
@@ -218,7 +218,7 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
       (repository?.cloneUrls ?? []).map(normalizeRepositoryUrl),
     );
     const matches =
-      pullRequestsQuery.data?.filter(
+      pullRequestsQuery.data?.pullRequests.filter(
         (pullRequest) =>
           pullRequest.branchName === activeBranch &&
           pullRequest.cloneUrls.some((cloneUrl) =>
@@ -233,7 +233,7 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
       ? selectedBranchPullRequest
       : null;
   const activeRepoPullRequest =
-    pullRequestsQuery.data?.find((item) => item.id === selectedPullRequestId) ??
+    pullRequestsQuery.data?.pullRequests.find((item) => item.id === selectedPullRequestId) ??
     selectedBranchPullRequest;
   const [repoSource, setRepoSource] = React.useState<"remote" | "local">(
     "remote",
@@ -334,7 +334,7 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
       activeBranch,
       branches: managedBranches,
       defaultBranch,
-      hasOpenPullRequest: (pullRequestsQuery.data ?? []).some(
+      hasOpenPullRequest: (pullRequestsQuery.data?.pullRequests ?? []).some(
         (pullRequest) =>
           pullRequest.branchName === activeBranch &&
           (pullRequest.status === "Open" || pullRequest.status === "Draft"),
@@ -407,7 +407,7 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
     viewerGitIdentity,
   } = useProjectDetailPeople({
     issues: issuesQuery.data?.issues ?? [],
-    pullRequests: pullRequestsQuery.data ?? [],
+    pullRequests: pullRequestsQuery.data?.pullRequests ?? [],
     repository,
   });
   const {
@@ -706,7 +706,7 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
     displayedRepositorySnapshot?.contributors ?? repoContributors;
   const displayedRepositoryFiles = displayedRepositorySnapshot?.files ?? [];
   const selectedPullRequest =
-    pullRequestsQuery.data?.find((item) => item.id === selectedPullRequestId) ??
+    pullRequestsQuery.data?.pullRequests.find((item) => item.id === selectedPullRequestId) ??
     null;
   const selectedIssue =
     issuesQuery.data?.issues.find((item) => item.id === selectedIssueId) ??
@@ -811,7 +811,7 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
                 onResetWidth={activeRightPanelWidth.onResetWidth}
                 onResizeStart={activeRightPanelWidth.onResizeStart}
                 profiles={profiles}
-                pullRequests={pullRequestsQuery.data ?? []}
+                pullRequests={pullRequestsQuery.data?.pullRequests ?? []}
                 project={project}
                 projects={projectsQuery.data ?? []}
                 repository={repository}
@@ -921,7 +921,7 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
                   repoDiff={displayedRepoDiff}
                   repoDiffError={displayedRepoDiffError}
                   repoDiffLoading={displayedRepoDiffLoading}
-                  pullRequests={pullRequestsQuery.data ?? []}
+                  pullRequests={pullRequestsQuery.data?.pullRequests ?? []}
                   pullRequestsError={pullRequestsQuery.error}
                   pullRequestsLoading={pullRequestsQuery.isLoading}
                   repoContributors={repoContributors}

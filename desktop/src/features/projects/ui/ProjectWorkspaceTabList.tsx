@@ -1,8 +1,8 @@
+import * as React from "react";
 import { Glasses } from "lucide-react";
 
 import { cn } from "@/shared/lib/cn";
 import { TabsList, TabsTrigger } from "@/shared/ui/tabs";
-
 export const PROJECT_TAB_TRIGGER_CLASS =
   "h-7 shrink-0 rounded-full bg-muted/30 px-3 text-xs font-medium leading-5 tracking-tight text-muted-foreground shadow-none transition-colors hover:bg-muted/55 hover:text-foreground data-[state=active]:bg-muted data-[state=active]:text-foreground data-[state=active]:shadow-none";
 
@@ -10,7 +10,7 @@ export const PROJECT_TAB_SELECTED_CLASS = "bg-muted text-foreground";
 const PROJECT_OVERVIEW_TAB_CLASS =
   "h-7 w-7 shrink-0 rounded-full bg-muted/30 p-1.5 text-muted-foreground shadow-none transition-colors hover:bg-muted/55 hover:text-foreground data-[state=active]:bg-muted data-[state=active]:text-foreground data-[state=active]:shadow-none";
 
-function ProjectTabLabel({ children }: { children: string }) {
+function ProjectTabLabel({ children }: { children: React.ReactNode }) {
   return <span>{children}</span>;
 }
 
@@ -50,6 +50,40 @@ export function ProjectTabsList({ prsActive }: { prsActive?: boolean }) {
       <TabsTrigger className={PROJECT_TAB_TRIGGER_CLASS} value="contributors">
         <ProjectTabLabel>Contributors</ProjectTabLabel>
       </TabsTrigger>
+    </TabsList>
+  );
+}
+
+
+/** Tabs for pull request detail view: Conversation, Commits, Files changed */
+export function PullRequestTabsList({
+  conversationCount,
+  filesCount,
+  githubHosted: _githubHosted,
+  hideFiles,
+  pullRequest,
+}: {
+  conversationCount?: number;
+  filesCount: number;
+  githubHosted?: boolean;
+  hideFiles?: boolean;
+  pullRequest: { updateCount?: number };
+}) {
+  return (
+    <TabsList className="h-full min-w-0 max-w-full flex-none justify-start gap-1.5 overflow-x-auto bg-transparent p-0 scrollbar-none">
+      <TabsTrigger className={PROJECT_TAB_TRIGGER_CLASS} value="pr-conversation">
+        <ProjectTabLabel>
+          Conversation{conversationCount !== undefined ? ` (${conversationCount})` : ""}
+        </ProjectTabLabel>
+      </TabsTrigger>
+      <TabsTrigger className={PROJECT_TAB_TRIGGER_CLASS} value="pr-commits">
+        <ProjectTabLabel>Commits ({pullRequest.updateCount ?? 1})</ProjectTabLabel>
+      </TabsTrigger>
+      {!hideFiles && (
+        <TabsTrigger className={PROJECT_TAB_TRIGGER_CLASS} value="pr-files">
+          <ProjectTabLabel>Files changed ({filesCount})</ProjectTabLabel>
+        </TabsTrigger>
+      )}
     </TabsList>
   );
 }

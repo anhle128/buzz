@@ -10679,6 +10679,33 @@ type E2eGithubIssueStore = {
   authenticatedUser: E2eGithubIssueUser;
 };
 
+function createDefaultE2eGithubIssueStore(): E2eGithubIssueStore {
+  return {
+    issues: [
+      {
+        number: 1,
+        title: "Default GitHub issue",
+        body: "Default issue body.",
+        html_url: "https://github.com/acme/app/issues/1",
+        state: "open",
+        created_at: 1_704_166_645,
+        updated_at: 1_704_166_645,
+        comments: 0,
+        user: { login: "ada", avatar_url: "" },
+        labels: [],
+        assignees: [],
+      },
+    ],
+    commentsByNumber: {},
+    labels: [],
+    assignees: [],
+    authenticatedUser: { login: "test-user", avatar_url: "" },
+  };
+}
+
+
+
+
 function e2eGithubIssueStore(): E2eGithubIssueStore {
   window.__BUZZ_E2E_GITHUB_ISSUE_STORE__ ??= createDefaultE2eGithubIssueStore();
   return window.__BUZZ_E2E_GITHUB_ISSUE_STORE__;

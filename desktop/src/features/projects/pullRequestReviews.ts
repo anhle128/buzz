@@ -15,7 +15,6 @@ import {
   KIND_GIT_STATUS_OPEN,
   KIND_TEXT_NOTE,
 } from "@/shared/constants/kinds";
-import { requireBuzzPullRequestEventId } from "@/features/projects/lib/projectGithubPulls";
 import type { Repository as Project } from "./hooks";
 import {
   nextProjectPullRequestStatusCreatedAt,
