@@ -76,6 +76,7 @@ pub struct GitHubPullRequestCommentDto {
     pub user: GitHubPullRequestUserDto,
 }
 
+
 #[derive(Debug, Deserialize)]
 struct GitHubPullRequestUserWire {
     login: String,

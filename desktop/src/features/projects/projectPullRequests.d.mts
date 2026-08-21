@@ -75,6 +75,7 @@ export type ProjectPullRequest = {
   content: string;
   tags: string[][];
   author: string;
+
   authorAvatarUrl: string | null;
   createdAt: number;
   repoAddress: string | null;

@@ -70,10 +70,12 @@ const PR_TAB_TRIGGER_CLASS =
   "h-9 gap-1.5 rounded-none border-b-2 border-transparent px-0 text-muted-foreground hover:text-foreground data-[state=active]:border-foreground data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none";
 
 export function PullRequestTabsList({
+  conversationCount,
   filesCount,
   githubHosted,
   pullRequest,
 }: {
+  conversationCount?: number;
   filesCount: number;
   githubHosted: boolean;
   pullRequest: ProjectPullRequest;

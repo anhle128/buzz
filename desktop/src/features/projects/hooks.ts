@@ -12,6 +12,7 @@ import {
   getProjectLocalRepoSnapshot,
   getProjectRepoSnapshot,
   listGithubIssues,
+  listGithubPullRequests,
   listProjectLocalRepositories,
 } from "@/shared/api/projectGit";
 import { listGithubPullRequests } from "@/shared/api/projectGithubPulls";

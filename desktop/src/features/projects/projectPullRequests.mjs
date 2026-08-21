@@ -399,6 +399,7 @@ export function eventToProjectPullRequest(
     updates,
     comments,
     commentCount: comments.length,
+
     htmlUrl: null,
   };
 }

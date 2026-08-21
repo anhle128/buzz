@@ -63,6 +63,10 @@ pub enum WorkflowError {
     /// The action is defined but not yet implemented.
     #[error("action not implemented: {0}")]
     NotImplemented(String),
+
+    /// Dynamic route lost authority between admission and the side effect.
+    #[error("route is no longer valid")]
+    RouteStale,
 }
 
 impl WorkflowError {
@@ -79,6 +83,7 @@ impl WorkflowError {
             Self::Database(_) => "database_error",
             Self::Unauthorized(_) => "owner_unauthorized",
             Self::NotImplemented(_) => "action_not_implemented",
+            Self::RouteStale => "route_stale",
         }
     }
 }
@@ -109,6 +114,12 @@ mod tests {
         assert_eq!(
             WorkflowError::NotImplemented("SendDm".to_owned()).code(),
             "action_not_implemented"
+        );
+
+        assert_eq!(WorkflowError::RouteStale.code(), "route_stale");
+        assert_eq!(
+            WorkflowError::RouteStale.to_string(),
+            "route is no longer valid"
         );
     }
 }

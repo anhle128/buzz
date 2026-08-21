@@ -35,16 +35,6 @@ async function openBuzzProject(page: import("@playwright/test").Page) {
   await projectEntry.click();
 }
 
-async function openAlicePullRequest(page: import("@playwright/test").Page) {
-  await page.getByRole("tab", { name: "Pull Request" }).click();
-  const aliceRow = page
-    .getByTestId("project-pull-request-row")
-    .filter({ hasText: "alice" })
-    .first();
-  await expect(aliceRow).toBeVisible({ timeout: 10_000 });
-  await aliceRow.getByRole("button", { name: /^#/ }).click();
-}
-
 async function cloneMissingGitHubRepository(
   page: import("@playwright/test").Page,
 ) {
@@ -55,33 +45,6 @@ async function cloneMissingGitHubRepository(
   await waitForAnimations(page);
   await page.getByRole("menuitem", { name: "Local missing Clone" }).click();
   await expect(page.getByText("Cloned repository.")).toBeVisible();
-}
-
-async function openClonedGitHubAlicePullRequest(
-  page: import("@playwright/test").Page,
-) {
-  await openBuzzProject(page);
-  await cloneMissingGitHubRepository(page);
-  await openAlicePullRequest(page);
-}
-
-async function confirmMerge(page: import("@playwright/test").Page) {
-  await page.getByRole("button", { name: "Merge", exact: true }).click();
-  await page.getByTestId("merge-pull-request-confirm-button").click();
-}
-
-async function openedExternalUrls(page: import("@playwright/test").Page) {
-  return page.evaluate(async () => {
-    const bridgeWindow = window as Window & {
-      __BUZZ_E2E_INVOKE_MOCK_COMMAND__?: (command: string) => Promise<unknown>;
-      __TAURI_INTERNALS__?: { invoke?: (command: string) => Promise<unknown> };
-    };
-    const invoke =
-      bridgeWindow.__BUZZ_E2E_INVOKE_MOCK_COMMAND__ ??
-      bridgeWindow.__TAURI_INTERNALS__?.invoke;
-    if (!invoke) throw new Error("Mock invoke bridge is unavailable.");
-    return (await invoke("get_e2e_opened_external_urls")) as string[];
-  });
 }
 
 test("same-second request changes supersedes approval", async ({ page }) => {
@@ -911,7 +874,6 @@ for (const theme of ["buzz", "buzz-dark"] as const) {
     });
   });
 }
-
 test("merge conflicts offer persistent terminal recovery", async ({ page }) => {
   await enableProjectsFeature(page);
   await installMockBridge(page);
