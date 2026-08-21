@@ -198,6 +198,7 @@ function eventToPullRequestComment(event) {
     content: event.content,
     tags: getImetaTags(event),
     author: event.pubkey,
+    authorAvatarUrl: null,
     createdAt: event.created_at,
     commit: getTag(event, "c") ?? null,
     anchor,
@@ -361,6 +362,7 @@ export function eventToProjectPullRequest(
     content: pullRequest.content,
     tags: getImetaTags(pullRequest),
     author: pullRequest.pubkey,
+    authorAvatarUrl: null,
     createdAt: pullRequest.created_at,
     repoAddress: getTag(pullRequest, "a") ?? null,
     channelId: getTag(pullRequest, "h") ?? null,
@@ -395,6 +397,9 @@ export function eventToProjectPullRequest(
       pullRequest.created_at,
     updates,
     comments,
+    commentCount: comments.length,
+    headRepoFullName: null,
+    htmlUrl: null,
   };
 }
 

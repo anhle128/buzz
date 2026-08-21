@@ -25,6 +25,7 @@ import {
 import type { ProjectIssue } from "../projectIssues.mjs";
 import type { Project, Repository } from "../projectModels";
 import type { ProjectPullRequest } from "../projectPullRequests.mjs";
+import { githubRepoFullNameFromCloneUrl } from "./projectGithubPulls";
 
 type Coordinate = { kind: number; owner: string; dtag: string };
 
@@ -170,9 +171,63 @@ export function issueShareLink(issue: ProjectIssue): string | null {
     : null;
 }
 
+function isSafeGitHubPullUrl(
+  raw: string,
+  pullRequest: Pick<ProjectPullRequest, "cloneUrls" | "id">,
+): boolean {
+  try {
+    if (
+      raw !== raw.trim() ||
+      !raw.startsWith("https://github.com/") ||
+      raw.endsWith("/") ||
+      raw.includes("\\")
+    ) {
+      return false;
+    }
+    const url = new URL(raw);
+    if (
+      url.protocol !== "https:" ||
+      url.hostname !== "github.com" ||
+      url.port !== "" ||
+      url.username !== "" ||
+      url.password !== "" ||
+      url.search !== "" ||
+      url.hash !== "" ||
+      url.pathname.includes("%") ||
+      url.pathname.includes("//")
+    ) {
+      return false;
+    }
+    const [owner, repo, segment, number, ...rest] = url.pathname
+      .split("/")
+      .filter(Boolean);
+    const targetRepo = githubRepoFullNameFromCloneUrl(
+      pullRequest.cloneUrls[0] ?? "",
+    );
+    return (
+      rest.length === 0 &&
+      segment === "pull" &&
+      /^[A-Za-z0-9-]+$/.test(owner ?? "") &&
+      /^[A-Za-z0-9._-]+$/.test(repo ?? "") &&
+      /^[1-9][0-9]*$/.test(number ?? "") &&
+      number === pullRequest.id &&
+      targetRepo?.toLowerCase() === `${owner}/${repo}`.toLowerCase() &&
+      raw === `https://github.com/${owner}/${repo}/pull/${number}`
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function pullRequestShareLink(
   pullRequest: ProjectPullRequest,
 ): string | null {
+  if (
+    pullRequest.htmlUrl &&
+    isSafeGitHubPullUrl(pullRequest.htmlUrl, pullRequest)
+  ) {
+    return pullRequest.htmlUrl;
+  }
   const coordinate = repositoryCoordinate(pullRequest.repoAddress);
   return coordinate &&
     HEX64_RE.test(pullRequest.id) &&

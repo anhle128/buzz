@@ -164,3 +164,48 @@ test("issueShareLink preserves the existing Buzz deep link", () => {
     `buzz://issue?id=${EVENT_ID}&owner=${OWNER}&d=flappy-bee`,
   );
 });
+
+test("pullRequestShareLink accepts only a canonical GitHub pull URL", () => {
+  const base = {
+    id: "42",
+    repoAddress: REPO_ADDRESS,
+    cloneUrls: ["https://github.com/acme/app"],
+  };
+  assert.equal(
+    pullRequestShareLink({
+      ...base,
+      htmlUrl: "https://github.com/acme/app/pull/42",
+    }),
+    "https://github.com/acme/app/pull/42",
+  );
+  assert.equal(
+    pullRequestShareLink({
+      ...base,
+      cloneUrls: ["ssh://git@github.com/acme/app.git"],
+      htmlUrl: "https://github.com/acme/app/pull/42",
+    }),
+    "https://github.com/acme/app/pull/42",
+  );
+  for (const htmlUrl of [
+    "https://evil.example/acme/app/pull/42",
+    "https://github.com/acme/app/pull/42?x=1",
+    "https://github.com/acme/app/pull/42#x",
+    "https://github.com/acme/app/pull/42/",
+    "https://github.com/acme/app/issues/42",
+    "https://github.com/acme/app/pull/43",
+    "https://github.com/acme/other/pull/42",
+  ]) {
+    assert.equal(pullRequestShareLink({ ...base, htmlUrl }), null, htmlUrl);
+  }
+});
+
+test("pullRequestShareLink preserves the existing Buzz deep link", () => {
+  assert.equal(
+    pullRequestShareLink({
+      id: EVENT_ID,
+      repoAddress: REPO_ADDRESS,
+      htmlUrl: null,
+    }),
+    `buzz://pr?id=${EVENT_ID}&owner=${OWNER}&d=flappy-bee`,
+  );
+});

@@ -70,19 +70,27 @@ const PR_TAB_TRIGGER_CLASS =
   "h-9 gap-1.5 rounded-none border-b-2 border-transparent px-0 text-muted-foreground hover:text-foreground data-[state=active]:border-foreground data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none";
 
 export function PullRequestTabsList({
+  conversationCount,
   filesCount,
+  hideFiles = false,
   pullRequest,
 }: {
+  conversationCount?: number;
   filesCount: number;
+  hideFiles?: boolean;
   pullRequest: ProjectPullRequest;
 }) {
-  const commitCount = Math.max(1, pullRequest.updateCount + 1);
+  const commitCount = hideFiles ? 1 : Math.max(1, pullRequest.updateCount + 1);
+  const comments =
+    conversationCount ??
+    pullRequest.commentCount ??
+    pullRequest.comments.length;
   return (
     <TabsList className="h-9 w-fit justify-start gap-6 bg-transparent p-0">
       <TabsTrigger className={PR_TAB_TRIGGER_CLASS} value="pr-conversation">
         Conversation
         <span className="rounded-full bg-muted px-1.5 py-0.5 text-2xs">
-          {pullRequest.comments.length}
+          {comments}
         </span>
       </TabsTrigger>
       <TabsTrigger className={PR_TAB_TRIGGER_CLASS} value="pr-commits">
@@ -95,12 +103,14 @@ export function PullRequestTabsList({
         Checks
         <span className="rounded-full bg-muted px-1.5 py-0.5 text-2xs">0</span>
       </TabsTrigger>
-      <TabsTrigger className={PR_TAB_TRIGGER_CLASS} value="pr-files">
-        Files changed
-        <span className="rounded-full bg-muted px-1.5 py-0.5 text-2xs">
-          {filesCount}
-        </span>
-      </TabsTrigger>
+      {hideFiles ? null : (
+        <TabsTrigger className={PR_TAB_TRIGGER_CLASS} value="pr-files">
+          Files changed
+          <span className="rounded-full bg-muted px-1.5 py-0.5 text-2xs">
+            {filesCount}
+          </span>
+        </TabsTrigger>
+      )}
     </TabsList>
   );
 }

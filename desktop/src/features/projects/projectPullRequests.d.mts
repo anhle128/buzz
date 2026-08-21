@@ -15,6 +15,8 @@ export type ProjectPullRequestComment = {
   content: string;
   tags: string[][];
   author: string;
+  /** GitHub comment avatar; null or absent for Nostr comments. */
+  authorAvatarUrl?: string | null;
   createdAt: number;
   commit: string | null;
   anchor: ProjectPullRequestCommentAnchor | null;
@@ -74,6 +76,8 @@ export type ProjectPullRequest = {
   content: string;
   tags: string[][];
   author: string;
+  /** GitHub author avatar; null for Nostr pull requests. */
+  authorAvatarUrl: string | null;
   createdAt: number;
   repoAddress: string | null;
   /** Channel where the pull request originated (`h` tag), when provided. */
@@ -100,6 +104,12 @@ export type ProjectPullRequest = {
   updatedAt: number;
   updates: ProjectPullRequestUpdate[];
   comments: ProjectPullRequestComment[];
+  /** Backend-reported conversation count before lazy comments load. */
+  commentCount: number;
+  /** GitHub head repository full name; null for Nostr and deleted-fork heads. */
+  headRepoFullName: string | null;
+  /** Validated canonical GitHub URL; null for Nostr pull requests. */
+  htmlUrl: string | null;
 };
 
 export function eventToProjectPullRequest(

@@ -1291,6 +1291,12 @@ declare global {
     __BUZZ_E2E_GITHUB_USER_ERROR__?: { code: string; message: string };
     /** Shared in-memory GitHub issue store for list, create, and writes. */
     __BUZZ_E2E_GITHUB_ISSUE_STORE__?: E2eGithubIssueStore;
+    /** Structured error thrown by the GitHub pull-list mock command. */
+    __BUZZ_E2E_GITHUB_PULLS_ERROR__?: { code: string; message: string };
+    /** Structured error thrown by the GitHub pull-comment mock command. */
+    __BUZZ_E2E_GITHUB_PULL_COMMENTS_ERROR__?: { code: string; message: string };
+    /** Shared in-memory GitHub pull-request store for list, create, and comments. */
+    __BUZZ_E2E_GITHUB_PULL_STORE__?: E2eGithubPullStore;
     /** Overrides the first mock repository owner for delegated-owner tests. */
     __BUZZ_E2E_PROJECT_OWNER_OVERRIDE__?: string;
     __BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__?: string;
@@ -10325,6 +10331,32 @@ type E2eGithubIssueStore = {
   authenticatedUser: E2eGithubIssueUser;
 };
 
+type E2eGithubPullUser = { login: string; avatar_url: string };
+type E2eGithubPullDto = {
+  number: number;
+  title: string;
+  body: string;
+  html_url: string;
+  draft: boolean;
+  comments: number;
+  created_at: number;
+  updated_at: number;
+  user: E2eGithubPullUser;
+  head: { ref: string; sha: string; repo: { full_name: string } };
+  base: { ref: string; repo: { full_name: string } };
+};
+type E2eGithubPullCommentDto = {
+  id: number;
+  body: string;
+  html_url: string;
+  created_at: number;
+  user: E2eGithubPullUser;
+};
+type E2eGithubPullStore = {
+  pulls: E2eGithubPullDto[];
+  commentsByNumber: Record<number, E2eGithubPullCommentDto[]>;
+};
+
 function createDefaultE2eGithubIssueStore(): E2eGithubIssueStore {
   return {
     issues: [
@@ -10369,6 +10401,48 @@ function createDefaultE2eGithubIssueStore(): E2eGithubIssueStore {
       { login: "ada", avatar_url: "" },
     ],
     authenticatedUser: { login: "ada", avatar_url: "" },
+  };
+}
+
+function createDefaultE2eGithubPullStore(): E2eGithubPullStore {
+  return {
+    pulls: [
+      {
+        number: 42,
+        title: "Fix login",
+        body: "PR body from GitHub",
+        html_url: "https://github.com/acme/app/pull/42",
+        draft: false,
+        comments: 2,
+        created_at: 1_704_166_645,
+        updated_at: 1_704_253_045,
+        user: { login: "ada", avatar_url: "" },
+        head: {
+          ref: "feature",
+          sha: "d".repeat(40),
+          repo: { full_name: "acme/app" },
+        },
+        base: { ref: "develop", repo: { full_name: "acme/app" } },
+      },
+    ],
+    commentsByNumber: {
+      42: [
+        {
+          id: 2,
+          body: "API-order first comment.",
+          html_url: "https://github.com/acme/app/issues/42#issuecomment-2",
+          created_at: 1_704_253_100,
+          user: { login: "grace", avatar_url: "" },
+        },
+        {
+          id: 10,
+          body: "API-order second comment.",
+          html_url: "https://github.com/acme/app/pull/42#issuecomment-10",
+          created_at: 1_704_253_200,
+          user: { login: "linus", avatar_url: "" },
+        },
+      ],
+    },
   };
 }
 
@@ -10477,6 +10551,7 @@ export function maybeInstallE2eTauriMocks() {
   window.__BUZZ_E2E_COMMAND_PAYLOADS__ = [];
   window.__BUZZ_E2E_COMMAND_LOG__ = [];
   window.__BUZZ_E2E_GITHUB_ISSUE_STORE__ ??= createDefaultE2eGithubIssueStore();
+  window.__BUZZ_E2E_GITHUB_PULL_STORE__ ??= createDefaultE2eGithubPullStore();
   mockMediaProxyPort = config.mock?.mediaProxyInitiallyUnavailable
     ? 0
     : MOCK_MEDIA_PROXY_PORT;
@@ -11951,6 +12026,56 @@ export function maybeInstallE2eTauriMocks() {
           throw window.__BUZZ_E2E_GITHUB_USER_ERROR__;
         }
         return cloneE2eGithubIssueUser(e2eGithubIssueStore().authenticatedUser);
+      case "list_github_pull_requests": {
+        if (window.__BUZZ_E2E_GITHUB_PULLS_ERROR__) {
+          throw window.__BUZZ_E2E_GITHUB_PULLS_ERROR__;
+        }
+        const store = window.__BUZZ_E2E_GITHUB_PULL_STORE__;
+        if (!store) throw new Error("GitHub pull store was not initialized.");
+        return { pulls: store.pulls, has_more: false };
+      }
+      case "create_github_pull_request": {
+        const store = window.__BUZZ_E2E_GITHUB_PULL_STORE__;
+        if (!store) throw new Error("GitHub pull store was not initialized.");
+        const input = payload as {
+          cloneUrl: string;
+          title: string;
+          body: string;
+          head: string;
+          base: string;
+        };
+        const number =
+          Math.max(0, ...store.pulls.map((pull) => pull.number)) + 1;
+        const pull: E2eGithubPullDto = {
+          number,
+          title: input.title,
+          body: input.body,
+          html_url: `https://github.com/acme/app/pull/${number}`,
+          draft: false,
+          comments: 0,
+          created_at: Math.floor(Date.now() / 1000),
+          updated_at: Math.floor(Date.now() / 1000),
+          user: { login: "mock-user", avatar_url: "" },
+          head: {
+            ref: input.head,
+            sha: "e".repeat(40),
+            repo: { full_name: "acme/app" },
+          },
+          base: { ref: input.base, repo: { full_name: "acme/app" } },
+        };
+        store.pulls.unshift(pull);
+        store.commentsByNumber[number] = [];
+        return pull;
+      }
+      case "list_github_pull_request_comments": {
+        if (window.__BUZZ_E2E_GITHUB_PULL_COMMENTS_ERROR__) {
+          throw window.__BUZZ_E2E_GITHUB_PULL_COMMENTS_ERROR__;
+        }
+        const store = window.__BUZZ_E2E_GITHUB_PULL_STORE__;
+        if (!store) throw new Error("GitHub pull store was not initialized.");
+        const number = (payload as { number: number }).number;
+        return store.commentsByNumber[number] ?? [];
+      }
       case "get_project_repo_snapshot":
         return {
           latest_commit: {
