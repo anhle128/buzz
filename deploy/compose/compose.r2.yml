@@ -1,0 +1,22 @@
+# Local override: Cloudflare R2 instead of bundled MinIO.
+# Keep this file next to compose.yml so the Tailscale bind and R2 endpoint
+# survive a rebuild. Not committed — machine-specific.
+
+services:
+  minio:
+    profiles: ["bundled-minio"]
+  minio-init:
+    profiles: ["bundled-minio"]
+
+  relay:
+    depends_on: !override
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      BUZZ_S3_ENDPOINT: ${BUZZ_S3_ENDPOINT:?set BUZZ_S3_ENDPOINT}
+      BUZZ_S3_ADDRESSING_STYLE: ${BUZZ_S3_ADDRESSING_STYLE:-virtual}
+      BUZZ_S3_REGION: ${BUZZ_S3_REGION:-auto}
+    ports: !override
+      - "${BUZZ_HTTP_BIND:-127.0.0.1}:${BUZZ_HTTP_PORT:-3000}:3000"

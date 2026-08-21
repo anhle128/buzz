@@ -10,7 +10,9 @@ use std::sync::{Arc, Weak};
 
 use buzz_core::kind::KIND_STREAM_MESSAGE;
 use buzz_core::tenant::CommunityId;
-use buzz_workflow::action_sink::{ActionSink, ActionSinkError};
+use buzz_workflow::action_sink::{
+    route_provenance_tags, ActionSink, ActionSinkError, WorkflowMessageRoute,
+};
 use chrono::Utc;
 use nostr::{EventBuilder, Kind, Tag};
 use tracing::info;
@@ -176,6 +178,7 @@ impl ActionSink for RelayActionSink {
         channel_id: &str,
         text: &str,
         author_pubkey: &str,
+        route: Option<WorkflowMessageRoute>,
     ) -> Pin<Box<dyn Future<Output = Result<String, ActionSinkError>> + Send + '_>> {
         let channel_id = channel_id.to_owned();
         let text = text.to_owned();
@@ -296,6 +299,10 @@ impl ActionSink for RelayActionSink {
                     Tag::parse(["p", &mentioned])
                         .map_err(|e| ActionSinkError::EventBuild(format!("mention p tag: {e}")))?,
                 );
+            }
+
+            if let Some(route) = &route {
+                tags.extend(route_provenance_tags(route)?);
             }
 
             let kind = Kind::from(KIND_STREAM_MESSAGE as u16);
@@ -676,6 +683,7 @@ mod integration_tests {
                 &channel.id.to_string(),
                 "heads up @Robby — please take a look",
                 &author_hex,
+                None,
             )
             .await
             .expect("send_message");
