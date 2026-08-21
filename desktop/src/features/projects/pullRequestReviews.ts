@@ -1,6 +1,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import * as React from "react";
 
+import { requireNostrPullRequestId } from "@/features/projects/lib/projectGithubPullRequests";
 import {
   signProjectPullRequestReviewRequest,
   signProjectPullRequestStatus,
@@ -53,7 +54,7 @@ async function updateProjectPullRequestStatus({
   signAsManagedOwner: boolean;
   status: ProjectPullRequestLifecycleStatus;
 }): Promise<void> {
-  requireBuzzPullRequestEventId(pullRequest.id);
+  const pullRequestId = requireNostrPullRequestId(pullRequest.id);
   const createdAt = nextProjectPullRequestStatusCreatedAt(
     pullRequest,
     Math.floor(Date.now() / 1_000),
@@ -62,7 +63,7 @@ async function updateProjectPullRequestStatus({
     await signProjectPullRequestStatus({
       targetOwner: project.owner,
       repoAddress: project.repoAddress,
-      pullRequestId: pullRequest.id,
+      pullRequestId,
       pullRequestAuthor: pullRequest.author,
       status,
       createdAt,
@@ -78,7 +79,7 @@ async function updateProjectPullRequestStatus({
     content: "",
     createdAt,
     tags: [
-      ["e", pullRequest.id, "", "root"],
+      ["e", pullRequestId, "", "root"],
       ["a", project.repoAddress],
       ...[...recipients].map((recipient) => ["p", recipient]),
     ],
@@ -109,7 +110,7 @@ async function requestProjectPullRequestReview({
   reviewerLabel: string;
   signAsManagedOwner: boolean;
 }): Promise<void> {
-  requireBuzzPullRequestEventId(pullRequest.id);
+  const pullRequestId = requireNostrPullRequestId(pullRequest.id);
   if (reviewers.length === 0) {
     throw new Error("Select at least one reviewer.");
   }
@@ -120,7 +121,7 @@ async function requestProjectPullRequestReview({
     await signProjectPullRequestReviewRequest({
       targetOwner: project.owner,
       repoAddress: project.repoAddress,
-      pullRequestId: pullRequest.id,
+      pullRequestId,
       reviewers: reviewerPubkeys,
       reviewerLabel,
     });
@@ -130,7 +131,7 @@ async function requestProjectPullRequestReview({
     kind: KIND_TEXT_NOTE,
     content: `Requested a review from ${reviewerLabel}`,
     tags: [
-      ["e", pullRequest.id, "", "root"],
+      ["e", pullRequestId, "", "root"],
       ["a", project.repoAddress],
       ...reviewerPubkeys.map((pubkey) => ["p", pubkey]),
       ["t", PR_REVIEW_REQUEST_LABEL],
@@ -205,7 +206,7 @@ async function submitProjectPullRequestReview({
   project: Project;
   pullRequest: ProjectPullRequest;
 }): Promise<void> {
-  requireBuzzPullRequestEventId(pullRequest.id);
+  const pullRequestId = requireNostrPullRequestId(pullRequest.id);
   if (!pullRequest.commit) {
     throw new Error("The pull request has no commit to review.");
   }
@@ -219,7 +220,7 @@ async function submitProjectPullRequestReview({
     content: content?.trim() || details.content,
     createdAt,
     tags: [
-      ["e", pullRequest.id, "", "root"],
+      ["e", pullRequestId, "", "root"],
       ["a", project.repoAddress],
       ...[...recipients].map((recipient) => ["p", recipient]),
       ["t", details.label],

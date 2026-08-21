@@ -1291,12 +1291,12 @@ declare global {
     __BUZZ_E2E_GITHUB_USER_ERROR__?: { code: string; message: string };
     /** Shared in-memory GitHub issue store for list, create, and writes. */
     __BUZZ_E2E_GITHUB_ISSUE_STORE__?: E2eGithubIssueStore;
-    /** Structured error thrown by the GitHub pull-list mock command. */
+    /** Structured error thrown by GitHub pull-request list/create mocks. */
     __BUZZ_E2E_GITHUB_PULLS_ERROR__?: { code: string; message: string };
-    /** Structured error thrown by the GitHub pull-comment mock command. */
+    /** Structured error thrown only by the GitHub PR comments mock. */
     __BUZZ_E2E_GITHUB_PULL_COMMENTS_ERROR__?: { code: string; message: string };
     /** Shared in-memory GitHub pull-request store for list, create, and comments. */
-    __BUZZ_E2E_GITHUB_PULL_STORE__?: E2eGithubPullStore;
+    __BUZZ_E2E_GITHUB_PULL_STORE__?: E2eGithubPullRequestStore;
     /** Overrides the first mock repository owner for delegated-owner tests. */
     __BUZZ_E2E_PROJECT_OWNER_OVERRIDE__?: string;
     __BUZZ_E2E_PROJECT_CLONE_URL_OVERRIDE__?: string;
@@ -10331,121 +10331,6 @@ type E2eGithubIssueStore = {
   authenticatedUser: E2eGithubIssueUser;
 };
 
-type E2eGithubPullUser = { login: string; avatar_url: string };
-type E2eGithubPullDto = {
-  number: number;
-  title: string;
-  body: string;
-  html_url: string;
-  draft: boolean;
-  comments: number;
-  created_at: number;
-  updated_at: number;
-  user: E2eGithubPullUser;
-  head: { ref: string; sha: string; repo: { full_name: string } };
-  base: { ref: string; repo: { full_name: string } };
-};
-type E2eGithubPullCommentDto = {
-  id: number;
-  body: string;
-  html_url: string;
-  created_at: number;
-  user: E2eGithubPullUser;
-};
-type E2eGithubPullStore = {
-  pulls: E2eGithubPullDto[];
-  commentsByNumber: Record<number, E2eGithubPullCommentDto[]>;
-};
-
-function createDefaultE2eGithubIssueStore(): E2eGithubIssueStore {
-  return {
-    issues: [
-      {
-        number: 42,
-        title: "Broken login",
-        body: "Repro steps",
-        state: "open",
-        html_url: "https://github.com/acme/app/issues/42",
-        comments: 2,
-        created_at: 1_704_166_645,
-        updated_at: 1_704_253_045,
-        user: { login: "ada", avatar_url: "" },
-        labels: ["bug"],
-        assignees: [{ login: "linus", avatar_url: "" }],
-      },
-    ],
-    commentsByNumber: {
-      42: [
-        {
-          id: 2,
-          body: "API-order first comment.",
-          html_url: "https://github.com/acme/app/issues/42#issuecomment-2",
-          created_at: 1_704_253_100,
-          user: { login: "grace", avatar_url: "" },
-        },
-        {
-          id: 10,
-          body: "API-order second comment.",
-          html_url: "https://github.com/acme/app/issues/42#issuecomment-10",
-          created_at: 1_704_253_100,
-          user: { login: "linus", avatar_url: "" },
-        },
-      ],
-    },
-    labels: [
-      { name: "bug", color: "d73a4a" },
-      { name: "docs", color: "0075ca" },
-    ],
-    assignees: [
-      { login: "linus", avatar_url: "" },
-      { login: "ada", avatar_url: "" },
-    ],
-    authenticatedUser: { login: "ada", avatar_url: "" },
-  };
-}
-
-function createDefaultE2eGithubPullStore(): E2eGithubPullStore {
-  return {
-    pulls: [
-      {
-        number: 42,
-        title: "Fix login",
-        body: "PR body from GitHub",
-        html_url: "https://github.com/acme/app/pull/42",
-        draft: false,
-        comments: 2,
-        created_at: 1_704_166_645,
-        updated_at: 1_704_253_045,
-        user: { login: "ada", avatar_url: "" },
-        head: {
-          ref: "feature",
-          sha: "d".repeat(40),
-          repo: { full_name: "acme/app" },
-        },
-        base: { ref: "develop", repo: { full_name: "acme/app" } },
-      },
-    ],
-    commentsByNumber: {
-      42: [
-        {
-          id: 2,
-          body: "API-order first comment.",
-          html_url: "https://github.com/acme/app/issues/42#issuecomment-2",
-          created_at: 1_704_253_100,
-          user: { login: "grace", avatar_url: "" },
-        },
-        {
-          id: 10,
-          body: "API-order second comment.",
-          html_url: "https://github.com/acme/app/pull/42#issuecomment-10",
-          created_at: 1_704_253_200,
-          user: { login: "linus", avatar_url: "" },
-        },
-      ],
-    },
-  };
-}
-
 function e2eGithubIssueStore(): E2eGithubIssueStore {
   window.__BUZZ_E2E_GITHUB_ISSUE_STORE__ ??= createDefaultE2eGithubIssueStore();
   return window.__BUZZ_E2E_GITHUB_ISSUE_STORE__;
@@ -10477,6 +10362,117 @@ function throwIfGithubIssueWriteError() {
   if (window.__BUZZ_E2E_GITHUB_ISSUE_WRITE_ERROR__) {
     throw window.__BUZZ_E2E_GITHUB_ISSUE_WRITE_ERROR__;
   }
+}
+
+type E2eGithubPullRequestDto = {
+  number: number;
+  title: string;
+  body: string;
+  html_url: string;
+  draft: boolean;
+  created_at: number;
+  updated_at: number;
+  comments: number;
+  user: E2eGithubIssueUser;
+  head: {
+    ref: string;
+    sha: string;
+    repo: { full_name: string };
+  };
+  base: {
+    ref: string;
+    repo: { full_name: string };
+  };
+};
+
+type E2eGithubPullRequestCommentDto = {
+  id: number;
+  body: string;
+  html_url: string;
+  created_at: number;
+  user: E2eGithubIssueUser;
+};
+
+type E2eGithubPullRequestStore = {
+  pulls: E2eGithubPullRequestDto[];
+  commentsByNumber: Record<number, E2eGithubPullRequestCommentDto[]>;
+};
+
+function createDefaultE2eGithubPullRequestStore(): E2eGithubPullRequestStore {
+  return {
+    pulls: [
+      {
+        number: 42,
+        title: "Add GitHub pull request support",
+        body: "GitHub pull request body",
+        html_url: "https://github.com/acme/app/pull/42",
+        draft: false,
+        created_at: 1_704_166_645,
+        updated_at: 1_704_253_045,
+        comments: 2,
+        user: { login: "ada", avatar_url: "" },
+        head: {
+          ref: "feature/readme",
+          sha: "1".repeat(40),
+          repo: { full_name: "acme/app" },
+        },
+        base: {
+          ref: "develop",
+          repo: { full_name: "acme/app" },
+        },
+      },
+    ],
+    commentsByNumber: {
+      42: [
+        {
+          id: 2,
+          body: "API-order first PR comment.",
+          html_url: "https://github.com/acme/app/pull/42#issuecomment-2",
+          created_at: 1_704_253_100,
+          user: { login: "grace", avatar_url: "" },
+        },
+        {
+          id: 10,
+          body: "API-order second PR comment.",
+          html_url: "https://github.com/acme/app/issues/42#issuecomment-10",
+          created_at: 1_704_253_101,
+          user: { login: "linus", avatar_url: "" },
+        },
+      ],
+    },
+  };
+}
+
+function e2eGithubPullRequestStore(): E2eGithubPullRequestStore {
+  window.__BUZZ_E2E_GITHUB_PULL_STORE__ ??=
+    createDefaultE2eGithubPullRequestStore();
+  return window.__BUZZ_E2E_GITHUB_PULL_STORE__;
+}
+
+function cloneE2eGithubPullRequest(
+  pull: E2eGithubPullRequestDto,
+): E2eGithubPullRequestDto {
+  return {
+    ...pull,
+    user: cloneE2eGithubIssueUser(pull.user),
+    head: {
+      ...pull.head,
+      repo: { ...pull.head.repo },
+    },
+    base: {
+      ...pull.base,
+      repo: { ...pull.base.repo },
+    },
+  };
+}
+
+function cloneE2eGithubPullRequestComment(
+  comment: E2eGithubPullRequestCommentDto,
+): E2eGithubPullRequestCommentDto {
+  return {
+    ...comment,
+    user: cloneE2eGithubIssueUser(comment.user),
+  };
 }
 
 function e2eGithubIssueByNumber(
@@ -10551,7 +10547,8 @@ export function maybeInstallE2eTauriMocks() {
   window.__BUZZ_E2E_COMMAND_PAYLOADS__ = [];
   window.__BUZZ_E2E_COMMAND_LOG__ = [];
   window.__BUZZ_E2E_GITHUB_ISSUE_STORE__ ??= createDefaultE2eGithubIssueStore();
-  window.__BUZZ_E2E_GITHUB_PULL_STORE__ ??= createDefaultE2eGithubPullStore();
+  window.__BUZZ_E2E_GITHUB_PULL_STORE__ ??=
+    createDefaultE2eGithubPullRequestStore();
   mockMediaProxyPort = config.mock?.mediaProxyInitiallyUnavailable
     ? 0
     : MOCK_MEDIA_PROXY_PORT;
@@ -12030,51 +12027,65 @@ export function maybeInstallE2eTauriMocks() {
         if (window.__BUZZ_E2E_GITHUB_PULLS_ERROR__) {
           throw window.__BUZZ_E2E_GITHUB_PULLS_ERROR__;
         }
-        const store = window.__BUZZ_E2E_GITHUB_PULL_STORE__;
-        if (!store) throw new Error("GitHub pull store was not initialized.");
-        return { pulls: store.pulls, has_more: false };
+        return {
+          pulls: e2eGithubPullRequestStore().pulls.map(
+            cloneE2eGithubPullRequest,
+          ),
+          has_more: false,
+        };
       }
       case "create_github_pull_request": {
-        const store = window.__BUZZ_E2E_GITHUB_PULL_STORE__;
-        if (!store) throw new Error("GitHub pull store was not initialized.");
+        if (window.__BUZZ_E2E_GITHUB_PULLS_ERROR__) {
+          throw window.__BUZZ_E2E_GITHUB_PULLS_ERROR__;
+        }
         const input = payload as {
-          cloneUrl: string;
-          title: string;
-          body: string;
-          head: string;
-          base: string;
+          title?: string;
+          body?: string;
+          head?: string;
+          base?: string;
         };
+        if (!input.title || !input.head || !input.base) {
+          throw new Error("Missing GitHub pull request create field.");
+        }
+        const store = e2eGithubPullRequestStore();
         const number =
           Math.max(0, ...store.pulls.map((pull) => pull.number)) + 1;
-        const pull: E2eGithubPullDto = {
+        const branchCommits: Record<string, string> = {
+          develop: "d".repeat(40),
+          main: "m".repeat(40),
+        };
+        const created: E2eGithubPullRequestDto = {
           number,
           title: input.title,
-          body: input.body,
+          body: input.body ?? "",
           html_url: `https://github.com/acme/app/pull/${number}`,
           draft: false,
+          created_at: 1_704_253_100,
+          updated_at: 1_704_253_100,
           comments: 0,
-          created_at: Math.floor(Date.now() / 1000),
-          updated_at: Math.floor(Date.now() / 1000),
-          user: { login: "mock-user", avatar_url: "" },
+          user: { login: "ada", avatar_url: "" },
           head: {
             ref: input.head,
-            sha: "e".repeat(40),
+            sha: branchCommits[input.head] ?? "1".repeat(40),
             repo: { full_name: "acme/app" },
           },
-          base: { ref: input.base, repo: { full_name: "acme/app" } },
+          base: {
+            ref: input.base,
+            repo: { full_name: "acme/app" },
+          },
         };
-        store.pulls.unshift(pull);
+        store.pulls.push(created);
         store.commentsByNumber[number] = [];
-        return pull;
+        return cloneE2eGithubPullRequest(created);
       }
       case "list_github_pull_request_comments": {
         if (window.__BUZZ_E2E_GITHUB_PULL_COMMENTS_ERROR__) {
           throw window.__BUZZ_E2E_GITHUB_PULL_COMMENTS_ERROR__;
         }
-        const store = window.__BUZZ_E2E_GITHUB_PULL_STORE__;
-        if (!store) throw new Error("GitHub pull store was not initialized.");
-        const number = (payload as { number: number }).number;
-        return store.commentsByNumber[number] ?? [];
+        const input = payload as { number?: number };
+        return (
+          e2eGithubPullRequestStore().commentsByNumber[input.number ?? 0] ?? []
+        ).map(cloneE2eGithubPullRequestComment);
       }
       case "get_project_repo_snapshot":
         return {

@@ -3,6 +3,8 @@ import test from "node:test";
 
 import {
   canPublishProjectPullRequestUpdate,
+  createProjectPullRequestWith,
+  projectPullRequestInvalidationKeys,
   projectPullRequestMergedTags,
   projectPullRequestTags,
   projectPullRequestUpdateTags,
@@ -100,4 +102,119 @@ test("projectPullRequestMergedTags records the pushed merge commit", () => {
     ["merge-commit", COMMIT],
     ["r", COMMIT],
   ]);
+});
+
+test("GitHub create never calls the Buzz pull request publisher", async () => {
+  const calls = { github: 0, buzz: 0 };
+  const project = {
+    id: "p1",
+    owner: OWNER,
+    repoAddress: `30617:${OWNER}:app`,
+    cloneUrls: ["https://github.com/acme/app"],
+  };
+  const id = await createProjectPullRequestWith(
+    project,
+    {
+      title: "Add docs",
+      body: "Details",
+      branch: "feature/readme",
+      targetBranch: "main",
+      commit: COMMIT,
+      mergeBase: MERGE_BASE,
+      reviewers: [REVIEWER],
+    },
+    {
+      createGithub: async (input) => {
+        calls.github += 1;
+        assert.deepEqual(input, {
+          cloneUrl: "https://github.com/acme/app",
+          title: "Add docs",
+          body: "Details",
+          head: "feature/readme",
+          base: "main",
+        });
+        return { number: 44 };
+      },
+      publishBuzz: async () => {
+        calls.buzz += 1;
+        return "e".repeat(64);
+      },
+    },
+  );
+  assert.equal(id, "44");
+  assert.deepEqual(calls, { github: 1, buzz: 0 });
+});
+
+test("Buzz create never calls the GitHub creator", async () => {
+  const calls = { github: 0, buzz: 0 };
+  const id = await createProjectPullRequestWith(
+    project,
+    {
+      title: "Buzz PR",
+      body: "",
+      branch: "feature",
+      targetBranch: "main",
+      commit: COMMIT,
+      mergeBase: null,
+      reviewers: [],
+    },
+    {
+      createGithub: async () => {
+        calls.github += 1;
+        return { number: 1 };
+      },
+      publishBuzz: async () => {
+        calls.buzz += 1;
+        return PR_ID;
+      },
+    },
+  );
+  assert.equal(id, PR_ID);
+  assert.deepEqual(calls, { github: 0, buzz: 1 });
+});
+
+test("GitHub create invalidates only its repository pull request query", () => {
+  assert.deepEqual(
+    projectPullRequestInvalidationKeys({
+      id: "p1",
+      cloneUrls: ["https://github.com/acme/app"],
+    }),
+    [["project", "p1", "pull-requests"]],
+  );
+});
+
+test("Buzz create preserves all existing invalidations", () => {
+  assert.deepEqual(
+    projectPullRequestInvalidationKeys({
+      id: "p2",
+      cloneUrls: project.cloneUrls,
+    }),
+    [
+      ["project", "p2", "pull-requests"],
+      ["projects", "work-items"],
+      ["projects", "activity-summaries"],
+    ],
+  );
+});
+
+test("Nostr tag builders refuse a numeric GitHub pull request id", () => {
+  assert.throws(
+    () =>
+      projectPullRequestUpdateTags(
+        project,
+        { id: "42", author: AUTHOR, cloneUrls: project.cloneUrls },
+        COMMIT,
+        null,
+      ),
+    /64-hex Nostr event id/,
+  );
+  assert.throws(
+    () =>
+      projectPullRequestMergedTags(
+        project,
+        { id: "42", author: AUTHOR },
+        COMMIT,
+      ),
+    /64-hex Nostr event id/,
+  );
 });

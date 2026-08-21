@@ -30,10 +30,9 @@ import type { ProjectDiscussionChannel } from "@/features/projects/lib/projectDi
 import { isGitHubCloneUrl } from "@/features/projects/lib/projectGitError";
 import type { GithubIssueListState } from "@/features/projects/lib/projectGithubIssues";
 import {
-  githubPullRequestConversationCount,
-  pullRequestHeadBelongsToRepository,
-  useGithubPullRequestCommentsQuery,
-} from "@/features/projects/lib/projectGithubPulls";
+  githubPullRequestDetailTab,
+  selectedGithubPullRequestAfterListLoad,
+} from "@/features/projects/lib/projectGithubPullRequests";
 import { githubSplashHost } from "@/features/projects/lib/projectGithubRemoteView";
 import type { ProjectRepoHost } from "@/features/projects/lib/projectRepoHost";
 import {
@@ -89,6 +88,13 @@ import {
   CreateIssueDialog,
   type CreateIssueDialogInput,
 } from "./CreateIssueDialog";
+import {
+  GitHubPullRequestDetail,
+  GitHubPullRequestsPanel,
+} from "./GitHubProjectPullRequests";
+
+const EMPTY_COMMIT_AUTHOR_PUBKEYS = new Map<string, string>();
+const EMPTY_SIGNED_PULL_REQUESTS: ProjectPullRequest[] = [];
 
 type CreatePullRequestAction = {
   projects: Project[];
@@ -235,7 +241,7 @@ export function WorkspaceTabs({
   pullRequestsHasMore: boolean;
   pullRequestsLoading: boolean;
   pullRequestsSuccess: boolean;
-  onRetryPullRequests: () => unknown;
+  onRetryPullRequests: () => void;
   githubIssueListState: GithubIssueListState;
   onGithubIssueListStateChange: (state: GithubIssueListState) => void;
   onSelectedCommitHashChange: (hash: string | null) => void;
@@ -306,9 +312,15 @@ export function WorkspaceTabs({
     [githubHosted, pullRequests],
   );
   const commitAuthorPubkeys = React.useMemo(
-    () => commitAuthorPubkeysFromPullRequests(nostrIdentityPullRequests),
-    [nostrIdentityPullRequests],
+    () =>
+      githubHosted
+        ? EMPTY_COMMIT_AUTHOR_PUBKEYS
+        : commitAuthorPubkeysFromPullRequests(pullRequests),
+    [githubHosted, pullRequests],
   );
+  const activityPullRequests = githubHosted
+    ? EMPTY_SIGNED_PULL_REQUESTS
+    : pullRequests;
   const selectedPullRequest =
     pullRequests.find(
       (pullRequest) => pullRequest.id === selectedPullRequestId,
@@ -351,6 +363,33 @@ export function WorkspaceTabs({
   React.useEffect(() => {
     onSelectedTabChange?.(selectedTab);
   }, [onSelectedTabChange, selectedTab]);
+
+  React.useEffect(() => {
+    if (!githubHosted) return;
+    const nextSelectedPullRequestId = selectedGithubPullRequestAfterListLoad({
+      selectedPullRequestId,
+      pullRequestIds: pullRequests.map((item) => item.id),
+      isSuccess: pullRequestsSuccess,
+      isFetching: pullRequestsFetching,
+    });
+    if (nextSelectedPullRequestId !== selectedPullRequestId) {
+      onSelectedPullRequestIdChange(nextSelectedPullRequestId);
+    }
+  }, [
+    githubHosted,
+    onSelectedPullRequestIdChange,
+    pullRequests,
+    pullRequestsFetching,
+    pullRequestsSuccess,
+    selectedPullRequestId,
+  ]);
+
+  React.useEffect(() => {
+    const nextTab = githubPullRequestDetailTab(selectedTab, githubHosted);
+    if (nextTab !== selectedTab) {
+      setSelectedTab(nextTab);
+    }
+  }, [githubHosted, selectedTab]);
 
   React.useEffect(() => {
     if (isPullRequestSelected) {
@@ -552,18 +591,25 @@ export function WorkspaceTabs({
         {sectionHeader}
         {selectedPullRequest ? (
           githubHosted ? (
-            <GitHubPullRequestDetailShell
-              onSelectedPullRequestIdChange={onSelectedPullRequestIdChange}
-              project={project}
-              pullRequest={selectedPullRequest}
-            />
+
+            <div
+              className={PROJECT_DETAIL_PANEL_CLASS}
+              data-project-detail-panel
+            >
+              <GitHubPullRequestDetail
+                onOpenCommit={onSelectedCommitHashChange}
+                onSelectedPullRequestIdChange={onSelectedPullRequestIdChange}
+                project={project}
+                pullRequest={selectedPullRequest}
+              />
+            </div>
           ) : (
             <div
               className={PROJECT_DETAIL_PANEL_CLASS}
               data-project-detail-panel
             >
               {/* Two full-height columns: the meta rail runs all the way to the
-                top of the card, alongside the header and tabs. */}
+              top of the card, alongside the header and tabs. */}
               <div className="grid xl:grid-cols-[minmax(0,1fr)_18rem]">
                 <div className="min-w-0">
                   <PullRequestDetailHeader
@@ -573,6 +619,7 @@ export function WorkspaceTabs({
                   <div className="border-b border-border/60 px-4">
                     <PullRequestTabsList
                       filesCount={repoDiff?.files.length ?? files.length}
+                      githubHosted={false}
                       pullRequest={selectedPullRequest}
                     />
                   </div>
@@ -675,7 +722,7 @@ export function WorkspaceTabs({
                 onSelectedCommitHashChange(commit.hash)
               }
               profiles={profiles}
-              pullRequests={nostrIdentityPullRequests}
+              pullRequests={activityPullRequests}
               repoContributors={displayedContributors}
               snapshot={displayedSnapshot}
               viewerGitIdentity={viewerGitIdentity}
@@ -692,13 +739,10 @@ export function WorkspaceTabs({
             <GitHubPullRequestsPanel
               error={pullRequestsError}
               hasMore={pullRequestsHasMore}
-              isFetching={pullRequestsFetching}
               isLoading={pullRequestsLoading}
-              isSuccess={pullRequestsSuccess}
               onRetry={onRetryPullRequests}
               onSelectedPullRequestIdChange={onSelectedPullRequestIdChange}
               pullRequests={pullRequests}
-              selectedPullRequestId={selectedPullRequestId}
             />
           ) : (
             <PullRequestsPanel

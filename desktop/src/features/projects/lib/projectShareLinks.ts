@@ -25,7 +25,7 @@ import {
 import type { ProjectIssue } from "../projectIssues.mjs";
 import type { Project, Repository } from "../projectModels";
 import type { ProjectPullRequest } from "../projectPullRequests.mjs";
-import { githubRepoFullNameFromCloneUrl } from "./projectGithubPulls";
+import { parseGithubPullRequestNumber } from "./projectGithubPullRequests";
 
 type Coordinate = { kind: number; owner: string; dtag: string };
 
@@ -171,19 +171,21 @@ export function issueShareLink(issue: ProjectIssue): string | null {
     : null;
 }
 
-function isSafeGitHubPullUrl(
+function isSafeGitHubPullRequestUrl(
   raw: string,
-  pullRequest: Pick<ProjectPullRequest, "cloneUrls" | "id">,
+  pullRequestId: string,
 ): boolean {
+  const expectedNumber = parseGithubPullRequestNumber(pullRequestId);
+  if (
+    expectedNumber === null ||
+    raw !== raw.trim() ||
+    !raw.startsWith("https://github.com/") ||
+    raw.endsWith("/") ||
+    raw.includes("\\")
+  ) {
+    return false;
+  }
   try {
-    if (
-      raw !== raw.trim() ||
-      !raw.startsWith("https://github.com/") ||
-      raw.endsWith("/") ||
-      raw.includes("\\")
-    ) {
-      return false;
-    }
     const url = new URL(raw);
     if (
       url.protocol !== "https:" ||
@@ -198,21 +200,16 @@ function isSafeGitHubPullUrl(
     ) {
       return false;
     }
-    const [owner, repo, segment, number, ...rest] = url.pathname
+    const [owner, repo, kind, number, ...rest] = url.pathname
       .split("/")
       .filter(Boolean);
-    const targetRepo = githubRepoFullNameFromCloneUrl(
-      pullRequest.cloneUrls[0] ?? "",
-    );
     return (
       rest.length === 0 &&
-      segment === "pull" &&
       /^[A-Za-z0-9-]+$/.test(owner ?? "") &&
       /^[A-Za-z0-9._-]+$/.test(repo ?? "") &&
-      /^[1-9][0-9]*$/.test(number ?? "") &&
-      number === pullRequest.id &&
-      targetRepo?.toLowerCase() === `${owner}/${repo}`.toLowerCase() &&
-      raw === `https://github.com/${owner}/${repo}/pull/${number}`
+      kind === "pull" &&
+      parseGithubPullRequestNumber(number) === expectedNumber &&
+      `https://github.com/${owner}/${repo}/pull/${number}` === raw
     );
   } catch {
     return false;
@@ -224,7 +221,7 @@ export function pullRequestShareLink(
 ): string | null {
   if (
     pullRequest.htmlUrl &&
-    isSafeGitHubPullUrl(pullRequest.htmlUrl, pullRequest)
+    isSafeGitHubPullRequestUrl(pullRequest.htmlUrl, pullRequest.id)
   ) {
     return pullRequest.htmlUrl;
   }

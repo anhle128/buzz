@@ -64,10 +64,7 @@ import {
   type GithubIssueListState,
   issueIdentityPubkeys,
 } from "@/features/projects/lib/projectGithubIssues";
-import {
-  pullRequestHeadBelongsToRepository,
-  pullRequestIdentityPubkeys,
-} from "@/features/projects/lib/projectGithubPulls";
+import { pullRequestIdentityPubkeys } from "@/features/projects/lib/projectGithubPullRequests";
 import { nextGithubIssueListState } from "@/features/projects/lib/projectGithubIssueWrites";
 import { githubRepositoryStateUnresolved } from "@/features/projects/lib/projectRepoState";
 import { normalizeRepositoryUrl } from "@/features/projects/lib/projectsViewHelpers";
@@ -199,9 +196,7 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
       projectId: repository?.id ?? projectId,
       referencedBranches: githubStateUnresolved
         ? []
-        : repositoryPullRequests.map(
-            (pullRequest) => pullRequest.branchName ?? null,
-          ),
+        : pullRequests.map((pullRequest) => pullRequest.branchName ?? null),
     });
   const repoTags = githubStateUnresolved
     ? []
@@ -278,7 +273,7 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
     const projectRepositories = new Set(
       (repository?.cloneUrls ?? []).map(normalizeRepositoryUrl),
     );
-    const matches = repositoryPullRequests.filter(
+    const matches = pullRequests.filter(
       (pullRequest) =>
         pullRequest.branchName === activeBranch &&
         pullRequest.cloneUrls.some((cloneUrl) =>
@@ -286,7 +281,7 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
         ),
     );
     return matches.length === 1 ? matches[0] : null;
-  }, [activeBranch, repository?.cloneUrls, repositoryPullRequests]);
+  }, [activeBranch, pullRequests, repository?.cloneUrls]);
   const openBranchPullRequest =
     selectedBranchPullRequest?.status === "Open" ||
     selectedBranchPullRequest?.status === "Draft"
@@ -382,7 +377,7 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
       activeBranch,
       branches: managedBranches,
       defaultBranch,
-      hasOpenPullRequest: repositoryPullRequests.some(
+      hasOpenPullRequest: pullRequests.some(
         (pullRequest) =>
           pullRequest.branchName === activeBranch &&
           (pullRequest.status === "Open" || pullRequest.status === "Draft"),
@@ -888,14 +883,19 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
                   reposDir: activeCommunity?.reposDir,
                 }}
                 updatePullRequestAction={
-                  !githubHosted && openBranchPullRequest?.commit
-                    ? {
-                        onUpdate: () => {
-                          void handleUpdatePullRequest();
-                        },
-                        pending: updatePullRequestMutation.isPending,
-                      }
-                    : undefined
+                  githubHosted
+                    ? undefined
+                    : openBranchPullRequest &&
+                        repoSyncStatusQuery.data?.remoteHead &&
+                        repoSyncStatusQuery.data.remoteHead !==
+                          openBranchPullRequest.commit
+                      ? {
+                          onUpdate: () => {
+                            void handleUpdatePullRequest();
+                          },
+                          pending: updatePullRequestMutation.isPending,
+                        }
+                      : undefined
                 }
                 localSnapshot={localRepoSnapshotQuery.data}
                 localSnapshotError={localRepoSnapshotQuery.error}
@@ -931,11 +931,11 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
                 repoDiffLoading={displayedRepoDiffLoading}
                 pullRequests={pullRequests}
                 pullRequestsError={pullRequestsQuery.error}
-                pullRequestsHasMore={pullRequestsQuery.data?.hasMore ?? false}
                 pullRequestsFetching={pullRequestsQuery.isFetching}
-                pullRequestsSuccess={pullRequestsQuery.isSuccess}
-                onRetryPullRequests={pullRequestsQuery.refetch}
+                pullRequestsHasMore={pullRequestsQuery.data?.hasMore ?? false}
                 pullRequestsLoading={pullRequestsQuery.isLoading}
+                pullRequestsSuccess={pullRequestsQuery.isSuccess}
+                onRetryPullRequests={() => void pullRequestsQuery.refetch()}
                 repoContributors={repoContributors}
                 repoHost={repoRemote.host}
                 repoSource={repoSource}

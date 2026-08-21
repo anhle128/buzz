@@ -15,8 +15,7 @@ export type ProjectPullRequestComment = {
   content: string;
   tags: string[][];
   author: string;
-  /** GitHub comment avatar; null or absent for Nostr comments. */
-  authorAvatarUrl?: string | null;
+  authorAvatarUrl: string | null;
   createdAt: number;
   commit: string | null;
   anchor: ProjectPullRequestCommentAnchor | null;
@@ -76,7 +75,7 @@ export type ProjectPullRequest = {
   content: string;
   tags: string[][];
   author: string;
-  /** GitHub author avatar; null for Nostr pull requests. */
+
   authorAvatarUrl: string | null;
   createdAt: number;
   repoAddress: string | null;
@@ -97,6 +96,7 @@ export type ProjectPullRequest = {
   statusCreatedAt: number | null;
   branchName: string | null;
   targetBranch: string | null;
+  headRepoFullName: string | null;
   initialCommit: string | null;
   commit: string | null;
   cloneUrls: string[];
@@ -104,11 +104,7 @@ export type ProjectPullRequest = {
   updatedAt: number;
   updates: ProjectPullRequestUpdate[];
   comments: ProjectPullRequestComment[];
-  /** Backend-reported conversation count before lazy comments load. */
   commentCount: number;
-  /** GitHub head repository full name; null for Nostr and deleted-fork heads. */
-  headRepoFullName: string | null;
-  /** Validated canonical GitHub URL; null for Nostr pull requests. */
   htmlUrl: string | null;
 };
 

@@ -377,6 +377,7 @@ export function eventToProjectPullRequest(
     statusCreatedAt: latestStatus?.created_at ?? null,
     branchName: getTag(pullRequest, "branch-name") ?? null,
     targetBranch: getTag(pullRequest, "target-branch") ?? null,
+    headRepoFullName: null,
     initialCommit,
     commit: latestCommit,
     cloneUrls: getCloneUrls(latestUpdate ?? pullRequest),
@@ -398,7 +399,7 @@ export function eventToProjectPullRequest(
     updates,
     comments,
     commentCount: comments.length,
-    headRepoFullName: null,
+
     htmlUrl: null,
   };
 }

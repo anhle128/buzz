@@ -15,6 +15,7 @@ import {
   listGithubPullRequests,
   listProjectLocalRepositories,
 } from "@/shared/api/projectGit";
+import { listGithubPullRequests } from "@/shared/api/projectGithubPulls";
 import { createGithubIssueComment } from "@/shared/api/projectGithubIssueWrites";
 import {
   KIND_DELETION,
@@ -35,8 +36,8 @@ import {
 } from "@/features/projects/lib/projectGithubIssues";
 import {
   fetchProjectPullRequestsWith,
-  requireBuzzPullRequestEventId,
-} from "@/features/projects/lib/projectGithubPulls";
+  requireNostrPullRequestId,
+} from "@/features/projects/lib/projectGithubPullRequests";
 import {
   createProjectIssueCommentWith,
   projectIssueWriteInvalidationKeys,
@@ -295,7 +296,7 @@ async function createProjectPullRequestComment({
   project: Repository;
   pullRequest: ProjectPullRequest;
 }): Promise<void> {
-  requireBuzzPullRequestEventId(pullRequest.id);
+  const pullRequestId = requireNostrPullRequestId(pullRequest.id);
   const body = content.trim();
   if (!body) {
     throw new Error("Comment cannot be empty.");
@@ -317,7 +318,7 @@ async function createProjectPullRequestComment({
     ...mentionPubkeys.map((pubkey) => pubkey.toLowerCase()),
   ]);
   const tags = [
-    ["e", pullRequest.id, "", "root"],
+    ["e", pullRequestId, "", "root"],
     ["a", project.repoAddress],
     ...[...recipients].map((recipient) => ["p", recipient]),
     ...(normalizedAnchor

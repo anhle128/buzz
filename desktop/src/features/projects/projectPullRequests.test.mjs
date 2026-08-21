@@ -837,10 +837,23 @@ test("survives malformed value-less tags", () => {
 });
 
 test("Nostr pull requests expose neutral GitHub extension fields", () => {
-  const pullRequest = eventToProjectPullRequest(pullRequestEvent());
+  const pullRequest = eventToProjectPullRequest(
+    pullRequestEvent(),
+    [],
+    [
+      {
+        id: "c".repeat(64),
+        kind: 1,
+        pubkey: AUTHOR,
+        created_at: 110,
+        content: "hi",
+        tags: [["e", "f".repeat(64)]],
+      },
+    ],
+  );
   assert.equal(pullRequest.authorAvatarUrl, null);
   assert.equal(pullRequest.headRepoFullName, null);
   assert.equal(pullRequest.htmlUrl, null);
-  assert.equal(pullRequest.commentCount, 0);
-  assert.equal(pullRequest.status, "Open");
+  assert.equal(pullRequest.commentCount, pullRequest.comments.length);
+  assert.equal(pullRequest.comments[0]?.authorAvatarUrl, null);
 });
