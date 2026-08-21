@@ -783,6 +783,36 @@ async fn handle_workflow_def(
         }
     };
 
+    if let Some(routing) = def
+        .routing
+        .as_ref()
+        .filter(|_| def.has_project_channel_routing())
+    {
+        for (alias_key, target) in &routing.aliases {
+            let coordinate =
+                buzz_workflow::routing::parse_repository_coordinate(target).map_err(|_| {
+                    IngestError::Rejected(
+                        "invalid: routing alias target must be a live 30617 coordinate".into(),
+                    )
+                })?;
+            let head = state
+                .db
+                .get_latest_parameterized_head(
+                    tenant.community(),
+                    buzz_core::kind::KIND_GIT_REPO_ANNOUNCEMENT as i32,
+                    coordinate.owner_pubkey(),
+                    coordinate.d_tag(),
+                )
+                .await
+                .map_err(|e| IngestError::Internal(format!("error: alias target lookup: {e}")))?;
+            if head.is_none() {
+                return Err(IngestError::Rejected(format!(
+                    "invalid: routing alias '{alias_key}' does not name a live repository in this community"
+                )));
+            }
+        }
+    }
+
     // Preserve the existing webhook secret across updates. A new secret is
     // returned only when the workflow first gains a webhook trigger.
     let webhook_secret = if matches!(def.trigger, buzz_workflow::TriggerDef::Webhook) {

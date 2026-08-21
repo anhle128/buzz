@@ -37,6 +37,8 @@ pub mod moderation;
 pub mod partition;
 /// Buzz product-feedback sidecar persistence.
 pub mod product_feedback;
+/// Unlimited latest live global parameterized heads (NIP-33 kinds 30617/30621).
+pub mod project_heads;
 /// Community-scoped push lease and durable wake-outbox persistence.
 pub mod push;
 /// Reaction persistence.
@@ -55,6 +57,8 @@ pub mod usage;
 pub mod user;
 /// Workflow, run, and approval persistence.
 pub mod workflow;
+/// Serialized idempotent admission for dynamically routed webhook workflow runs.
+pub mod workflow_admission;
 
 pub use error::{DbError, Result};
 pub use event::{EventQuery, ReactionEventInsertOutcome, DEFAULT_MAX_PAGE_LIMIT};
@@ -4050,6 +4054,50 @@ impl Db {
             trigger_context,
         )
         .await
+    }
+
+    /// Begin serialized idempotent admission for a dynamically routed workflow run.
+    #[datastore_span(name = "begin_workflow_admission", system = "postgresql")]
+    pub async fn begin_workflow_admission(
+        &self,
+        community_id: CommunityId,
+        workflow_id: Uuid,
+        idempotency_key_hash: &[u8; 32],
+        payload_hash: &[u8; 32],
+    ) -> Result<workflow_admission::BeginWorkflowAdmission> {
+        workflow_admission::begin_workflow_admission(
+            &self.pool,
+            community_id,
+            workflow_id,
+            idempotency_key_hash,
+            payload_hash,
+        )
+        .await
+    }
+
+    /// List latest live global parameterized-replaceable heads of `kind`.
+    ///
+    /// Unbounded: does not apply [`DEFAULT_MAX_PAGE_LIMIT`].
+    #[datastore_span(name = "list_latest_parameterized_heads", system = "postgresql")]
+    pub async fn list_latest_parameterized_heads(
+        &self,
+        community_id: CommunityId,
+        kind: i32,
+    ) -> Result<Vec<StoredEvent>> {
+        project_heads::list_latest_parameterized_heads(&self.pool, community_id, kind).await
+    }
+
+    /// Fetch the latest live global head for `(kind, pubkey, d_tag)`.
+    #[datastore_span(name = "get_latest_parameterized_head", system = "postgresql")]
+    pub async fn get_latest_parameterized_head(
+        &self,
+        community_id: CommunityId,
+        kind: i32,
+        pubkey: &[u8],
+        d_tag: &str,
+    ) -> Result<Option<StoredEvent>> {
+        project_heads::get_latest_parameterized_head(&self.pool, community_id, kind, pubkey, d_tag)
+            .await
     }
 
     /// Fetch a single workflow run, scoped to its community.

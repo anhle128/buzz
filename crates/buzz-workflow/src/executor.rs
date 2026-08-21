@@ -18,6 +18,7 @@ use serde_json::Value as JsonValue;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
+use crate::action_sink::WorkflowMessageRoute;
 use crate::error::WorkflowError;
 use crate::schema::{ActionDef, Step, WorkflowDef};
 use crate::WorkflowEngine;
@@ -509,6 +510,28 @@ fn resolve_send_message_channel(
     Ok(trigger_channel.trim().to_string())
 }
 
+fn resolve_send_message_channel_for_run(
+    run_community_id: CommunityId,
+    explicit_channel: Option<&str>,
+    trigger_channel: &str,
+    workflow_channel_id: Option<Uuid>,
+    route_snapshot: Option<&buzz_db::workflow_admission::WorkflowRouteSnapshot>,
+) -> Result<String, WorkflowError> {
+    if let Some(snapshot) = route_snapshot {
+        if snapshot.community_id != *run_community_id.as_uuid() {
+            return Err(WorkflowError::RouteStale);
+        }
+        if explicit_channel.is_some() {
+            return Err(WorkflowError::InvalidDefinition(
+                "SendMessage: channel override is invalid for project_channel_by_repository routing"
+                    .into(),
+            ));
+        }
+        return Ok(snapshot.channel_id.to_string());
+    }
+    resolve_send_message_channel(explicit_channel, trigger_channel, workflow_channel_id)
+}
+
 /// Dispatch a resolved action and return its output.
 ///
 /// For MVP, most actions log their intent and return a success output.
@@ -570,23 +593,41 @@ pub async fn dispatch_action(
                                 wf_run.workflow_id
                             ))
                         })?;
-                    let channel_id = resolve_send_message_channel(
+                    let channel_id = resolve_send_message_channel_for_run(
+                        community_id,
                         channel.as_deref(),
                         &trigger_ctx.channel_id,
                         workflow.channel_id,
+                        wf_run.route_snapshot.as_ref(),
                     )?;
+                    let route = match (&wf_run.route_snapshot, workflow.channel_id) {
+                        (Some(snapshot), Some(home_channel_id)) => Some(WorkflowMessageRoute {
+                            run_id,
+                            workflow_id: wf_run.workflow_id,
+                            home_channel_id,
+                            repository_coordinate: snapshot.repository_coordinate.clone(),
+                            project_coordinate: snapshot.project_coordinate.clone(),
+                        }),
+                        (Some(_), None) => {
+                            return Err(WorkflowError::InvalidDefinition(
+                                "dynamic send_message requires a workflow home channel".into(),
+                            ));
+                        }
+                        (None, _) => None,
+                    };
                     let owner_pubkey_hex = hex::encode(&workflow.owner_pubkey);
 
                     info!(
                         run_id = %run_id,
                         step = step_id,
                         channel = %channel_id,
-                        "SendMessage → {channel_id}: {text}"
+                        dynamic_route = route.is_some(),
+                        "SendMessage"
                     );
 
                     let event_id = engine
                         .action_sink()?
-                        .send_message(community_id, &channel_id, text, &owner_pubkey_hex)
+                        .send_message(community_id, &channel_id, text, &owner_pubkey_hex, route)
                         .await
                         .map_err(WorkflowError::from)?;
 
@@ -596,8 +637,8 @@ pub async fn dispatch_action(
                     })))
                 }
 
-                SendDm { to, text: _ } => {
-                    warn!(run_id = %run_id, step = step_id, "SendDm not yet implemented (to={to})");
+                SendDm { to: _, text: _ } => {
+                    warn!(run_id = %run_id, step = step_id, "SendDm");
                     // TODO (WF-07): emit DM event.
                     Err(WorkflowError::NotImplemented("SendDm".into()))
                 }
@@ -609,7 +650,7 @@ pub async fn dispatch_action(
                 }
 
                 AddReaction { emoji } => {
-                    info!(run_id = %run_id, step = step_id, "AddReaction → :{emoji}:");
+                    info!(run_id = %run_id, step = step_id, "AddReaction");
                     if trigger_ctx.message_id.is_empty() {
                         Err(WorkflowError::InvalidDefinition(
                             "AddReaction: no trigger.message_id available".into(),
@@ -623,6 +664,7 @@ pub async fn dispatch_action(
 
                         #[cfg(not(feature = "reqwest"))]
                         {
+                            let _ = emoji;
                             warn!(
                                 run_id = %run_id,
                                 step = step_id,
@@ -641,11 +683,11 @@ pub async fn dispatch_action(
                     headers,
                     body,
                 } => {
-                    let method_str = method.as_deref().unwrap_or("POST");
-                    info!(run_id = %run_id, step = step_id, "CallWebhook → {method_str} {url}");
+                    info!(run_id = %run_id, step = step_id, "CallWebhook");
 
                     #[cfg(feature = "reqwest")]
                     {
+                        let method_str = method.as_deref().unwrap_or("POST");
                         let result = call_webhook_impl(url, method_str, headers, body).await?;
                         Ok(StepResult::Completed(result))
                     }
@@ -657,7 +699,7 @@ pub async fn dispatch_action(
                             run_id = %run_id, step = step_id,
                             "CallWebhook: reqwest feature not enabled, skipping HTTP call"
                         );
-                        let _ = (headers, body); // suppress unused warnings
+                        let _ = (url, method, headers, body);
                         Ok(StepResult::Completed(serde_json::json!({
                             "status": 0,
                             "body": null,
@@ -667,15 +709,11 @@ pub async fn dispatch_action(
                 }
 
                 RequestApproval {
-                    from,
-                    message,
-                    timeout,
+                    from: _,
+                    message: _,
+                    timeout: _,
                 } => {
-                    let timeout_str = timeout.as_deref().unwrap_or("24h");
-                    info!(
-                        run_id = %run_id, step = step_id,
-                        "RequestApproval from={from} timeout={timeout_str}: {message}"
-                    );
+                    info!(run_id = %run_id, step = step_id, "RequestApproval");
 
                     let token = generate_approval_token(run_id, step_id);
 
@@ -699,7 +737,7 @@ pub async fn dispatch_action(
                      use the scheduled resume pattern for long delays"
                         )));
                     }
-                    info!(run_id = %run_id, step = step_id, "Delay {duration} ({secs}s)");
+                    info!(run_id = %run_id, step = step_id, secs, "Delay");
                     tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
                     Ok(StepResult::Completed(
                         serde_json::json!({ "slept_secs": secs }),
@@ -1870,5 +1908,77 @@ mod tests {
             resolve_send_message_channel(Some(&override_channel_id.to_string()), "", None)
                 .expect("override should be accepted");
         assert_eq!(resolved, override_channel_id.to_string());
+    }
+
+    #[test]
+    fn dynamic_send_message_uses_snapshot_channel_and_rejects_override() {
+        let run_community = CommunityId::from_uuid(Uuid::new_v4());
+        let snapshot_channel = Uuid::new_v4();
+        let snapshot = buzz_db::workflow_admission::WorkflowRouteSnapshot {
+            community_id: *run_community.as_uuid(),
+            repository_coordinate: format!("30617:{}:agentic-os-plan", "ab".repeat(32)),
+            project_coordinate: format!("30621:{}:gigo-harness", "cd".repeat(32)),
+            channel_id: snapshot_channel,
+            matched_identity_tier: "d_tag".into(),
+        };
+        let resolved = resolve_send_message_channel_for_run(
+            run_community,
+            None,
+            "",
+            Some(Uuid::new_v4()),
+            Some(&snapshot),
+        )
+        .expect("snapshot wins");
+        assert_eq!(resolved, snapshot_channel.to_string());
+
+        let err = resolve_send_message_channel_for_run(
+            run_community,
+            Some(&Uuid::new_v4().to_string()),
+            "",
+            Some(Uuid::new_v4()),
+            Some(&snapshot),
+        )
+        .unwrap_err();
+        assert!(matches!(err, WorkflowError::InvalidDefinition(_)));
+
+        let empty_field = resolve_send_message_channel_for_run(
+            run_community,
+            Some(""),
+            "",
+            Some(Uuid::new_v4()),
+            Some(&snapshot),
+        )
+        .unwrap_err();
+        assert!(matches!(empty_field, WorkflowError::InvalidDefinition(_)));
+
+        let wrong_community = buzz_db::workflow_admission::WorkflowRouteSnapshot {
+            community_id: Uuid::new_v4(),
+            ..snapshot
+        };
+        assert!(matches!(
+            resolve_send_message_channel_for_run(
+                run_community,
+                None,
+                "",
+                Some(Uuid::new_v4()),
+                Some(&wrong_community),
+            ),
+            Err(WorkflowError::RouteStale)
+        ));
+    }
+
+    #[test]
+    fn static_send_message_channel_rules_remain_unchanged() {
+        let run_community = CommunityId::from_uuid(Uuid::new_v4());
+        let workflow_channel_id = Uuid::new_v4();
+        let resolved = resolve_send_message_channel_for_run(
+            run_community,
+            None,
+            "",
+            Some(workflow_channel_id),
+            None,
+        )
+        .expect("static bound channel");
+        assert_eq!(resolved, workflow_channel_id.to_string());
     }
 }

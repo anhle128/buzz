@@ -8,9 +8,14 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Weak};
 
-use buzz_core::kind::KIND_STREAM_MESSAGE;
+use buzz_core::kind::{KIND_GIT_REPO_ANNOUNCEMENT, KIND_PROJECT, KIND_STREAM_MESSAGE};
 use buzz_core::tenant::CommunityId;
-use buzz_workflow::action_sink::{ActionSink, ActionSinkError};
+use buzz_db::workflow::WorkflowStatus;
+use buzz_workflow::action_sink::{
+    route_provenance_tags, ActionSink, ActionSinkError, WorkflowMessageRoute,
+};
+use buzz_workflow::routing::parse_repository_coordinate;
+use buzz_workflow::WorkflowDef;
 use chrono::Utc;
 use nostr::{EventBuilder, Kind, Tag};
 use tracing::info;
@@ -18,6 +23,9 @@ use uuid::Uuid;
 
 use crate::handlers::event::dispatch_persistent_event;
 use crate::state::AppState;
+use crate::workflow_route::{
+    project_head_from_event, repository_head_from_event, require_exact_stored_project_channel,
+};
 
 /// Resolves `@Name` mentions in workflow message text to the pubkeys of the
 /// channel members they name, so the emitted kind:9 carries the `p` tags that
@@ -176,6 +184,7 @@ impl ActionSink for RelayActionSink {
         channel_id: &str,
         text: &str,
         author_pubkey: &str,
+        route: Option<WorkflowMessageRoute>,
     ) -> Pin<Box<dyn Future<Output = Result<String, ActionSinkError>> + Send + '_>> {
         let channel_id = channel_id.to_owned();
         let text = text.to_owned();
@@ -218,63 +227,44 @@ impl ActionSink for RelayActionSink {
                 .map_err(|e| ActionSinkError::InvalidInput(format!("invalid UUID: {e}")))?;
             let channel_id_canonical = channel_uuid.to_string();
 
-            let channel = state
-                .db
-                .get_channel(tenant.community(), channel_uuid)
-                .await
-                .map_err(|e| match &e {
-                    buzz_db::DbError::ChannelNotFound(_) | buzz_db::DbError::NotFound(_) => {
-                        ActionSinkError::ChannelNotFound(channel_id_canonical.clone())
-                    }
-                    _ => ActionSinkError::Database(e.to_string()),
-                })?;
-
-            if channel.archived_at.is_some() {
-                return Err(ActionSinkError::ChannelArchived(
-                    channel_id_canonical.clone(),
-                ));
-            }
-
             let author_pubkey = nostr::PublicKey::from_hex(&author_pubkey).map_err(|e| {
                 ActionSinkError::InvalidInput(format!("invalid author pubkey: {e}"))
             })?;
             let author_pubkey_bytes = author_pubkey.to_bytes().to_vec();
             let author_pubkey_hex = author_pubkey.to_hex();
-            let is_member = state
-                .is_member_cached(tenant.community(), channel_uuid, &author_pubkey_bytes)
-                .await
-                .map_err(|e| ActionSinkError::Database(e.to_string()))?;
-            if !is_member && channel.visibility != "open" {
-                return Err(ActionSinkError::InvalidInput(
-                    "workflow owner does not have access to destination channel".into(),
-                ));
+
+            if route.is_none() {
+                let channel = state
+                    .db
+                    .get_channel(tenant.community(), channel_uuid)
+                    .await
+                    .map_err(|e| match &e {
+                        buzz_db::DbError::ChannelNotFound(_) | buzz_db::DbError::NotFound(_) => {
+                            ActionSinkError::ChannelNotFound(channel_id_canonical.clone())
+                        }
+                        _ => ActionSinkError::Database(e.to_string()),
+                    })?;
+
+                if channel.archived_at.is_some() {
+                    return Err(ActionSinkError::ChannelArchived(
+                        channel_id_canonical.clone(),
+                    ));
+                }
+
+                let is_member = state
+                    .is_member_cached(tenant.community(), channel_uuid, &author_pubkey_bytes)
+                    .await
+                    .map_err(|e| ActionSinkError::Database(e.to_string()))?;
+                if !is_member && channel.visibility != "open" {
+                    return Err(ActionSinkError::InvalidInput(
+                        "workflow owner does not have access to destination channel".into(),
+                    ));
+                }
             }
 
-            // 3. Build kind:9 Nostr event
-            //    - Signed by relay keypair (event.pubkey = relay pubkey)
-            //    - `p` tag attributes the message to the workflow owner
-            //    - `h` tag scopes to the channel (NIP-29, canonical UUID)
-            //    - `buzz:workflow` tag prevents recursive workflow triggering
-            //    - `buzz:workflow-owner` tag names the workflow owner explicitly,
-            //      so consumers (e.g. the ACP inbound author gate) can attribute
-            //      the message without inferring ownership from `p`-tag order
-            //    - one `p` tag per `@Name` that resolves to a channel member,
-            //      so mentioned agents are woken (wake is `p`-tag gated)
-            let mut tags = vec![
-                Tag::parse(["p", &author_pubkey_hex])
-                    .map_err(|e| ActionSinkError::EventBuild(format!("p tag: {e}")))?,
-                Tag::parse(["h", &channel_id_canonical])
-                    .map_err(|e| ActionSinkError::EventBuild(format!("h tag: {e}")))?,
-                Tag::parse(["buzz:workflow", "true"])
-                    .map_err(|e| ActionSinkError::EventBuild(format!("workflow tag: {e}")))?,
-                Tag::parse(["buzz:workflow-owner", &author_pubkey_hex])
-                    .map_err(|e| ActionSinkError::EventBuild(format!("workflow owner tag: {e}")))?,
-            ];
-
-            // Resolve `@Name` mentions to channel-member pubkeys and append a
-            // `p` tag for each (skipping the author, already tagged above). A
-            // resolution failure must not drop the message, so log and proceed
-            // with the base tags.
+            // Resolve `@Name` mentions before the final dynamic revalidation
+            // so no async lookup sits between a successful revalidation and
+            // EventBuilder / insert_event_with_thread_metadata.
             let members = state
                 .db
                 .get_members(tenant.community(), channel_uuid)
@@ -293,14 +283,53 @@ impl ActionSink for RelayActionSink {
                     Some((name, nostr::PublicKey::from_slice(&u.pubkey).ok()?.to_hex()))
                 })
                 .collect();
+            let mut mention_tags = Vec::new();
             for mentioned in resolve_mention_pubkeys(&text, &named_members) {
                 if mentioned == author_pubkey_hex {
                     continue;
                 }
-                tags.push(
+                mention_tags.push(
                     Tag::parse(["p", &mentioned])
                         .map_err(|e| ActionSinkError::EventBuild(format!("mention p tag: {e}")))?,
                 );
+            }
+
+            if let Some(route) = &route {
+                revalidate_dynamic_route(
+                    &state,
+                    community_id,
+                    channel_uuid,
+                    &author_pubkey_bytes,
+                    route,
+                )
+                .await?;
+            }
+
+            // 3. Build kind:9 Nostr event
+            //    - Signed by relay keypair (event.pubkey = relay pubkey)
+            //    - `p` tag attributes the message to the workflow owner
+            //    - `h` tag scopes to the channel (NIP-29, canonical UUID)
+            //    - `buzz:workflow` tag prevents recursive workflow triggering
+            //    - `buzz:workflow-owner` tag names the workflow owner explicitly,
+            //      so consumers (e.g. the ACP inbound author gate) can attribute
+            //      the message without inferring ownership from `p`-tag order
+            //    - one `p` tag per `@Name` that resolves to a channel member,
+            //      so mentioned agents are woken (wake is `p`-tag gated)
+            //    - dynamic routes also carry repository/project `a` tags and
+            //      `buzz:workflow-run` (no raw idempotency key)
+            let mut tags = vec![
+                Tag::parse(["p", &author_pubkey_hex])
+                    .map_err(|e| ActionSinkError::EventBuild(format!("p tag: {e}")))?,
+                Tag::parse(["h", &channel_id_canonical])
+                    .map_err(|e| ActionSinkError::EventBuild(format!("h tag: {e}")))?,
+                Tag::parse(["buzz:workflow", "true"])
+                    .map_err(|e| ActionSinkError::EventBuild(format!("workflow tag: {e}")))?,
+                Tag::parse(["buzz:workflow-owner", &author_pubkey_hex])
+                    .map_err(|e| ActionSinkError::EventBuild(format!("workflow owner tag: {e}")))?,
+            ];
+            tags.extend(mention_tags);
+            if let Some(route) = &route {
+                tags.extend(route_provenance_tags(route)?);
             }
 
             let kind = Kind::from(KIND_STREAM_MESSAGE as u16);
@@ -367,6 +396,97 @@ impl ActionSink for RelayActionSink {
             Ok(event_id_hex)
         })
     }
+}
+
+async fn revalidate_dynamic_route(
+    state: &AppState,
+    community_id: CommunityId,
+    channel_id: Uuid,
+    author_pubkey: &[u8],
+    route: &WorkflowMessageRoute,
+) -> Result<(), ActionSinkError> {
+    let workflow = state
+        .db
+        .get_workflow(community_id, route.workflow_id)
+        .await
+        .map_err(|_| ActionSinkError::RouteStale)?;
+    if !workflow.enabled || workflow.status != WorkflowStatus::Active {
+        return Err(ActionSinkError::RouteStale);
+    }
+    if workflow.channel_id != Some(route.home_channel_id)
+        || workflow.owner_pubkey.as_slice() != author_pubkey
+    {
+        return Err(ActionSinkError::RouteStale);
+    }
+
+    let def: WorkflowDef =
+        serde_json::from_value(workflow.definition).map_err(|_| ActionSinkError::RouteStale)?;
+    state
+        .workflow_engine
+        .check_owner_authority(
+            community_id,
+            route.home_channel_id,
+            &workflow.owner_pubkey,
+            &def,
+        )
+        .await
+        .map_err(|_| ActionSinkError::RouteStale)?;
+
+    let parsed = parse_repository_coordinate(&route.repository_coordinate)
+        .map_err(|_| ActionSinkError::RouteStale)?;
+    let repository_event = state
+        .db
+        .get_latest_parameterized_head(
+            community_id,
+            KIND_GIT_REPO_ANNOUNCEMENT as i32,
+            parsed.owner_pubkey().as_slice(),
+            parsed.d_tag(),
+        )
+        .await
+        .map_err(|_| ActionSinkError::RouteStale)?
+        .ok_or(ActionSinkError::RouteStale)?;
+    let repository =
+        repository_head_from_event(&repository_event.event).ok_or(ActionSinkError::RouteStale)?;
+    if repository.coordinate != route.repository_coordinate {
+        return Err(ActionSinkError::RouteStale);
+    }
+
+    let project_events = state
+        .db
+        .list_latest_parameterized_heads(community_id, KIND_PROJECT as i32)
+        .await
+        .map_err(|_| ActionSinkError::RouteStale)?;
+    let projects: Vec<_> = project_events
+        .iter()
+        .filter_map(|stored| project_head_from_event(&stored.event))
+        .collect();
+    require_exact_stored_project_channel(
+        &repository,
+        &projects,
+        &route.project_coordinate,
+        channel_id,
+    )
+    .map_err(|_| ActionSinkError::RouteStale)?;
+
+    let channel = state
+        .db
+        .get_channel(community_id, channel_id)
+        .await
+        .map_err(|_| ActionSinkError::RouteStale)?;
+    if channel.archived_at.is_some() {
+        return Err(ActionSinkError::RouteStale);
+    }
+
+    let role = state
+        .db
+        .get_member_role(community_id, channel_id, author_pubkey)
+        .await
+        .map_err(|_| ActionSinkError::RouteStale)?;
+    if role.is_none() {
+        return Err(ActionSinkError::RouteStale);
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -561,6 +681,25 @@ mod tests {
             vec![pk('b'), pk('a')]
         );
     }
+
+    #[test]
+    fn route_provenance_has_exact_coordinates_and_run_without_control_key() {
+        let route = WorkflowMessageRoute {
+            run_id: Uuid::new_v4(),
+            workflow_id: Uuid::new_v4(),
+            home_channel_id: Uuid::new_v4(),
+            repository_coordinate: format!("30617:{}:agentic-os-plan", "ab".repeat(32)),
+            project_coordinate: format!("30621:{}:gigo-harness", "cd".repeat(32)),
+        };
+        let tags = route_provenance_tags(&route).expect("build provenance tags");
+        let parts: Vec<Vec<String>> = tags.iter().map(|tag| tag.as_slice().to_vec()).collect();
+        assert!(parts.contains(&vec!["a".into(), route.repository_coordinate.clone()]));
+        assert!(parts.contains(&vec!["a".into(), route.project_coordinate.clone()]));
+        assert!(parts.contains(&vec!["buzz:workflow-run".into(), route.run_id.to_string(),]));
+        assert!(!serde_json::to_string(&parts)
+            .expect("serialize tag parts")
+            .contains("idempotency_key"));
+    }
 }
 
 #[cfg(test)]
@@ -681,6 +820,7 @@ mod integration_tests {
                 &channel.id.to_string(),
                 "heads up @Robby — please take a look",
                 &author_hex,
+                None,
             )
             .await
             .expect("send_message");
@@ -725,5 +865,545 @@ mod integration_tests {
             "workflow owner must be named explicitly via buzz:workflow-owner \
              so consumers never infer ownership from p-tag order"
         );
+    }
+
+    #[derive(Clone, Copy)]
+    enum ClaimSignerMode {
+        Owner,
+        Maintainer,
+    }
+
+    struct DynamicRouteFixture {
+        state: Arc<AppState>,
+        sink: RelayActionSink,
+        community_id: CommunityId,
+        home_channel_id: Uuid,
+        destination_channel_id: Uuid,
+        route: WorkflowMessageRoute,
+        raw_test_key: String,
+        baseline_counts: std::collections::HashMap<Uuid, i64>,
+        pool: sqlx::PgPool,
+        owner_hex: String,
+        owner_bytes: Vec<u8>,
+        admin_bytes: Vec<u8>,
+        repo_keys: nostr::Keys,
+        project_keys: nostr::Keys,
+        repo_d: String,
+        project_d: String,
+        repo_event_id: Vec<u8>,
+        project_event_id: Vec<u8>,
+        repo_created_at: u64,
+        project_created_at: u64,
+    }
+
+    fn signed_repo_event(
+        keys: &nostr::Keys,
+        d: &str,
+        maintainers: &[String],
+        created_at: u64,
+    ) -> nostr::Event {
+        let mut tags = vec![
+            Tag::parse(["d", d]).expect("d tag"),
+            Tag::parse(["name", d]).expect("name tag"),
+        ];
+        for maintainer in maintainers {
+            tags.push(Tag::parse(["maintainers", maintainer]).expect("maintainers tag"));
+        }
+        EventBuilder::new(Kind::from(30617u16), "")
+            .tags(tags)
+            .custom_created_at(nostr::Timestamp::from(created_at))
+            .sign_with_keys(keys)
+            .expect("sign repo")
+    }
+
+    fn signed_project_event(
+        keys: &nostr::Keys,
+        d: &str,
+        repo_coord: &str,
+        channel_id: Uuid,
+        created_at: u64,
+    ) -> nostr::Event {
+        EventBuilder::new(Kind::from(30621u16), "")
+            .tags(vec![
+                Tag::parse(["d", d]).expect("d tag"),
+                Tag::parse(["a", repo_coord]).expect("a tag"),
+                Tag::parse(["buzz-channel", &channel_id.to_string()]).expect("buzz-channel"),
+            ])
+            .custom_created_at(nostr::Timestamp::from(created_at))
+            .sign_with_keys(keys)
+            .expect("sign project")
+    }
+
+    fn assert_exact_dynamic_provenance(event: &nostr::Event, route: &WorkflowMessageRoute) {
+        let tags: Vec<Vec<String>> = event
+            .tags
+            .iter()
+            .map(|tag| tag.as_slice().to_vec())
+            .collect();
+        let named = |name: &str| {
+            tags.iter()
+                .filter(|tag| tag.first().map(String::as_str) == Some(name))
+                .count()
+        };
+        let exact = |slice: &[String]| tags.iter().filter(|tag| tag.as_slice() == slice).count();
+        let run_id = route.run_id.to_string();
+        assert_eq!(
+            exact(&["a".into(), route.repository_coordinate.clone()]),
+            1,
+            "exactly one repository a tag"
+        );
+        assert_eq!(
+            exact(&["a".into(), route.project_coordinate.clone()]),
+            1,
+            "exactly one project a tag"
+        );
+        assert_eq!(named("a"), 2, "exactly two a tags");
+        assert_eq!(
+            exact(&["buzz:workflow-run".into(), run_id]),
+            1,
+            "exactly one buzz:workflow-run tag"
+        );
+        assert_eq!(named("h"), 1, "exactly one destination h tag");
+        assert_eq!(named("buzz:workflow"), 1, "exactly one buzz:workflow tag");
+        assert_eq!(
+            named("buzz:workflow-owner"),
+            1,
+            "exactly one buzz:workflow-owner tag"
+        );
+        assert_eq!(named("e"), 0, "no root/parent e tag");
+    }
+
+    impl DynamicRouteFixture {
+        async fn new(mode: ClaimSignerMode) -> Self {
+            let state = test_state().await;
+            let pool = sqlx::PgPool::connect(&state.config.database_url)
+                .await
+                .expect("connect fixture pool");
+
+            let admin = nostr::Keys::generate();
+            let owner = nostr::Keys::generate();
+            let repo_keys = nostr::Keys::generate();
+            let project_keys = match mode {
+                ClaimSignerMode::Owner => repo_keys.clone(),
+                ClaimSignerMode::Maintainer => nostr::Keys::generate(),
+            };
+            let admin_hex = admin.public_key().to_hex();
+            let admin_bytes = admin.public_key().to_bytes().to_vec();
+            let owner_hex = owner.public_key().to_hex();
+            let owner_bytes = owner.public_key().to_bytes().to_vec();
+
+            let host = format!("wf-dyn-{}.example", Uuid::new_v4().simple());
+            let community = match state
+                .db
+                .create_community_with_owner(&host, &admin_hex)
+                .await
+                .expect("create community")
+            {
+                CreateCommunityWithOwnerResult::Created(rec) => rec.id,
+                other => panic!("expected fresh community, got {other:?}"),
+            };
+
+            let home = state
+                .db
+                .create_channel(
+                    community,
+                    "wf-home",
+                    ChannelType::Stream,
+                    ChannelVisibility::Private,
+                    None,
+                    &admin_bytes,
+                    None,
+                )
+                .await
+                .expect("create home channel");
+            let destination = state
+                .db
+                .create_channel(
+                    community,
+                    "wf-dest",
+                    ChannelType::Stream,
+                    ChannelVisibility::Open,
+                    None,
+                    &admin_bytes,
+                    None,
+                )
+                .await
+                .expect("create destination channel");
+
+            state
+                .db
+                .ensure_user(community, &owner_bytes)
+                .await
+                .expect("ensure workflow owner");
+            state
+                .db
+                .add_member(
+                    community,
+                    home.id,
+                    &owner_bytes,
+                    MemberRole::Member,
+                    Some(&admin_bytes),
+                )
+                .await
+                .expect("add owner to home");
+            state
+                .db
+                .add_member(
+                    community,
+                    destination.id,
+                    &owner_bytes,
+                    MemberRole::Member,
+                    Some(&admin_bytes),
+                )
+                .await
+                .expect("add owner to destination");
+
+            let definition = serde_json::json!({
+                "name": "dynamic-fixture",
+                "trigger": {"on": "webhook"},
+                "routing": {"mode": "project_channel_by_repository"},
+                "steps": [{"id": "notify", "action": "send_message", "text": "hello"}],
+                "enabled": true,
+            })
+            .to_string();
+            let workflow_id = state
+                .db
+                .create_workflow(
+                    community,
+                    Some(home.id),
+                    &owner_bytes,
+                    "dynamic-fixture",
+                    &definition,
+                    &[0u8; 32],
+                )
+                .await
+                .expect("create workflow");
+
+            let repo_d = "agentic-os-plan".to_string();
+            let project_d = "gigo-harness".to_string();
+            let repo_hex = repo_keys.public_key().to_hex();
+            let project_hex = project_keys.public_key().to_hex();
+            let repository_coordinate = format!("30617:{repo_hex}:{repo_d}");
+            let project_coordinate = format!("30621:{project_hex}:{project_d}");
+            let now = chrono::Utc::now().timestamp() as u64;
+            let repo_created_at = now;
+            let project_created_at = now + 1;
+            let maintainers = match mode {
+                ClaimSignerMode::Owner => Vec::new(),
+                ClaimSignerMode::Maintainer => vec![project_hex.clone()],
+            };
+            let repo_event = signed_repo_event(&repo_keys, &repo_d, &maintainers, repo_created_at);
+            let project_event = signed_project_event(
+                &project_keys,
+                &project_d,
+                &repository_coordinate,
+                destination.id,
+                project_created_at,
+            );
+            state
+                .db
+                .insert_event(community, &repo_event, None)
+                .await
+                .expect("insert repo");
+            state
+                .db
+                .insert_event(community, &project_event, None)
+                .await
+                .expect("insert project");
+
+            let route = WorkflowMessageRoute {
+                run_id: Uuid::new_v4(),
+                workflow_id,
+                home_channel_id: home.id,
+                repository_coordinate,
+                project_coordinate,
+            };
+            let sink = RelayActionSink::new(&state);
+            let mut fixture = Self {
+                state,
+                sink,
+                community_id: community,
+                home_channel_id: home.id,
+                destination_channel_id: destination.id,
+                route,
+                raw_test_key: format!("idempotency_key-{}", Uuid::new_v4()),
+                baseline_counts: std::collections::HashMap::new(),
+                pool,
+                owner_hex,
+                owner_bytes,
+                admin_bytes,
+                repo_keys,
+                project_keys,
+                repo_d,
+                project_d,
+                repo_event_id: repo_event.id.as_bytes().to_vec(),
+                project_event_id: project_event.id.as_bytes().to_vec(),
+                repo_created_at,
+                project_created_at,
+            };
+            fixture.track_channel(home.id).await;
+            fixture.track_channel(destination.id).await;
+            fixture
+        }
+
+        async fn kind9_count(&self, channel_id: Uuid) -> i64 {
+            sqlx::query_scalar(
+                "SELECT COUNT(*) FROM events WHERE community_id = $1 AND channel_id = $2 AND kind = 9 AND deleted_at IS NULL",
+            )
+            .bind(self.community_id.as_uuid())
+            .bind(channel_id)
+            .fetch_one(&self.pool)
+            .await
+            .expect("count kind 9")
+        }
+
+        async fn track_channel(&mut self, channel_id: Uuid) {
+            let count = self.kind9_count(channel_id).await;
+            self.baseline_counts.insert(channel_id, count);
+        }
+
+        async fn send(&self) -> Result<String, ActionSinkError> {
+            self.sink
+                .send_message(
+                    self.community_id,
+                    &self.destination_channel_id.to_string(),
+                    "routed workflow message",
+                    &self.owner_hex,
+                    Some(self.route.clone()),
+                )
+                .await
+        }
+
+        async fn assert_no_new_kind9(&self) {
+            for (channel_id, expected) in &self.baseline_counts {
+                let actual = self.kind9_count(*channel_id).await;
+                assert_eq!(
+                    actual, *expected,
+                    "kind 9 count changed for channel {channel_id}"
+                );
+            }
+        }
+
+        async fn load_sent_event(&self, event_id: &str) -> buzz_core::StoredEvent {
+            let id_bytes = nostr::EventId::from_hex(event_id)
+                .expect("event id")
+                .as_bytes()
+                .to_vec();
+            self.state
+                .db
+                .get_event_by_id(self.community_id, &id_bytes)
+                .await
+                .expect("query event")
+                .expect("event persisted")
+        }
+
+        async fn extra_channel(&mut self, name: &str) -> Uuid {
+            let channel = self
+                .state
+                .db
+                .create_channel(
+                    self.community_id,
+                    name,
+                    ChannelType::Stream,
+                    ChannelVisibility::Open,
+                    None,
+                    &self.admin_bytes,
+                    None,
+                )
+                .await
+                .expect("create extra channel");
+            self.track_channel(channel.id).await;
+            channel.id
+        }
+
+        async fn remove_destination_member(&mut self) {
+            self.state
+                .db
+                .remove_member(
+                    self.community_id,
+                    self.destination_channel_id,
+                    &self.owner_bytes,
+                    &self.admin_bytes,
+                )
+                .await
+                .expect("remove destination member");
+        }
+
+        async fn disable_workflow(&mut self) {
+            self.state
+                .db
+                .set_workflow_enabled(self.community_id, self.route.workflow_id, false)
+                .await
+                .expect("disable workflow");
+        }
+
+        async fn soft_delete_repository(&mut self) {
+            self.state
+                .db
+                .soft_delete_event(self.community_id, &self.repo_event_id)
+                .await
+                .expect("soft-delete repository");
+        }
+
+        async fn soft_delete_project(&mut self) {
+            self.state
+                .db
+                .soft_delete_event(self.community_id, &self.project_event_id)
+                .await
+                .expect("soft-delete project");
+        }
+
+        async fn replace_repository_without_maintainer(&mut self) {
+            let created_at = self.repo_created_at + 10;
+            let event = signed_repo_event(&self.repo_keys, &self.repo_d, &[], created_at);
+            self.state
+                .db
+                .insert_event(self.community_id, &event, None)
+                .await
+                .expect("replace repository without maintainer");
+            self.repo_event_id = event.id.as_bytes().to_vec();
+            self.repo_created_at = created_at;
+        }
+
+        async fn publish_second_claim(&mut self) {
+            let extra = self.extra_channel("wf-second-dest").await;
+            let created_at = self.project_created_at + 10;
+            let event = signed_project_event(
+                &self.project_keys,
+                "second-claim",
+                &self.route.repository_coordinate,
+                extra,
+                created_at,
+            );
+            self.state
+                .db
+                .insert_event(self.community_id, &event, None)
+                .await
+                .expect("publish second claim");
+        }
+
+        async fn replace_project_channel(&mut self) {
+            let extra = self.extra_channel("wf-changed-dest").await;
+            let created_at = self.project_created_at + 10;
+            let event = signed_project_event(
+                &self.project_keys,
+                &self.project_d,
+                &self.route.repository_coordinate,
+                extra,
+                created_at,
+            );
+            self.state
+                .db
+                .insert_event(self.community_id, &event, None)
+                .await
+                .expect("replace project channel");
+            self.project_event_id = event.id.as_bytes().to_vec();
+            self.project_created_at = created_at;
+        }
+
+        async fn archive_destination(&mut self) {
+            self.state
+                .db
+                .archive_channel(self.community_id, self.destination_channel_id)
+                .await
+                .expect("archive destination");
+        }
+
+        async fn soft_delete_destination(&mut self) {
+            self.state
+                .db
+                .soft_delete_channel(self.community_id, self.destination_channel_id)
+                .await
+                .expect("soft-delete destination");
+        }
+
+        async fn remove_home_member(&mut self) {
+            self.state
+                .db
+                .remove_member(
+                    self.community_id,
+                    self.home_channel_id,
+                    &self.owner_bytes,
+                    &self.admin_bytes,
+                )
+                .await
+                .expect("remove home member");
+        }
+    }
+
+    macro_rules! stale_route_case {
+        ($name:ident, $mode:expr, $mutation:ident) => {
+            #[tokio::test]
+            #[ignore = "requires Postgres"]
+            async fn $name() {
+                let mut fixture = DynamicRouteFixture::new($mode).await;
+                fixture.$mutation().await;
+                let error = fixture.send().await.expect_err("route must be stale");
+                assert!(matches!(error, ActionSinkError::RouteStale));
+                fixture.assert_no_new_kind9().await;
+            }
+        };
+    }
+
+    stale_route_case!(
+        dynamic_route_removed_destination_member_is_stale_and_inserts_no_event,
+        ClaimSignerMode::Owner,
+        remove_destination_member
+    );
+    stale_route_case!(
+        dynamic_route_disabled_workflow_is_stale_and_inserts_no_event,
+        ClaimSignerMode::Owner,
+        disable_workflow
+    );
+    stale_route_case!(
+        dynamic_route_deleted_repository_is_stale_and_inserts_no_event,
+        ClaimSignerMode::Owner,
+        soft_delete_repository
+    );
+    stale_route_case!(
+        dynamic_route_deleted_project_is_stale_and_inserts_no_event,
+        ClaimSignerMode::Owner,
+        soft_delete_project
+    );
+    stale_route_case!(
+        dynamic_route_project_signer_loses_maintainer_authority_is_stale,
+        ClaimSignerMode::Maintainer,
+        replace_repository_without_maintainer
+    );
+    stale_route_case!(
+        dynamic_route_second_claim_is_stale_and_does_not_reroute,
+        ClaimSignerMode::Owner,
+        publish_second_claim
+    );
+    stale_route_case!(
+        dynamic_route_project_channel_change_is_stale_and_inserts_no_event,
+        ClaimSignerMode::Owner,
+        replace_project_channel
+    );
+    stale_route_case!(
+        dynamic_route_archived_channel_is_stale_and_inserts_no_event,
+        ClaimSignerMode::Owner,
+        archive_destination
+    );
+    stale_route_case!(
+        dynamic_route_deleted_channel_is_stale_and_inserts_no_event,
+        ClaimSignerMode::Owner,
+        soft_delete_destination
+    );
+    stale_route_case!(
+        dynamic_route_removed_home_authority_is_stale_and_inserts_no_event,
+        ClaimSignerMode::Owner,
+        remove_home_member
+    );
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn dynamic_route_success_adds_provenance_and_no_control_key() {
+        let fixture = DynamicRouteFixture::new(ClaimSignerMode::Owner).await;
+        let event_id = fixture.send().await.expect("send through valid route");
+        let event = fixture.load_sent_event(&event_id).await;
+        assert_exact_dynamic_provenance(&event.event, &fixture.route);
+        let serialized = serde_json::to_string(&event.event).expect("serialize event");
+        assert!(!serialized.contains(&fixture.raw_test_key));
     }
 }
