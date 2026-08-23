@@ -6,6 +6,8 @@ mod admission;
 
 /// REST API route handlers.
 pub mod api;
+/// Authenticated App callback sink — HTTP admission to a relay-signed kind 9.
+pub mod app_sink;
 /// WebSocket audio relay for huddle voice channels.
 pub mod audio;
 /// Relay configuration from environment variables.
@@ -25,6 +27,8 @@ pub mod handlers;
 pub mod invite_token;
 /// Inter-relay mesh startup wiring (`BUZZ_MESH` seam).
 pub mod mesh_boot;
+/// Shared `@Name` mention resolver for relay-signed messages.
+mod message_mentions;
 /// Prometheus metrics: recorder, upkeep, HTTP middleware.
 pub mod metrics;
 /// NIP-11 relay information document.

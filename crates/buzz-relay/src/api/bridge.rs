@@ -3,12 +3,14 @@
 //! These endpoints provide HTTP access to the relay's Nostr protocol,
 //! authenticated via NIP-98 signed events.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::{
-    extract::{Path, Query, RawQuery, State},
+    body::Body,
+    extract::{ConnectInfo, Path, Query, RawQuery, State},
     http::{HeaderMap, StatusCode},
-    response::Json,
+    response::{IntoResponse, Json},
 };
 use base64::Engine;
 use serde_json::Value;
@@ -1864,6 +1866,22 @@ async fn handle_bridge_search(
 pub struct WebhookQuery {
     /// Webhook secret for authentication. Prefer the `X-Webhook-Secret` header instead.
     pub secret: Option<String>,
+}
+
+/// App callback endpoint. Authenticated by `X-Webhook-Secret` only.
+pub async fn app_callback(
+    State(state): State<Arc<AppState>>,
+    Path(app_id_str): Path<String>,
+    headers: HeaderMap,
+    request: axum::http::Request<Body>,
+) -> impl IntoResponse {
+    let peer_ip = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|info| info.0.ip())
+        .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
+    let body = request.into_body();
+    crate::app_sink::handle_app_callback(state, peer_ip, app_id_str, headers, body).await
 }
 
 /// Webhook trigger endpoint. No user auth — the webhook secret authenticates the caller.
