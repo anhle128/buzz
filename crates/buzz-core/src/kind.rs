@@ -393,6 +393,11 @@ pub const RELAY_ADMIN_REMOVE_MEMBER: u32 = 9031;
 pub const RELAY_ADMIN_CHANGE_ROLE: u32 = 9032;
 /// Buzz: Set the workspace profile (icon). Admin/owner-signed command.
 pub const RELAY_ADMIN_SET_WORKSPACE_PROFILE: u32 = 9033;
+/// Buzz App lifecycle admin command (create, update, rotate, enable, disable).
+///
+/// Signed by a current community owner or admin. Content is a JSON object
+/// tagged by `action`; see [`crate::app::AppAdminCommand`].
+pub const KIND_APP_ADMIN_COMMAND: u32 = 9038;
 // NIP-43 relay membership announcement events (relay-signed)
 /// NIP-43: Relay membership list snapshot (relay-signed, replaceable by convention).
 pub const KIND_NIP43_MEMBERSHIP_LIST: u32 = 13534;
@@ -437,6 +442,11 @@ pub const KIND_THREAD_SUMMARY: u32 = 39005;
 /// content = `{has_more, next_cursor}`. The only authority on exhaustion —
 /// clients must not infer `has_more` from row counts.
 pub const KIND_WINDOW_BOUNDS: u32 = 39006;
+/// Relay-signed parameterized-replaceable App metadata (`d` = App UUID).
+///
+/// Address is `(relay_pubkey, 39007, app_id)` within the host community.
+/// Public fields only — never a secret or secret hash.
+pub const KIND_APP_METADATA: u32 = 39007;
 
 /// Workflow definition (parameterized replaceable, d=workflow_uuid).
 pub const KIND_WORKFLOW_DEF: u32 = 30620;
@@ -677,6 +687,7 @@ pub const ALL_KINDS: &[u32] = &[
     RELAY_ADMIN_REMOVE_MEMBER,
     RELAY_ADMIN_CHANGE_ROLE,
     RELAY_ADMIN_SET_WORKSPACE_PROFILE,
+    KIND_APP_ADMIN_COMMAND,
     KIND_NIP43_MEMBERSHIP_LIST,
     KIND_NIP43_MEMBER_ADDED,
     KIND_NIP43_MEMBER_REMOVED,
@@ -692,6 +703,7 @@ pub const ALL_KINDS: &[u32] = &[
     KIND_NIP29_GROUP_ROLES,
     KIND_THREAD_SUMMARY,
     KIND_WINDOW_BOUNDS,
+    KIND_APP_METADATA,
     KIND_PRESENCE_UPDATE,
     KIND_TYPING_INDICATOR,
     KIND_HUDDLE_REACTION,
@@ -790,8 +802,8 @@ pub const fn is_workflow_execution_kind(kind: u32) -> bool {
     kind >= KIND_WORKFLOW_TRIGGERED && kind <= KIND_WORKFLOW_APPROVAL_DENIED
 }
 
-/// Returns `true` if `kind` is a NIP-43 relay membership admin command (9030–9032)
-/// or the Buzz workspace-profile admin command (9033).
+/// Returns `true` if `kind` is a NIP-43 relay membership admin command (9030–9032),
+/// the Buzz workspace-profile admin command (9033), or the App admin command (9038).
 pub const fn is_relay_admin_kind(kind: u32) -> bool {
     matches!(
         kind,
@@ -799,6 +811,7 @@ pub const fn is_relay_admin_kind(kind: u32) -> bool {
             | RELAY_ADMIN_REMOVE_MEMBER
             | RELAY_ADMIN_CHANGE_ROLE
             | RELAY_ADMIN_SET_WORKSPACE_PROFILE
+            | KIND_APP_ADMIN_COMMAND
     )
 }
 
@@ -822,6 +835,7 @@ pub const fn is_command_kind(kind: u32) -> bool {
             | KIND_WORKFLOW_TRIGGER
             | KIND_APPROVAL_GRANT
             | KIND_APPROVAL_DENY
+            | KIND_APP_ADMIN_COMMAND
     )
 }
 
@@ -836,6 +850,7 @@ pub const fn is_relay_only_kind(kind: u32) -> bool {
             | KIND_DM_VISIBILITY
             | KIND_THREAD_SUMMARY
             | KIND_WINDOW_BOUNDS
+            | KIND_APP_METADATA
     )
 }
 
@@ -864,6 +879,10 @@ const _: () = assert!(is_parameterized_replaceable(KIND_DM_VISIBILITY)); // 3062
 const _: () = assert!(is_parameterized_replaceable(KIND_PROJECT)); // 30621 ∈ 30000–39999
 const _: () = assert!(is_parameterized_replaceable(KIND_THREAD_SUMMARY)); // 39005 ∈ 30000–39999
 const _: () = assert!(is_parameterized_replaceable(KIND_WINDOW_BOUNDS)); // 39006 ∈ 30000–39999
+const _: () = assert!(is_parameterized_replaceable(KIND_APP_METADATA)); // 39007 ∈ 30000–39999
+const _: () = assert!(is_command_kind(KIND_APP_ADMIN_COMMAND));
+const _: () = assert!(is_relay_admin_kind(KIND_APP_ADMIN_COMMAND));
+const _: () = assert!(is_relay_only_kind(KIND_APP_METADATA));
 
 // Compile-time: NIP-34 parameterized replaceable kinds are in the correct range.
 const _: () = assert!(
