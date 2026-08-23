@@ -422,6 +422,9 @@ buzz workflows delete --workflow "$WF_ID" | jq .
 
 ### 6.9a Community Apps
 
+Operator contract (callback URL, headers, schema, routing, status codes):
+[`docs/apps.md`](../../docs/apps.md).
+
 Requires an active community owner or admin identity. Kind `9038` is a
 relay-admin command. Listing uses NIP-11 `self` plus verified kind `39007`
 events — there is no App-list HTTP endpoint.

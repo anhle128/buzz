@@ -14,6 +14,10 @@ just test               # unit + integration (starts Docker if needed)
 ```bash
 # Start a relay first (see below), then:
 cargo test -p buzz-test-client -- --ignored
+
+# Community App callbacks (HTTP + WebSocket + Postgres + Redis):
+cargo test -p buzz-test-client --test e2e_app_callback_notifications \
+  -- --ignored --test-threads=1 --nocapture
 ```
 
 ---
@@ -201,6 +205,43 @@ for an authoritative replacement.
 
 For full coverage of every CLI command (54 subcommands across 12 groups),
 follow [`crates/buzz-cli/TESTING.md`](crates/buzz-cli/TESTING.md).
+
+### 7. Community App callbacks
+
+Operator contract: [`docs/apps.md`](docs/apps.md). CLI live steps:
+[`crates/buzz-cli/TESTING.md` § 6.9a](crates/buzz-cli/TESTING.md#69a-community-apps).
+
+The hermetic acceptance suite needs a freshly built relay against the
+configured PostgreSQL and Redis services. It covers lifecycle, authentication,
+routing, idempotency, concurrency, redaction, and the relay-signed kind `9`
+event.
+
+```bash
+# The suite defaults to RELAY_URL=ws://localhost:3010.
+# If :3000 is busy, bind the relay there too.
+export BUZZ_BIND_ADDR=127.0.0.1:3010
+export RELAY_URL=ws://localhost:3010
+# Redis may need a password on shared hosts:
+# export REDIS_URL=redis://:password@127.0.0.1:6379
+# Skip the git probe when :9000 is not MinIO:
+# export BUZZ_GIT_CONFORMANCE_PROBE=false
+
+cargo build -p buzz-relay
+buzz-relay   # or: cargo run -p buzz-relay
+
+# In another terminal, same RELAY_URL:
+cargo test -p buzz-test-client --test e2e_app_callback_notifications \
+  -- --ignored --test-threads=1 --nocapture
+```
+
+Deployed `gigo-harness` live acceptance — create an Archon App, bind both
+current provider callbacks, replay, conflict, disable, rotate, and inspect
+audit/storage without retaining secrets — is **operator-gated**. It requires
+community credentials and is not a substitute for the hermetic suite above.
+
+Create and rotate print a one-time `webhook_secret`. Drive a callback with
+`X-Webhook-Secret` and never put the secret in a query string — see the
+redacted `curl` in [`docs/apps.md`](docs/apps.md).
 
 The relay's HTTP bridge accepts three endpoints — useful if you're testing
 a client other than `buzz-cli`:
