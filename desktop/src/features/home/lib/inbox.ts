@@ -1,3 +1,5 @@
+import type { AppMetadata } from "@/features/apps/types";
+import { resolveFeedActor } from "@/features/notifications/lib/feedActor";
 import {
   resolveUserLabel,
   type UserProfileLookup,
@@ -23,6 +25,8 @@ import {
   formatItemTimestamp,
 } from "@/shared/lib/datetime";
 import { resolveMentionProps } from "@/shared/lib/resolveMentionNames";
+
+const EMPTY_APPS = new Map<string, AppMetadata>();
 
 export type InboxFilter =
   | "all"
@@ -55,6 +59,8 @@ export type InboxItem = {
   mentionNames: string[];
   mentionPubkeysByName?: Record<string, string>;
   preview: string;
+  isApp?: boolean;
+  appId?: string;
   senderLabel: string;
   subject: string;
   timestampLabel: string;
@@ -69,6 +75,8 @@ export type InboxTypeLabel = {
 export type InboxReply = {
   authorLabel: string;
   authorPubkey: string;
+  isApp?: boolean;
+  appId?: string;
   isAgent?: boolean;
   ownerLabel?: string | null;
   ownerPubkey?: string | null;
@@ -467,6 +475,8 @@ export function buildInboxItems({
   getMessageReadAt,
   getThreadReadAt,
   profiles,
+  apps,
+  relaySelfPubkey,
 }: {
   channels?: InboxChannel[];
   currentPubkey?: string;
@@ -478,6 +488,8 @@ export function buildInboxItems({
     channelId?: string | null,
   ) => number | null;
   profiles?: UserProfileLookup;
+  apps?: ReadonlyMap<string, AppMetadata>;
+  relaySelfPubkey?: string | null;
 }): InboxItem[] {
   if (!feed) {
     return [];
@@ -582,12 +594,24 @@ export function buildInboxItems({
       const categories = [
         ...new Set(group.items.map((groupItem) => groupItem.category)),
       ].sort((left, right) => categoryPriority(left) - categoryPriority(right));
-      const senderLabel = resolveUserLabel({
-        pubkey: item.pubkey,
-        currentPubkey,
-        profiles,
-        preferResolvedSelfLabel: true,
+      const actor = resolveFeedActor({
+        item,
+        apps: apps ?? EMPTY_APPS,
+        relaySelfPubkey,
       });
+      const senderLabel =
+        actor.type === "app"
+          ? actor.name
+          : resolveUserLabel({
+              pubkey: actor.pubkey,
+              currentPubkey,
+              profiles,
+              preferResolvedSelfLabel: true,
+            });
+      const avatarUrl =
+        actor.type === "app"
+          ? (actor.picture ?? null)
+          : (profiles?.[item.pubkey.toLowerCase()]?.avatarUrl ?? null);
       const subject = feedHeadline(item, group.items);
       const preview = feedPreview(item);
       const { mentionNames, mentionPubkeysByName } = resolveMentionProps(
@@ -603,7 +627,7 @@ export function buildInboxItems({
       const categoryLabel = categoryLabelFor(categories[0] ?? item.category);
 
       return {
-        avatarUrl: profiles?.[item.pubkey.toLowerCase()]?.avatarUrl ?? null,
+        avatarUrl,
         conversationId,
         id: item.id,
         item: displayItem,
@@ -617,6 +641,8 @@ export function buildInboxItems({
         mentionNames: mentionNames ?? [],
         mentionPubkeysByName,
         preview,
+        isApp: actor.type === "app" ? true : undefined,
+        appId: actor.type === "app" ? actor.appId : undefined,
         senderLabel,
         subject,
         timestampLabel: formatInboxTimestamp(group.latestActivityAt),

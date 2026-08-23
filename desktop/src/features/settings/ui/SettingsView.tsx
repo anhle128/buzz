@@ -67,7 +67,7 @@ const settingsNavGroups: Array<{
   },
   {
     label: "Communities",
-    sections: ["hosted-communities", "community-members"],
+    sections: ["hosted-communities", "community-members", "apps"],
   },
   {
     label: "App",
@@ -141,9 +141,9 @@ export function SettingsView({
           return false;
         }
       }
-      // Invites and member management require a discovered owner/admin role.
-      // Open relays have no membership snapshot or invite controls.
-      if (s.value === "community-members") {
+      // Invites, member management, and Apps require a discovered owner/admin
+      // role. Open relays have no membership snapshot or these controls.
+      if (s.value === "community-members" || s.value === "apps") {
         return canManageCommunityMembers(myMembershipQuery.data);
       }
       return true;

@@ -94,6 +94,21 @@ impl RedisRateLimiter {
     pub fn new(pool: deadpool_redis::Pool) -> Self {
         Self { pool }
     }
+
+    /// Increment a caller-constructed named counter through the shared Lua script.
+    ///
+    /// App callbacks use the exact key
+    /// `buzz:{community}:ratelimit:app_callback:{app_uuid}:{peer_ip}` so the
+    /// counter is shared across relay processes. The 60-request / 60-second
+    /// default is applied by the callback caller, not here.
+    pub async fn check_named_key(
+        &self,
+        key: &str,
+        window_secs: u64,
+        limit: u64,
+    ) -> Result<RateLimitResult, AuthError> {
+        run_rate_limit(&self.pool, key, window_secs, limit).await
+    }
 }
 
 impl RateLimiter for RedisRateLimiter {
@@ -117,5 +132,65 @@ impl RateLimiter for RedisRateLimiter {
     ) -> Result<RateLimitResult, AuthError> {
         let key = buzz_auth::rate_limit::ip_rate_limit_key(ip);
         run_rate_limit(&self.pool, &key, window_secs, limit).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use buzz_core::CommunityId;
+    use std::net::{IpAddr, Ipv4Addr};
+    use uuid::Uuid;
+
+    #[tokio::test]
+    async fn app_callback_rate_limit_key_is_fully_scoped() {
+        let community_a = CommunityId::from_uuid(
+            Uuid::parse_str("11111111-1111-1111-1111-111111111111").expect("community a"),
+        );
+        let community_b = CommunityId::from_uuid(
+            Uuid::parse_str("22222222-2222-2222-2222-222222222222").expect("community b"),
+        );
+        let app_a = Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").expect("app a");
+        let app_b = Uuid::parse_str("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").expect("app b");
+        let ip_a = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10));
+        let ip_b = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 11));
+
+        let base = format!("buzz:{community_a}:ratelimit:app_callback:{app_a}:{ip_a}");
+        assert_eq!(
+            base,
+            "buzz:11111111-1111-1111-1111-111111111111:ratelimit:app_callback:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:192.0.2.10"
+        );
+        let different_community =
+            format!("buzz:{community_b}:ratelimit:app_callback:{app_a}:{ip_a}");
+        let different_app = format!("buzz:{community_a}:ratelimit:app_callback:{app_b}:{ip_a}");
+        let different_ip = format!("buzz:{community_a}:ratelimit:app_callback:{app_a}:{ip_b}");
+        assert_ne!(base, different_community);
+        assert_ne!(base, different_app);
+        assert_ne!(base, different_ip);
+
+        let redis_url =
+            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".into());
+        let pool = deadpool_redis::Config::from_url(redis_url)
+            .create_pool(Some(deadpool_redis::Runtime::Tokio1))
+            .expect("redis pool");
+        let limiter = RedisRateLimiter::new(pool.clone());
+        for key in [&base, &different_community, &different_app, &different_ip] {
+            limiter
+                .check_named_key(key, 60, 60)
+                .await
+                .expect("named App callback key must be admitted through the shared limiter");
+            let mut conn = pool.get().await.expect("redis conn");
+            let exists: i64 = redis::cmd("EXISTS")
+                .arg(key)
+                .query_async(&mut *conn)
+                .await
+                .expect("exists");
+            assert_eq!(exists, 1, "exact key {key} must be the Redis counter");
+            let _: () = redis::cmd("DEL")
+                .arg(key)
+                .query_async(&mut *conn)
+                .await
+                .expect("cleanup");
+        }
     }
 }

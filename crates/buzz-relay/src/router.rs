@@ -125,6 +125,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/moderation/restricted",
             get(api::bridge::moderation_restricted),
         )
+        // App callback (secret-authenticated, no NIP-98)
+        .route("/hooks/apps/{app_id}", post(api::bridge::app_callback))
         // Webhook trigger (secret-authenticated, no NIP-98)
         .route("/hooks/{id}", post(api::bridge::workflow_webhook))
         // Mesh demo echo probe — testbed-only; 404 unless BUZZ_MESH=on and

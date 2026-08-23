@@ -19,6 +19,7 @@ export function canManageMessageForCurrentUser(
   currentPubkey: string | undefined,
   profiles: UserProfileLookup | undefined,
 ): boolean {
+  if (message.isApp) return false;
   if (message.kind === KIND_HUDDLE_STARTED) return false;
   if (!currentPubkey || !message.pubkey) return false;
   if (normalizePubkey(message.pubkey) === normalizePubkey(currentPubkey))

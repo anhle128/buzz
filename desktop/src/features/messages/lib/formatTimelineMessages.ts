@@ -5,6 +5,8 @@ import type {
   RespondToMode,
 } from "@/shared/api/types";
 
+import { resolveAppActor } from "@/features/apps/lib/appActor";
+import type { AppActor, AppMetadata } from "@/features/apps/types";
 import type {
   TimelineMessage,
   TimelineReaction,
@@ -45,6 +47,7 @@ import { applyEditTagOverlay } from "@/features/messages/lib/applyEditTagOverlay
 import { truncatePubkey } from "@/shared/lib/pubkey";
 
 const HEX_RE = /^[0-9a-f]+$/i;
+const EMPTY_APPS = new Map<string, AppMetadata>();
 
 export function isTimelineContentEvent(event: RelayEvent) {
   return (
@@ -131,19 +134,12 @@ function getReactionTargetId(tags: string[][]) {
   return null;
 }
 
-function formatMessageAuthor(
-  event: RelayEvent,
+function formatMessageAuthorFromPubkey(
+  authorPubkey: string,
   channel: Channel | null,
   currentPubkey: string | undefined,
   profiles: UserProfileLookup | undefined,
-  relaySelfPubkey: string | null | undefined,
 ) {
-  const authorPubkey = resolveEventAuthorPubkey({
-    event,
-    preferActorTag: true,
-    relaySelfPubkey,
-    requireChannelTagForPTags: true,
-  });
   const fallbackName =
     channel?.channelType === "dm"
       ? (() => {
@@ -226,6 +222,8 @@ export function formatTimelineMessages(
   relaySelfPubkey?: string | null,
   /** Profiles for verified agent owners, fetched in one batch by the surface. */
   ownerProfiles?: UserProfileLookup,
+  /** Verified same-relay App metadata keyed by App UUID. */
+  apps?: ReadonlyMap<string, AppMetadata>,
 ): TimelineMessage[] {
   const currentPubkeyLower = currentPubkey?.toLowerCase();
   const roleByPubkey = new Map<string, string>();
@@ -400,8 +398,10 @@ export function formatTimelineMessages(
 
   const authorPubkeyByEventId = new Map<string, string>();
   const authorLabelByEventId = new Map<string, string>();
+  const appActorByEventId = new Map<string, AppActor>();
   const depthByEventId = new Map<string, number>();
   const resolvingEventIds = new Set<string>();
+  const appLookup = apps ?? EMPTY_APPS;
 
   function getAuthorLabel(event: RelayEvent) {
     const cached = authorLabelByEventId.get(event.id);
@@ -409,21 +409,26 @@ export function formatTimelineMessages(
       return cached;
     }
 
-    const authorPubkey = resolveEventAuthorPubkey({
+    const actor = resolveAppActor({
       event,
-      preferActorTag: true,
+      apps: appLookup,
       relaySelfPubkey,
-      requireChannelTagForPTags: true,
     });
-    const author = formatMessageAuthor(
-      event,
+    if (actor.type === "app") {
+      authorPubkeyByEventId.set(event.id, actor.signerPubkey);
+      authorLabelByEventId.set(event.id, actor.name);
+      appActorByEventId.set(event.id, actor);
+      return actor.name;
+    }
+
+    const author = formatMessageAuthorFromPubkey(
+      actor.pubkey,
       channel,
       currentPubkey,
       profiles,
-      relaySelfPubkey,
     );
 
-    authorPubkeyByEventId.set(event.id, authorPubkey);
+    authorPubkeyByEventId.set(event.id, actor.pubkey);
     authorLabelByEventId.set(event.id, author);
     return author;
   }
@@ -461,6 +466,7 @@ export function formatTimelineMessages(
 
   return visibleEvents.map((event) => {
     const author = getAuthorLabel(event);
+    const appActor = appActorByEventId.get(event.id);
     const authorPubkey =
       authorPubkeyByEventId.get(event.id) ??
       resolveEventAuthorPubkey({
@@ -482,17 +488,20 @@ export function formatTimelineMessages(
       pubkey: authorPubkey,
       signerPubkey: normalizePubkey(event.pubkey),
       author,
+      ...(appActor ? { isApp: true as const, appId: appActor.appId } : {}),
       isAgent,
       ownerPubkey,
       ownerLabel: isAgent
         ? formatOwnerLabel(ownerPubkey, currentPubkey, ownerProfiles)
         : null,
-      avatarUrl: getAuthorAvatarUrl({
-        authorPubkey,
-        currentPubkey,
-        currentUserAvatarUrl,
-        profiles,
-      }),
+      avatarUrl: appActor
+        ? (appActor.picture ?? null)
+        : getAuthorAvatarUrl({
+            authorPubkey,
+            currentPubkey,
+            currentUserAvatarUrl,
+            profiles,
+          }),
       role,
       personaDisplayName:
         role === "bot"

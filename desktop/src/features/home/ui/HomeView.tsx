@@ -25,6 +25,7 @@ import {
 import { resolveInboxFilterSelection } from "@/features/home/lib/inboxSelection";
 import { useHomeInboxReadState } from "@/features/home/useHomeInboxReadState";
 import { useHomeInboxAutoSelection } from "@/features/home/useHomeInboxAutoSelection";
+import { useAppsQuery } from "@/features/apps/hooks/useAppsQuery";
 import { useHomeInboxContextMessages } from "@/features/home/useHomeInboxContextMessages";
 import { useHomePersonalInbox } from "@/features/home/useHomePersonalInbox";
 import { useInboxThreadContext } from "@/features/home/useInboxThreadContext";
@@ -61,7 +62,7 @@ import { useRelaySelfQuery } from "@/features/moderation/hooks";
 import { resolveUserLabel } from "@/features/profile/lib/identity";
 import { useRemindLater } from "@/features/reminders/ui/RemindMeLaterProvider";
 import { deleteMessage, sendChannelMessage } from "@/shared/api/tauri";
-import type { Channel, HomeFeedResponse } from "@/shared/api/types";
+import type { Channel } from "@/shared/api/types";
 import { KIND_REACTION } from "@/shared/constants/kinds";
 import { topChromeInset } from "@/shared/layout/chromeLayout";
 import { cn } from "@/shared/lib/cn";
@@ -73,6 +74,7 @@ import { useHistorySearchState } from "@/shared/hooks/useHistorySearchState";
 import { ProfilePanelProvider } from "@/shared/context/ProfilePanelContext";
 import { Button } from "@/shared/ui/button";
 import { HomeMembersSidebarOverlay } from "./HomeMembersSidebarOverlay";
+import type { HomeViewProps } from "./HomeView.types";
 
 const INBOX_SEARCH_KEYS = [
   "item",
@@ -80,20 +82,6 @@ const INBOX_SEARCH_KEYS = [
   "profileTab",
   "profileView",
 ] as const;
-
-type HomeViewProps = {
-  feed?: HomeFeedResponse;
-  isLoading?: boolean;
-  errorMessage?: string;
-  currentPubkey?: string;
-  availableChannelIds: ReadonlySet<string>;
-  onOpenContext: (
-    channelId: string,
-    messageId: string,
-    threadRootId?: string | null,
-  ) => void;
-  onRefresh: () => void;
-};
 
 export function HomeView({
   feed,
@@ -105,6 +93,7 @@ export function HomeView({
   onRefresh,
 }: HomeViewProps) {
   const relaySelfPubkey = useRelaySelfQuery().data;
+  const apps = useAppsQuery().data;
   const [homeInboxRef, homeInboxWidthPx] = useElementWidth<HTMLDivElement>();
   const isNarrowHomeViewport =
     homeInboxWidthPx > 0 &&
@@ -371,6 +360,7 @@ export function HomeView({
   // biome-ignore lint/correctness/useExhaustiveDependencies: readStateVersion invalidates the stable getChannelReadAt callback
   const inboxItems = React.useMemo(() => {
     const items = buildInboxItems({
+      apps,
       channels,
       currentPubkey,
       feed,
@@ -378,9 +368,11 @@ export function HomeView({
       getMessageReadAt,
       getThreadReadAt,
       profiles: feedProfiles,
+      relaySelfPubkey,
     });
     return filterInboxItems(items);
   }, [
+    apps,
     channels,
     currentPubkey,
     feed,
@@ -389,6 +381,7 @@ export function HomeView({
     getMessageReadAt,
     getThreadReadAt,
     readStateVersion,
+    relaySelfPubkey,
   ]);
   const { effectiveDoneSet, markItemRead, markItemUnread } =
     useHomeInboxReadState({
@@ -494,6 +487,7 @@ export function HomeView({
     profiles: feedProfiles,
     reactionEvents: threadContext.reactionEvents,
     relaySelfPubkey,
+    apps,
     selectedChannel,
     selectedEventId,
     selectedItem,

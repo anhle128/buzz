@@ -224,6 +224,8 @@ pub struct SearchHitInfo {
     pub channel_name: Option<String>,
     pub created_at: u64,
     pub score: f64,
+    #[serde(default)]
+    pub tags: Vec<Vec<String>>,
 }
 
 #[derive(Serialize, Deserialize)]

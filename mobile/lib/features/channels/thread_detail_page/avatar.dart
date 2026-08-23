@@ -3,14 +3,24 @@ part of '../thread_detail_page.dart';
 class _Avatar extends StatelessWidget {
   final UserProfile? profile;
   final String pubkey;
+  final String? imageUrl;
+  final String? fallbackLabel;
 
-  const _Avatar({required this.profile, required this.pubkey});
+  const _Avatar({
+    required this.profile,
+    required this.pubkey,
+    this.imageUrl,
+    this.fallbackLabel,
+  });
 
   @override
   Widget build(BuildContext context) {
-    final initial =
-        profile?.initial ?? (pubkey.isNotEmpty ? pubkey[0].toUpperCase() : '?');
-    final avatarUrl = profile?.avatarUrl;
+    final label = fallbackLabel?.trim();
+    final initial = label != null && label.isNotEmpty
+        ? label[0].toUpperCase()
+        : profile?.initial ??
+              (pubkey.isNotEmpty ? pubkey[0].toUpperCase() : '?');
+    final avatarUrl = imageUrl ?? profile?.avatarUrl;
 
     return AvatarImage(
       imageUrl: avatarUrl,

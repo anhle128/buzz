@@ -5,6 +5,7 @@ import {
   getReactionTargetId,
   toInboxContextMessage,
 } from "@/features/home/lib/inboxViewHelpers";
+import type { AppMetadata } from "@/features/apps/types";
 import { formatTimelineMessages } from "@/features/messages/lib/formatTimelineMessages";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
 import type { Channel, RelayEvent } from "@/shared/api/types";
@@ -18,6 +19,7 @@ type UseHomeInboxContextMessagesOptions = {
   profiles?: UserProfileLookup;
   reactionEvents: RelayEvent[];
   relaySelfPubkey?: string | null;
+  apps?: ReadonlyMap<string, AppMetadata>;
   selectedChannel: Channel | null;
   selectedEventId: string | null;
   selectedItem: InboxItem | null;
@@ -32,6 +34,7 @@ export function useHomeInboxContextMessages({
   profiles,
   reactionEvents,
   relaySelfPubkey,
+  apps,
   selectedChannel,
   selectedEventId,
   selectedItem,
@@ -64,6 +67,7 @@ export function useHomeInboxContextMessages({
       undefined,
       relaySelfPubkey,
       ownerProfiles,
+      apps,
     );
 
     return timelineMessages.map((message) =>
@@ -82,6 +86,7 @@ export function useHomeInboxContextMessages({
     profiles,
     reactionEvents,
     relaySelfPubkey,
+    apps,
     selectedChannel,
     selectedEventId,
     selectedItem,

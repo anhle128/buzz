@@ -28,6 +28,16 @@ pub enum AuditAction {
     RateLimitExceeded,
     /// A media file was uploaded via the Blossom endpoint.
     MediaUploaded,
+    /// A community App was created.
+    AppCreated,
+    /// A community App's public metadata was updated.
+    AppUpdated,
+    /// A community App callback secret was rotated.
+    AppSecretRotated,
+    /// A community App was enabled.
+    AppEnabled,
+    /// A community App was disabled.
+    AppDisabled,
 }
 
 impl AuditAction {
@@ -45,6 +55,11 @@ impl AuditAction {
             Self::AuthFailure => "auth_failure",
             Self::RateLimitExceeded => "rate_limit_exceeded",
             Self::MediaUploaded => "media_uploaded",
+            Self::AppCreated => "app_created",
+            Self::AppUpdated => "app_updated",
+            Self::AppSecretRotated => "app_secret_rotated",
+            Self::AppEnabled => "app_enabled",
+            Self::AppDisabled => "app_disabled",
         }
     }
 
@@ -60,6 +75,11 @@ impl AuditAction {
         Self::AuthFailure,
         Self::RateLimitExceeded,
         Self::MediaUploaded,
+        Self::AppCreated,
+        Self::AppUpdated,
+        Self::AppSecretRotated,
+        Self::AppEnabled,
+        Self::AppDisabled,
     ];
 }
 
@@ -96,5 +116,14 @@ mod tests {
     #[test]
     fn unknown_action_returns_err() {
         assert!("totally_bogus".parse::<AuditAction>().is_err());
+    }
+
+    #[test]
+    fn app_lifecycle_actions_have_stable_wire_names() {
+        assert_eq!(AuditAction::AppCreated.as_str(), "app_created");
+        assert_eq!(AuditAction::AppUpdated.as_str(), "app_updated");
+        assert_eq!(AuditAction::AppSecretRotated.as_str(), "app_secret_rotated");
+        assert_eq!(AuditAction::AppEnabled.as_str(), "app_enabled");
+        assert_eq!(AuditAction::AppDisabled.as_str(), "app_disabled");
     }
 }

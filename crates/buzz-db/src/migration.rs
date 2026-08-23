@@ -625,7 +625,7 @@ mod tests {
         let mut migrations: Vec<_> = MIGRATOR.iter().collect();
         migrations.sort_by_key(|migration| migration.version);
 
-        assert_eq!(migrations.len(), 32);
+        assert_eq!(migrations.len(), 33);
         assert_eq!(migrations[0].version, 1);
         assert_eq!(&*migrations[0].description, "initial schema");
         assert!(migrations[0]
@@ -1036,6 +1036,22 @@ mod tests {
         assert_eq!(migrations[29].version, 30);
         let deletion_recovery = migrations[29].sql.as_str();
         assert!(deletion_recovery.contains("SET LOCAL lock_timeout = '5s'"));
+
+        // Community Apps and the immutable callback delivery ledger: additive
+        // migration, never folded into 0001 — folding would change 0001's
+        // checksum and break brownfield startup (sqlx VersionMismatch).
+        assert_eq!(migrations[32].version, 33);
+        assert_eq!(&*migrations[32].description, "app callback notifications");
+        assert!(migrations[32].sql.as_str().contains("CREATE TABLE apps"));
+        assert!(migrations[32]
+            .sql
+            .as_str()
+            .contains("CREATE TABLE app_callback_deliveries"));
+        assert!(!migrations[0].sql.as_str().contains("CREATE TABLE apps"));
+        assert!(!migrations[0]
+            .sql
+            .as_str()
+            .contains("app_callback_deliveries"));
     }
 
     #[test]

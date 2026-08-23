@@ -6,7 +6,10 @@ import { useAppNavigation } from "@/app/navigation/useAppNavigation";
 import type { ActiveChannelTurnSummary } from "@/features/agents/activeAgentTurnsStore";
 import { formatElapsed } from "@/features/agents/ui/agentSessionUtils";
 import { useOpenAgentActivity } from "@/features/agents/useOpenAgentActivity";
+import { useAppsQuery } from "@/features/apps/hooks/useAppsQuery";
 import { buildInboxItems, type InboxItem } from "@/features/home/lib/inbox";
+import { MessageAppBadge } from "@/features/messages/ui/MessageAuthorIdentity";
+import { useRelaySelfQuery } from "@/features/moderation/hooks";
 import { getGroupedInboxItemIds } from "@/features/home/useHomeInboxReadState";
 import { useUsersBatchQuery } from "@/features/profile/hooks";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
@@ -77,7 +80,7 @@ function RowActionButton({
   );
 }
 
-function ThreadPreviewRow({
+export function ThreadPreviewRow({
   item,
   onMarkRead,
   onOpen,
@@ -108,9 +111,12 @@ function ThreadPreviewRow({
         />
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-start gap-2">
-            <span className="min-w-0 flex-1 truncate text-sm font-semibold leading-4 text-foreground">
-              {item.senderLabel}
-            </span>
+            <div className="flex min-w-0 flex-1 items-center gap-1.5">
+              <span className="min-w-0 truncate text-sm font-semibold leading-4 text-foreground">
+                {item.senderLabel}
+              </span>
+              {item.isApp ? <MessageAppBadge /> : null}
+            </div>
             <span className="shrink-0 text-xs leading-4 text-muted-foreground/70 transition-opacity group-hover/activity-row:opacity-0 group-focus-within/activity-row:opacity-0">
               {item.timestampLabel}
             </span>
@@ -271,6 +277,8 @@ export function ChannelActivityPopover({
     enabled: open,
   });
   const profiles = profilesQuery.data?.profiles;
+  const apps = useAppsQuery().data;
+  const relaySelfPubkey = useRelaySelfQuery().data;
   const activityReadAtByMessageId = React.useMemo(
     () =>
       new Map(
@@ -284,19 +292,23 @@ export function ChannelActivityPopover({
   const activityItems = React.useMemo(() => {
     if (!open) return [];
     return buildInboxItems({
+      apps,
       channels: [channel],
       currentPubkey: identityQuery.data?.pubkey,
       feed: buildChannelActivityFeed(unreadChannelFeedItems),
       getMessageReadAt: (messageId) =>
         activityReadAtByMessageId.get(messageId) ?? null,
       profiles,
+      relaySelfPubkey,
     });
   }, [
+    apps,
     channel,
     activityReadAtByMessageId,
     identityQuery.data?.pubkey,
     open,
     profiles,
+    relaySelfPubkey,
     unreadChannelFeedItems,
   ]);
   const hasContent =

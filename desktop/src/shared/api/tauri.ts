@@ -7,6 +7,10 @@ import {
   fromRawInstallRuntimeResult,
   type RawInstallRuntimeResult,
 } from "@/shared/api/installTypes";
+import {
+  fromRawSearchHit,
+  type RawSearchResponse,
+} from "@/shared/api/searchWire";
 import type {
   AddChannelMembersInput,
   AddChannelMembersResult,
@@ -81,22 +85,6 @@ type RawHomeFeedResponse = {
     total: number;
     generated_at: number;
   };
-};
-
-type RawSearchHit = {
-  event_id: string;
-  content: string;
-  kind: number;
-  pubkey: string;
-  channel_id: string | null;
-  channel_name: string | null;
-  created_at: number;
-  score: number;
-};
-
-type RawSearchResponse = {
-  hits: RawSearchHit[];
-  found: number;
 };
 
 type RawRelayAgent = {
@@ -278,19 +266,6 @@ export function fromRawFeedItem(item: RawFeedItem) {
     channelType: item.channel_type ?? undefined,
     tags: item.tags,
     category: item.category,
-  };
-}
-
-function fromRawSearchHit(hit: RawSearchHit) {
-  return {
-    eventId: hit.event_id,
-    content: hit.content,
-    kind: hit.kind,
-    pubkey: hit.pubkey,
-    channelId: hit.channel_id,
-    channelName: hit.channel_name,
-    createdAt: hit.created_at,
-    score: hit.score,
   };
 }
 

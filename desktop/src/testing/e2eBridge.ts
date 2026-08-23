@@ -33,6 +33,8 @@ import {
 } from "@/shared/api/customEmoji";
 import {
   KIND_AGENT_OBSERVER_FRAME,
+  KIND_APP_ADMIN_COMMAND,
+  KIND_APP_METADATA,
   KIND_CHANNEL_THREAD_SUMMARY,
   KIND_CHANNEL_WINDOW_BOUNDS,
   KIND_DM_VISIBILITY,
@@ -442,6 +444,26 @@ type E2eConfig = {
     // equals this is treated as a moderation DM (composer disabled). Absent →
     // fail open (no mod-DM detection), matching the Rust command's contract.
     relaySelf?: string | null;
+    /** Signed kind 39007 events served to `useAppsQuery`. */
+    appMetadataEvents?: RelayEvent[];
+    /** Community-scoped kind 39007 events keyed by relay URL. */
+    appMetadataEventsByRelay?: Record<string, RelayEvent[]>;
+    /** Hex-encoded relay secret used to sign kind 39007 after kind 9038 mutations. */
+    appRelaySecret?: string;
+    /** One-time secret returned by mocked App create. */
+    appCreateSecret?: string;
+    /** One-time secret returned by mocked App rotate. */
+    appRotateSecret?: string;
+    /** Delay EOSE for kind 39007 App metadata queries. */
+    appMetadataEoseDelayMs?: number;
+    /** CLOSED the kind 39007 App metadata query. */
+    appMetadataQueryError?: boolean;
+    /** Delay kind 9038 OK so mutation-pending UI is observable. */
+    appAdminDelayMs?: number;
+    /** Reject kind 9038 EVENT messages with this OK message. */
+    appAdminReject?: string;
+    /** Delay `relay_requires_membership` so membership stays pending. */
+    relayRequiresMembershipDelayMs?: number;
     oaOwnerIsMe?: boolean;
     /** Whether the mock relay advertises NIP-43 membership support. Defaults to false. */
     relayRequiresMembership?: boolean;
@@ -855,6 +877,7 @@ type RawSearchHit = {
   channel_name: string | null;
   created_at: number;
   score: number;
+  tags: string[][];
 };
 
 type RawSearchResponse = {
@@ -1195,6 +1218,8 @@ declare global {
       pending?: boolean;
       /** 64-hex id required for the event to be a valid reaction target. */
       id?: string;
+      /** Real signature for App attribution verification. */
+      sig?: string;
     }) => RelayEvent;
     /** Prepend `count` synthetic older messages to a channel's mock store so
      *  an older-history fetch has something to paginate. Mirrors how the real
@@ -4085,6 +4110,178 @@ function getRelayWsUrl(config: E2eConfig | undefined): string {
   return config?.relayWsUrl ?? DEFAULT_RELAY_WS_URL;
 }
 
+function getActiveCommunityRelayUrl(config: E2eConfig | undefined): string {
+  try {
+    const activeId = window.localStorage.getItem("buzz-active-community-id");
+    const communities = JSON.parse(
+      window.localStorage.getItem("buzz-communities") ?? "[]",
+    ) as { id: string; relayUrl: string }[];
+    return (
+      communities.find((community) => community.id === activeId)?.relayUrl ??
+      getRelayWsUrl(config)
+    );
+  } catch {
+    return getRelayWsUrl(config);
+  }
+}
+
+let mockAppMetadataEvents: RelayEvent[] = [];
+
+function getMockAppMetadataEvents(config: E2eConfig | undefined): RelayEvent[] {
+  const relayUrl = getActiveCommunityRelayUrl(config);
+  return (
+    config?.mock?.appMetadataEventsByRelay?.[relayUrl] ??
+    config?.mock?.appMetadataEvents ??
+    mockAppMetadataEvents
+  );
+}
+
+function resetMockApps(config: E2eConfig | undefined) {
+  const events = getMockAppMetadataEvents(config);
+  if (events === mockAppMetadataEvents) {
+    return;
+  }
+  mockAppMetadataEvents = [...events];
+}
+
+function tagValue(event: RelayEvent, name: string): string | undefined {
+  return event.tags.find((tag) => tag[0] === name)?.[1];
+}
+
+function replaceMockAppMetadata(event: RelayEvent) {
+  const events = getMockAppMetadataEvents(getConfig());
+  const appId = tagValue(event, "d");
+  const next = events.filter((existing) => tagValue(existing, "d") !== appId);
+  events.length = 0;
+  events.push(...next, event);
+}
+
+function signMockAppMetadata(input: {
+  appId: string;
+  name: string;
+  status: "active" | "disabled";
+  description: string;
+  picture?: string;
+}): RelayEvent {
+  const secretHex = getConfig()?.mock?.appRelaySecret;
+  if (!secretHex) {
+    throw new Error("mock app relay secret missing");
+  }
+  const tags: string[][] = [
+    ["d", input.appId],
+    ["name", input.name],
+    ["status", input.status],
+  ];
+  if (input.picture) {
+    tags.push(["picture", input.picture]);
+  }
+  return finalizeEvent(
+    {
+      kind: KIND_APP_METADATA,
+      created_at: Math.floor(Date.now() / 1000),
+      content: input.description,
+      tags,
+    },
+    hexToBytes(secretHex),
+  );
+}
+
+function applyMockAppAdmin(event: RelayEvent): string {
+  const command = JSON.parse(event.content) as {
+    action?: string;
+    app_id?: string;
+    name?: string;
+    description?: string;
+    icon_url?: string;
+  };
+  if (command.action === "create") {
+    const appId = crypto.randomUUID();
+    replaceMockAppMetadata(
+      signMockAppMetadata({
+        appId,
+        name: command.name ?? "Untitled",
+        status: "active",
+        description: command.description ?? "",
+        picture: command.icon_url || undefined,
+      }),
+    );
+    const secret = getConfig()?.mock?.appCreateSecret ?? "one-time-secret";
+    return `response:${JSON.stringify({ app_id: appId, webhook_secret: secret })}`;
+  }
+  const appId = command.app_id;
+  if (!appId) {
+    throw new Error("invalid: missing app_id");
+  }
+  const current = getMockAppMetadataEvents(getConfig()).find(
+    (existing) => tagValue(existing, "d") === appId,
+  );
+  if (command.action === "rotate_secret") {
+    const secret = getConfig()?.mock?.appRotateSecret ?? "rotated-secret";
+    return `response:${JSON.stringify({ app_id: appId, webhook_secret: secret })}`;
+  }
+  if (!current) {
+    throw new Error("invalid: unknown app");
+  }
+  const currentName = tagValue(current, "name") ?? "Untitled";
+  const currentPicture = tagValue(current, "picture");
+  const currentStatus =
+    tagValue(current, "status") === "disabled" ? "disabled" : "active";
+  if (command.action === "update") {
+    const nextDescription =
+      command.description === undefined ? current.content : command.description;
+    const nextPicture =
+      command.icon_url === undefined
+        ? currentPicture
+        : command.icon_url || undefined;
+    replaceMockAppMetadata(
+      signMockAppMetadata({
+        appId,
+        name: command.name ?? currentName,
+        status: currentStatus,
+        description: nextDescription,
+        picture: nextPicture,
+      }),
+    );
+    return `response:${JSON.stringify({ app_id: appId })}`;
+  }
+  if (command.action === "enable" || command.action === "disable") {
+    replaceMockAppMetadata(
+      signMockAppMetadata({
+        appId,
+        name: currentName,
+        status: command.action === "enable" ? "active" : "disabled",
+        description: current.content,
+        picture: currentPicture,
+      }),
+    );
+    return `response:${JSON.stringify({ app_id: appId })}`;
+  }
+  throw new Error("invalid: unknown app action");
+}
+
+async function handleMockAppAdmin(event: RelayEvent, socket: MockSocket) {
+  const delayMs = getConfig()?.mock?.appAdminDelayMs ?? 0;
+  if (delayMs > 0) {
+    await new Promise((resolve) => window.setTimeout(resolve, delayMs));
+  }
+  const reject = getConfig()?.mock?.appAdminReject;
+  if (reject) {
+    sendWsText(socket.handler, ["OK", event.id, false, reject]);
+    return;
+  }
+  try {
+    const message = applyMockAppAdmin(event);
+    sendWsText(socket.handler, ["OK", event.id, true, message]);
+  } catch (error) {
+    sendWsText(socket.handler, [
+      "OK",
+      event.id,
+      false,
+      error instanceof Error ? error.message : "invalid: app command",
+    ]);
+  }
+}
+
 /**
  * Mirror of the backend's `assert_expected_relay_scope`: a caller-captured
  * tenant scope must still match the active community when the command runs.
@@ -4844,8 +5041,25 @@ function emitMockChannelMessage(
   createdAt?: number,
   pending?: boolean,
   id?: string,
+  sig?: string,
 ) {
   const eventKind = kind ?? 9;
+  if (sig) {
+    const tags = extraTags ? [...extraTags] : [];
+    const event = createMockEvent(
+      eventKind,
+      content,
+      tags,
+      pubkey,
+      createdAt,
+      id,
+      sig,
+    );
+    if (pending) event.pending = true;
+    recordMockMessage(channelId, event);
+    emitMockLiveEvent(channelId, event);
+    return event;
+  }
   if (!parentEventId) {
     const tags = buildTopLevelMessageTags(
       channelId,
@@ -4860,6 +5074,7 @@ function emitMockChannelMessage(
       pubkey,
       createdAt,
       id,
+      sig,
     );
     if (pending) event.pending = true;
     recordMockMessage(channelId, event);
@@ -4893,6 +5108,7 @@ function emitMockChannelMessage(
     authorPubkey,
     createdAt,
     id,
+    sig,
   );
   if (pending) event.pending = true;
   recordMockMessage(channelId, event);
@@ -6062,6 +6278,7 @@ function createMockEvent(
   // 64 hex chars like a real event id — share-link builders reject shorter
   // ids, so copy-link buttons only render with full-length ids.
   id = (crypto.randomUUID() + crypto.randomUUID()).replace(/-/g, ""),
+  sig?: string,
 ): RelayEvent {
   return {
     id,
@@ -6070,7 +6287,7 @@ function createMockEvent(
     kind,
     tags,
     content,
-    sig: "mocksig".repeat(20).slice(0, 128),
+    sig: sig ?? "mocksig".repeat(20).slice(0, 128),
   };
 }
 
@@ -9342,6 +9559,7 @@ async function handleSearchMessages(
         channel_name: "general",
         created_at: now - 60,
         score: 8.5,
+        tags: [["h", "9a1657ac-f7aa-5db0-b632-d8bbeb6dfb50"]],
       },
       {
         event_id: "mock-engineering-shipped",
@@ -9353,6 +9571,7 @@ async function handleSearchMessages(
         channel_name: "engineering",
         created_at: now - 42 * 60,
         score: 7.2,
+        tags: [["h", "1c7e1c02-87bb-5e88-b2da-5a7a9432d0c9"]],
       },
       {
         event_id: "mock-design-critique",
@@ -9364,6 +9583,7 @@ async function handleSearchMessages(
         channel_name: "design",
         created_at: now - 75 * 60,
         score: 6.6,
+        tags: [["h", "b5e2f8a1-3c44-5912-9e67-4a8d1f2b3c4e"]],
       },
       {
         event_id: "mock-forum-release-thread",
@@ -9375,6 +9595,7 @@ async function handleSearchMessages(
         channel_name: "watercooler",
         created_at: now - 90 * 60,
         score: 5.8,
+        tags: [["h", "a27e1ee9-76a6-5bdf-a5d5-1d85610dad11"]],
       },
       {
         event_id: "mock-forum-release-reply",
@@ -9385,6 +9606,7 @@ async function handleSearchMessages(
         channel_name: "watercooler",
         created_at: now - 80 * 60,
         score: 5.2,
+        tags: [["h", "a27e1ee9-76a6-5bdf-a5d5-1d85610dad11"]],
       },
     ];
     for (const [channelId, events] of mockMessages) {
@@ -9401,6 +9623,7 @@ async function handleSearchMessages(
           channel_name: channel?.name ?? null,
           created_at: event.created_at,
           score: 1,
+          tags: event.tags ?? [],
         });
       }
     }
@@ -10371,6 +10594,34 @@ function sendToMockSocket(args: {
       return;
     }
 
+    if (filter.kinds?.includes(KIND_APP_METADATA)) {
+      if (getConfig()?.mock?.appMetadataQueryError) {
+        sendWsText(socket.handler, [
+          "CLOSED",
+          subId,
+          "mock app metadata query failure",
+        ]);
+        return;
+      }
+      const authors = filter.authors?.map((author) => author.toLowerCase());
+      const deliver = () => {
+        for (const event of getMockAppMetadataEvents(getConfig())) {
+          if (authors && !authors.includes(event.pubkey.toLowerCase())) {
+            continue;
+          }
+          sendWsText(socket.handler, ["EVENT", subId, event]);
+        }
+        sendWsText(socket.handler, ["EOSE", subId]);
+      };
+      const delayMs = getConfig()?.mock?.appMetadataEoseDelayMs ?? 0;
+      if (delayMs > 0) {
+        window.setTimeout(deliver, delayMs);
+      } else {
+        deliver();
+      }
+      return;
+    }
+
     // Project queries: NIP-34 kinds, or kind:1 comments scoped by repo `a`
     // tag or by issue/PR root `e` tag (discussions, approvals, review
     // requests, assignment operations). Channel messages are kind 9, so a
@@ -10462,6 +10713,11 @@ function sendToMockSocket(args: {
 
     if (event.kind === 9033) {
       sendWsText(socket.handler, ["OK", event.id, true, ""]);
+      return;
+    }
+
+    if (event.kind === KIND_APP_ADMIN_COMMAND) {
+      void handleMockAppAdmin(event, socket);
       return;
     }
 
@@ -10703,9 +10959,6 @@ function createDefaultE2eGithubIssueStore(): E2eGithubIssueStore {
   };
 }
 
-
-
-
 function e2eGithubIssueStore(): E2eGithubIssueStore {
   window.__BUZZ_E2E_GITHUB_ISSUE_STORE__ ??= createDefaultE2eGithubIssueStore();
   return window.__BUZZ_E2E_GITHUB_ISSUE_STORE__;
@@ -10899,6 +11152,7 @@ export function maybeInstallE2eTauriMocks() {
     ? { ...config.mock.globalAgentConfig }
     : null;
   resetMockRelayMembers(config);
+  resetMockApps(config);
   resetMockRelayAgents(config);
   resetMockManagedAgents(config);
   resetMockPersonas(config);
@@ -10968,6 +11222,7 @@ export function maybeInstallE2eTauriMocks() {
     createdAt,
     pending,
     id,
+    sig,
   }) => {
     const channel = mockChannels.find(
       (candidate) => candidate.name === channelName,
@@ -10987,6 +11242,7 @@ export function maybeInstallE2eTauriMocks() {
       createdAt,
       pending,
       id,
+      sig,
     );
   };
   window.__BUZZ_E2E_PREPEND_MOCK_HISTORY__ = prependMockHistory;
@@ -13099,8 +13355,13 @@ export function maybeInstallE2eTauriMocks() {
       }
       case "get_relay_http_url":
         return getRelayHttpUrl(activeConfig);
-      case "relay_requires_membership":
+      case "relay_requires_membership": {
+        const delayMs = activeConfig?.mock?.relayRequiresMembershipDelayMs ?? 0;
+        if (delayMs > 0) {
+          await new Promise((resolve) => window.setTimeout(resolve, delayMs));
+        }
         return activeConfig?.mock?.relayRequiresMembership ?? false;
+      }
       case "discover_acp_providers":
         return handleDiscoverAcpRuntimes(activeConfig);
       case "save_custom_harness":

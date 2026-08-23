@@ -7,6 +7,7 @@ import { formatTimeWithoutDayPeriod } from "@/features/messages/lib/dateFormatte
 import { formatItemTimestamp } from "@/shared/lib/datetime";
 import type { TimelineMessage } from "@/features/messages/types";
 import { getConfigNudgeAuthorPubkey } from "@/features/messages/ui/configNudgeAuthPubkey";
+import { MessageAppBadge } from "@/features/messages/ui/MessageAuthorIdentity";
 import { MessageActionBar } from "@/features/messages/ui/MessageActionBar";
 import { MessageAgentOwner } from "@/features/messages/ui/MessageAgentOwner";
 import { MessageMetaSeparator } from "@/features/messages/ui/MessageHeader";
@@ -101,7 +102,8 @@ export function InboxMessageRow({
     },
     [agentPubkeys, knownAgentPubkeys],
   );
-  const isAuthorAgent = isKnownAgentPubkey(message.authorPubkey);
+  const isApp = message.isApp === true;
+  const isAuthorAgent = !isApp && isKnownAgentPubkey(message.authorPubkey);
   const profileRole = isAuthorAgent ? "bot" : undefined;
   const hoverTimestampLabel = formatTimeWithoutDayPeriod(
     message.timeLabel ?? message.fullTimestampLabel,
@@ -188,13 +190,8 @@ export function InboxMessageRow({
           </div>
         ) : (
           <div className="relative shrink-0">
-            <UserProfilePopover
-              botIdenticonValue={message.authorLabel}
-              pubkey={message.authorPubkey}
-              role={profileRole}
-              triggerElement="span"
-            >
-              <span className="inline-flex shrink-0 rounded-full focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring">
+            {isApp ? (
+              <span className="inline-flex shrink-0 rounded-full">
                 <UserAvatar
                   avatarUrl={message.avatarUrl}
                   className="h-9 w-9 shrink-0"
@@ -202,7 +199,23 @@ export function InboxMessageRow({
                   size="md"
                 />
               </span>
-            </UserProfilePopover>
+            ) : (
+              <UserProfilePopover
+                botIdenticonValue={message.authorLabel}
+                pubkey={message.authorPubkey}
+                role={profileRole}
+                triggerElement="span"
+              >
+                <span className="inline-flex shrink-0 rounded-full focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring">
+                  <UserAvatar
+                    avatarUrl={message.avatarUrl}
+                    className="h-9 w-9 shrink-0"
+                    displayName={message.authorLabel}
+                    size="md"
+                  />
+                </span>
+              </UserProfilePopover>
+            )}
           </div>
         )}
 
@@ -212,20 +225,37 @@ export function InboxMessageRow({
               className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0"
               data-testid="message-header"
             >
-              <UserProfilePopover
-                botIdenticonValue={message.authorLabel}
-                pubkey={message.authorPubkey}
-                role={profileRole}
-                triggerElement="span"
-              >
+              {isApp ? (
                 <span
-                  className="block max-w-full truncate rounded text-message font-semibold leading-message-author text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+                  className="block max-w-full truncate rounded text-message font-semibold leading-message-author text-foreground"
                   data-testid="message-author"
                 >
                   {message.authorLabel}
                 </span>
-              </UserProfilePopover>
-              {message.isAgent ? (
+              ) : (
+                <UserProfilePopover
+                  botIdenticonValue={message.authorLabel}
+                  pubkey={message.authorPubkey}
+                  role={profileRole}
+                  triggerElement="span"
+                >
+                  <span
+                    className="block max-w-full truncate rounded text-message font-semibold leading-message-author text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+                    data-testid="message-author"
+                  >
+                    {message.authorLabel}
+                  </span>
+                </UserProfilePopover>
+              )}
+              {isApp ? (
+                <>
+                  <MessageAppBadge />
+                  <span className="inline-flex min-w-0 items-center gap-x-2">
+                    <MessageMetaSeparator />
+                    {timestampNode}
+                  </span>
+                </>
+              ) : message.isAgent ? (
                 <>
                   <MessageAgentOwner
                     ownerLabel={message.ownerLabel}

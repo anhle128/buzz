@@ -773,3 +773,184 @@ test("verified agent owner may publish a suppression edit", () => {
     true,
   );
 });
+
+const APP_ID = "6eb31227-8ed2-42ec-9024-863497cbeed2";
+const APP_ID_B = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const ATTRIBUTED_USER =
+  "3333333333333333333333333333333333333333333333333333333333333333";
+
+function appMetadata(overrides = {}) {
+  return {
+    appId: APP_ID,
+    name: "Archon",
+    picture: "https://example.test/archon.png",
+    status: "active",
+    eventId: "ab".repeat(32),
+    relayPubkey: RELAY_PUBKEY,
+    updatedAt: 1_700_000_000,
+    ...overrides,
+  };
+}
+
+function signAppMessage({
+  secret = RELAY_SECRET,
+  appId = APP_ID,
+  content = "✅ build passed",
+  extraTags = [],
+  createdAt = 1_700_000_100,
+} = {}) {
+  return finalizeEvent(
+    {
+      kind: 9,
+      created_at: createdAt,
+      content,
+      tags: [["h", CHANNEL_ID], ["buzz:app", appId], ...extraTags],
+    },
+    secret,
+  );
+}
+
+function formatAppTimeline(events, apps, relaySelf = RELAY_PUBKEY) {
+  return formatTimelineMessages(
+    events,
+    null,
+    undefined,
+    null,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    relaySelf,
+    undefined,
+    apps,
+  );
+}
+
+test("valid App identity is preferred over p-aware author resolution", () => {
+  const event = signAppMessage({
+    extraTags: [["p", ATTRIBUTED_USER]],
+  });
+  const [message] = formatAppTimeline(
+    [event],
+    new Map([[APP_ID, appMetadata()]]),
+  );
+  assert.equal(message.isApp, true);
+  assert.equal(message.appId, APP_ID);
+  assert.equal(message.author, "Archon");
+  assert.equal(message.avatarUrl, "https://example.test/archon.png");
+  assert.equal(message.pubkey, RELAY_PUBKEY);
+  assert.equal(message.signerPubkey, RELAY_PUBKEY);
+});
+
+test("disabled historical App still attributes the App", () => {
+  const event = signAppMessage();
+  const [message] = formatAppTimeline(
+    [event],
+    new Map([[APP_ID, appMetadata({ status: "disabled" })]]),
+  );
+  assert.equal(message.isApp, true);
+  assert.equal(message.appId, APP_ID);
+  assert.equal(message.author, "Archon");
+});
+
+test("two Apps under one relay keep distinct identities", () => {
+  const first = signAppMessage({ content: "first app" });
+  const second = signAppMessage({
+    appId: APP_ID_B,
+    content: "second app",
+    createdAt: 1_700_000_101,
+  });
+  const out = formatAppTimeline(
+    [first, second],
+    new Map([
+      [APP_ID, appMetadata()],
+      [APP_ID_B, appMetadata({ appId: APP_ID_B, name: "PagerDuty" })],
+    ]),
+  );
+  assert.equal(out[0].isApp, true);
+  assert.equal(out[0].appId, APP_ID);
+  assert.equal(out[0].author, "Archon");
+  assert.equal(out[1].isApp, true);
+  assert.equal(out[1].appId, APP_ID_B);
+  assert.equal(out[1].author, "PagerDuty");
+  assert.equal(out[0].pubkey, out[1].pubkey);
+});
+
+test("invalid App message signature falls back to the relay signer", () => {
+  const signed = signAppMessage({ extraTags: [["p", ATTRIBUTED_USER]] });
+  const event = { ...JSON.parse(JSON.stringify(signed)), content: "tampered" };
+  const [message] = formatAppTimeline(
+    [event],
+    new Map([[APP_ID, appMetadata()]]),
+  );
+  assert.equal(message.isApp, undefined);
+  assert.equal(message.appId, undefined);
+  assert.equal(message.pubkey, RELAY_PUBKEY);
+  assert.notEqual(message.author, "Archon");
+  assert.notEqual(message.pubkey, ATTRIBUTED_USER);
+});
+
+test("wrong App message signer falls back without inspecting p tags", () => {
+  const userSecret = new Uint8Array(32).fill(1);
+  const userPubkey = getPublicKey(userSecret);
+  const event = signAppMessage({
+    secret: userSecret,
+    extraTags: [["p", ATTRIBUTED_USER]],
+  });
+  const [message] = formatAppTimeline(
+    [event],
+    new Map([[APP_ID, appMetadata()]]),
+  );
+  assert.equal(message.isApp, undefined);
+  assert.equal(message.pubkey, userPubkey);
+  assert.notEqual(message.author, "Archon");
+  assert.notEqual(message.pubkey, ATTRIBUTED_USER);
+});
+
+test("malformed App UUID falls back to the relay signer", () => {
+  const event = signAppMessage({
+    appId: "not-a-uuid",
+    extraTags: [["p", ATTRIBUTED_USER]],
+  });
+  const [message] = formatAppTimeline(
+    [event],
+    new Map([[APP_ID, appMetadata()]]),
+  );
+  assert.equal(message.isApp, undefined);
+  assert.equal(message.pubkey, RELAY_PUBKEY);
+  assert.notEqual(message.author, "Archon");
+  assert.notEqual(message.pubkey, ATTRIBUTED_USER);
+});
+
+test("missing App metadata falls back to the relay signer", () => {
+  const event = signAppMessage({ extraTags: [["p", ATTRIBUTED_USER]] });
+  const [message] = formatAppTimeline([event], new Map());
+  assert.equal(message.isApp, undefined);
+  assert.equal(message.pubkey, RELAY_PUBKEY);
+  assert.notEqual(message.author, "Archon");
+  assert.notEqual(message.pubkey, ATTRIBUTED_USER);
+});
+
+test("p-tag spoof cannot replace a valid App timeline actor", () => {
+  const event = signAppMessage({ extraTags: [["p", ATTRIBUTED_USER]] });
+  const profiles = {
+    [ATTRIBUTED_USER]: { displayName: "Kevin" },
+  };
+  const [message] = formatTimelineMessages(
+    [event],
+    null,
+    undefined,
+    null,
+    profiles,
+    undefined,
+    undefined,
+    undefined,
+    RELAY_PUBKEY,
+    undefined,
+    new Map([[APP_ID, appMetadata()]]),
+  );
+  assert.equal(message.isApp, true);
+  assert.equal(message.author, "Archon");
+  assert.notEqual(message.author, "Kevin");
+  assert.equal(message.pubkey, RELAY_PUBKEY);
+});

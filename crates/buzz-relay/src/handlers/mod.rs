@@ -1,3 +1,5 @@
+/// Community App lifecycle admin command handler (kind 9038).
+pub mod app_admin;
 /// NIP-42 authentication handler.
 pub mod auth;
 /// Subscription close (CLOSE) handler.

@@ -198,6 +198,8 @@ export function toInboxContextMessage(
     id: message.id,
     authorLabel: message.author,
     authorPubkey,
+    isApp: message.isApp,
+    appId: message.appId,
     isAgent: message.isAgent,
     ownerLabel: message.ownerLabel,
     ownerPubkey: message.ownerPubkey,
@@ -232,6 +234,8 @@ export function toTimelineMessage(
   return {
     id: message.id,
     author: message.authorLabel,
+    isApp: message.isApp,
+    appId: message.appId,
     isAgent: message.isAgent,
     ownerLabel: message.ownerLabel,
     ownerPubkey: message.ownerPubkey,

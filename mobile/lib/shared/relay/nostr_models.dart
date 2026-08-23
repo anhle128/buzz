@@ -30,6 +30,12 @@ abstract final class EventKind {
   static const streamMessageV2 = 40002;
   static const channelThreadSummary = 39005;
   static const channelWindowBounds = 39006;
+
+  /// Kind:9038 owner/admin App lifecycle command. Relay-admin only.
+  static const appAdminCommand = 9038;
+
+  /// Kind:39007 parameterized-replaceable App metadata. Relay-signed.
+  static const appMetadata = 39007;
   static const streamMessageEdit = 40003;
   static const streamMessageDiff = 40008;
   static const systemMessage = 40099;

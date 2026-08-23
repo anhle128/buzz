@@ -15,6 +15,7 @@ import {
   DraftsPanel,
   type DraftViewItem,
 } from "@/features/messages/ui/DraftsPanel";
+import { MessageAppBadge } from "@/features/messages/ui/MessageAuthorIdentity";
 import { UserProfilePopover } from "@/features/profile/ui/UserProfilePopover";
 import type { Reminder } from "@/features/reminders/lib/reminderTypes";
 import { isDue } from "@/features/reminders/lib/reminderFilters";
@@ -305,8 +306,9 @@ export function InboxListPane({
     const hasChannelTarget = Boolean(item.item.channelId);
     const typeLabel = getInboxTypeLabel(item);
     const videoReviewCommentRootId = getInboxVideoReviewCommentRootId(item);
+    const isApp = item.isApp === true;
     const isSenderAgent =
-      agentPubkeys?.has(normalizePubkey(item.item.pubkey)) === true;
+      !isApp && agentPubkeys?.has(normalizePubkey(item.item.pubkey)) === true;
     const profileRole = isSenderAgent ? "bot" : undefined;
     const rowHighlightColor = isSelected
       ? "color-mix(in srgb, hsl(var(--background)) 70%, hsl(var(--muted)) 30%)"
@@ -357,16 +359,11 @@ export function InboxListPane({
           <div className="flex min-w-0 items-start gap-2.5">
             <div
               className="relative shrink-0"
-              data-inbox-profile-trigger="true"
+              data-inbox-profile-trigger={isApp ? undefined : "true"}
             >
-              <UserProfilePopover
-                botIdenticonValue={item.senderLabel}
-                pubkey={item.item.pubkey}
-                role={profileRole}
-                triggerElement="span"
-              >
+              {isApp ? (
                 <span
-                  className="inline-flex shrink-0 rounded-full focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+                  className="inline-flex shrink-0 rounded-full"
                   data-testid={`home-inbox-avatar-${item.id}`}
                 >
                   <UserAvatar
@@ -376,25 +373,57 @@ export function InboxListPane({
                     size="md"
                   />
                 </span>
-              </UserProfilePopover>
+              ) : (
+                <UserProfilePopover
+                  botIdenticonValue={item.senderLabel}
+                  pubkey={item.item.pubkey}
+                  role={profileRole}
+                  triggerElement="span"
+                >
+                  <span
+                    className="inline-flex shrink-0 rounded-full focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+                    data-testid={`home-inbox-avatar-${item.id}`}
+                  >
+                    <UserAvatar
+                      avatarUrl={item.avatarUrl}
+                      className="h-9 w-9"
+                      displayName={item.senderLabel}
+                      size="md"
+                    />
+                  </span>
+                </UserProfilePopover>
+              )}
             </div>
 
             <div className="min-w-0 flex-1">
               <div className="flex min-w-0 items-start gap-2">
                 <span
-                  className="flex min-w-0 flex-1 items-start leading-4"
-                  data-inbox-profile-trigger="true"
+                  className="flex min-w-0 flex-1 items-center gap-1.5 leading-4"
+                  data-inbox-profile-trigger={isApp ? undefined : "true"}
                 >
-                  <UserProfilePopover
-                    botIdenticonValue={item.senderLabel}
-                    pubkey={item.item.pubkey}
-                    role={profileRole}
-                    triggerElement="span"
-                  >
-                    <span className="block max-w-full truncate rounded text-sm font-semibold leading-4 text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring">
+                  {isApp ? (
+                    <span
+                      className="block max-w-full truncate rounded text-sm font-semibold leading-4 text-foreground"
+                      data-testid="home-inbox-sender"
+                    >
                       {item.senderLabel}
                     </span>
-                  </UserProfilePopover>
+                  ) : (
+                    <UserProfilePopover
+                      botIdenticonValue={item.senderLabel}
+                      pubkey={item.item.pubkey}
+                      role={profileRole}
+                      triggerElement="span"
+                    >
+                      <span
+                        className="block max-w-full truncate rounded text-sm font-semibold leading-4 text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+                        data-testid="home-inbox-sender"
+                      >
+                        {item.senderLabel}
+                      </span>
+                    </UserProfilePopover>
+                  )}
+                  {isApp ? <MessageAppBadge /> : null}
                 </span>
                 <span
                   className={cn(

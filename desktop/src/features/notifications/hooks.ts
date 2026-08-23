@@ -1,5 +1,6 @@
 import * as React from "react";
 
+import type { AppMetadata } from "@/features/apps/types";
 import { useHomeFeedQuery } from "@/features/home/hooks";
 import { useUsersBatchQuery } from "@/features/profile/hooks";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
@@ -412,6 +413,8 @@ export function useHomeFeedNotificationState(
   getMessageReadAt: (messageId: string) => number | null = () => null,
   channels: ReadonlyArray<Pick<Channel, "id" | "name" | "channelType">> = [],
   silentChannelIds?: ReadonlySet<string>,
+  apps?: ReadonlyMap<string, AppMetadata>,
+  relaySelfPubkey?: string | null,
 ) {
   useFeedDesktopNotifications(
     feed,
@@ -423,6 +426,8 @@ export function useHomeFeedNotificationState(
     mutedChannelIds,
     channels,
     silentChannelIds,
+    apps,
+    relaySelfPubkey,
   );
   const normalizedPubkey = pubkey?.trim().toLowerCase() ?? "";
   const [seenFeedIds, setSeenFeedIds] = React.useState<string[]>(() =>

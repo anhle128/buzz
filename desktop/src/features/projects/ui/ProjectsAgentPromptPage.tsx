@@ -28,7 +28,9 @@ import {
   useChannelSubscription,
   useToggleReactionMutation,
 } from "@/features/messages/hooks";
+import { useAppsQuery } from "@/features/apps/hooks/useAppsQuery";
 import { formatTimelineMessages } from "@/features/messages/lib/formatTimelineMessages";
+import { useRelaySelfQuery } from "@/features/moderation/hooks";
 import { getThreadReference } from "@/features/messages/lib/threading";
 import { useLinkEditor } from "@/features/messages/lib/useLinkEditor";
 import {
@@ -224,6 +226,8 @@ export function ConversationThread({
   opener: ProjectsConversationOpener;
 }) {
   useChannelSubscription(channel);
+  const relaySelfPubkey = useRelaySelfQuery().data;
+  const apps = useAppsQuery().data;
   const messagesQuery = useChannelMessagesQuery(channel);
   const threadRootIds = React.useMemo(
     () =>
@@ -287,6 +291,12 @@ export function ConversationThread({
       currentPubkey ?? undefined,
       selfAvatarUrl,
       profiles,
+      undefined,
+      undefined,
+      undefined,
+      relaySelfPubkey,
+      undefined,
+      apps,
     ).filter(
       (message) =>
         (message.kind === KIND_STREAM_MESSAGE ||
@@ -297,10 +307,12 @@ export function ConversationThread({
         ),
     );
   }, [
+    apps,
     channel,
     currentPubkey,
     messagesQuery.data,
     profiles,
+    relaySelfPubkey,
     selfAvatarUrl,
     threadReplies.events,
     opener,

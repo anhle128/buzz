@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { getPublicKey } from "nostr-tools/pure";
 
 import {
   buildInboxItems,
@@ -593,4 +594,81 @@ test("nested-anchor: old selected event stays resolvable by conversationId after
 
   // The new representative is the latest reply.
   assert.equal(inboxItem.id, LATEST_EVENT_ID);
+});
+
+const RELAY = getPublicKey(new Uint8Array(32).fill(2));
+const APP_ID = "6eb31227-8ed2-42ec-9024-863497cbeed2";
+const ATTRIBUTED_USER = "33".repeat(32);
+const APPS = new Map([
+  [
+    APP_ID,
+    {
+      appId: APP_ID,
+      name: "Archon",
+      picture: "https://example.test/archon.png",
+      status: "active",
+      eventId: "ab".repeat(32),
+      relayPubkey: RELAY,
+      updatedAt: 1_700_000_000,
+    },
+  ],
+]);
+
+test("App feed items use the App name and identity, not the relay profile", () => {
+  const [inboxItem] = buildInboxItems({
+    apps: APPS,
+    channels,
+    feed: feedWith({
+      mentions: [
+        item({
+          pubkey: RELAY,
+          kind: 9,
+          tags: [
+            ["p", ATTRIBUTED_USER],
+            ["h", CHANNEL_ID],
+            ["buzz:app", APP_ID],
+          ],
+        }),
+      ],
+    }),
+    profiles: {
+      [RELAY]: { displayName: "Relay Bot" },
+      [ATTRIBUTED_USER]: { displayName: "Kevin" },
+    },
+    relaySelfPubkey: RELAY,
+  });
+
+  assert.equal(inboxItem.senderLabel, "Archon");
+  assert.equal(inboxItem.isApp, true);
+  assert.equal(inboxItem.appId, APP_ID);
+  assert.equal(inboxItem.avatarUrl, "https://example.test/archon.png");
+  assert.equal(inboxItem.item.pubkey, RELAY);
+});
+
+test("App feed items without verified metadata fall back to the signer", () => {
+  const [inboxItem] = buildInboxItems({
+    apps: new Map(),
+    channels,
+    feed: feedWith({
+      mentions: [
+        item({
+          pubkey: RELAY,
+          kind: 9,
+          tags: [
+            ["p", ATTRIBUTED_USER],
+            ["h", CHANNEL_ID],
+            ["buzz:app", APP_ID],
+          ],
+        }),
+      ],
+    }),
+    profiles: {
+      [RELAY]: { displayName: "Relay Bot" },
+    },
+    relaySelfPubkey: RELAY,
+  });
+
+  assert.equal(inboxItem.senderLabel, "Relay Bot");
+  assert.equal(inboxItem.isApp, undefined);
+  assert.notEqual(inboxItem.senderLabel, "Archon");
 });

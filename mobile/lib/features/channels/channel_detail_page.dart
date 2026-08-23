@@ -9,9 +9,12 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 
 import '../../shared/animated_avatar.dart';
+import '../../shared/community/relay_information_provider.dart';
 import '../../shared/mentions/agent_identity_provider.dart';
+import '../../shared/relay/app_metadata_provider.dart';
 import '../../shared/relay/relay.dart';
 import '../../shared/theme/theme.dart';
+import '../../shared/widgets/app_badge.dart';
 import '../../shared/widgets/avatar_image.dart';
 import '../../shared/widgets/buzz_loading_indicator.dart';
 import '../../shared/widgets/frosted_app_bar.dart';
@@ -159,6 +162,8 @@ class ChannelDetailPage extends HookConsumerWidget {
     final channelsAsync = ref.watch(channelsProvider);
     final messagesState = ref.watch(channelMessagesProvider(channel.id));
     final sessionStatus = ref.watch(relaySessionProvider).status;
+    final relaySelf = ref.watch(relaySelfProvider).value;
+    final apps = ref.watch(appMetadataProvider).value ?? const {};
     final readState = ref.watch(readStateProvider);
     final channelsNotifier = ref.read(channelsProvider.notifier);
     final initialOrdinaryUnreadMessageIdsRef = useRef<Set<String>>(const {});
@@ -441,6 +446,8 @@ class ChannelDetailPage extends HookConsumerWidget {
                             final messages = formatTimeline(
                               events,
                               currentPubkey: currentPubkey,
+                              relaySelfPubkey: relaySelf,
+                              apps: apps,
                             );
                             final summaries = ref
                                 .read(

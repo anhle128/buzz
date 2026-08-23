@@ -13,14 +13,18 @@ import {
   KIND_CHANNEL_THREAD_SUMMARY,
 } from "@/shared/constants/kinds";
 import {
-  getTextPayload,
   toRelayFrames,
   type ConnectionState,
   type LiveSubscriptionReadiness,
-  type PendingEvent,
   type RelaySubscription,
   type RelaySubscriptionFilter,
 } from "@/shared/api/relayClientShared";
+import { parseRelayInboundFrame } from "@/shared/api/relayInboundFrame";
+import {
+  publishWithAck,
+  RelayPublishTracker,
+  type RelayPublishAck,
+} from "@/shared/api/relayPublishTracker";
 import {
   buildChannelAuxDeletionFilter,
   buildChannelFilter,
@@ -61,7 +65,6 @@ import {
   BACKOFF_RESET_STABLE_MS,
   EVENT_BATCH_MS,
   HISTORY_TIMEOUT_MS,
-  PUBLISH_TIMEOUT_MS,
   RECONNECT_BASE_DELAY_MS,
   RECONNECT_MAX_DELAY_MS,
   STALL_CHECK_INTERVAL_MS,
@@ -86,7 +89,7 @@ export class RelayClient {
   private keepAliveRequested = false;
   private authRequest: RelayAuthRequest | null = null;
   private subscriptions = new Map<string, RelaySubscription>();
-  private pendingEvents = new Map<string, PendingEvent>();
+  private publishTracker = new RelayPublishTracker();
   private eventBuffer: Array<{ subId: string; event: RelayEvent }> = [];
   private flushTimeout: number | null = null;
   private reconnectListeners = new Set<() => void>();
@@ -157,11 +160,7 @@ export class RelayClient {
       this.subscriptions.delete(subId);
     }
 
-    for (const [eventId, pending] of this.pendingEvents) {
-      window.clearTimeout(pending.timeout);
-      pending.reject(error);
-      this.pendingEvents.delete(eventId);
-    }
+    this.publishTracker.rejectAll(error);
 
     if (this.flushTimeout !== null) {
       window.clearTimeout(this.flushTimeout);
@@ -697,11 +696,25 @@ export class RelayClient {
   }
 
   private async closeSubscription(subId: string) {
-    if (this.wsId === null) {
-      return;
-    }
+    if (this.wsId !== null) await this.sendRaw(["CLOSE", subId]);
+  }
 
-    await this.sendRaw(["CLOSE", subId]);
+  async publishEventWithAck(
+    event: RelayEvent,
+    timeoutMessage: string,
+    sendErrorMessage: string,
+  ): Promise<RelayPublishAck> {
+    return publishWithAck({
+      tracker: this.publishTracker,
+      event,
+      timeoutMessage,
+      sendErrorMessage,
+      waitForGate: waitForRateLimit,
+      sendEvent: (next) => this.sendRaw(["EVENT", next]),
+      ensureConnected: () => this.ensureConnected(),
+      recoverFromFailure: (error, fallback) =>
+        this.recoverFromSocketFailure(error, fallback),
+    });
   }
 
   async publishEvent(
@@ -709,47 +722,9 @@ export class RelayClient {
     timeoutMessage: string,
     sendErrorMessage: string,
   ) {
-    // Await the gate before sending EVENT; op timeout starts after the wait.
-    await waitForRateLimit();
-
-    return new Promise<RelayEvent>((resolve, reject) => {
-      const timeout = window.setTimeout(() => {
-        this.pendingEvents.delete(event.id);
-        reject(new Error(timeoutMessage));
-      }, PUBLISH_TIMEOUT_MS);
-
-      this.pendingEvents.set(event.id, {
-        event,
-        resolve,
-        reject,
-        timeout,
-      });
-
-      void this.sendRaw(["EVENT", event]).catch(async (error) => {
-        const pendingEvent = this.pendingEvents.get(event.id);
-        this.pendingEvents.delete(event.id);
-        const normalizedError = this.recoverFromSocketFailure(
-          error,
-          sendErrorMessage,
-        );
-
-        try {
-          await this.ensureConnected();
-          if (!pendingEvent) {
-            throw normalizedError;
-          }
-
-          this.pendingEvents.set(event.id, pendingEvent);
-          await this.sendRaw(["EVENT", event]);
-        } catch (retryError) {
-          window.clearTimeout(timeout);
-          this.pendingEvents.delete(event.id);
-          reject(
-            this.recoverFromSocketFailure(retryError, normalizedError.message),
-          );
-        }
-      });
-    });
+    return (
+      await this.publishEventWithAck(event, timeoutMessage, sendErrorMessage)
+    ).event;
   }
 
   private async handleWsMessage(message: unknown, generation: number) {
@@ -767,55 +742,29 @@ export class RelayClient {
       return;
     }
 
-    const payload = getTextPayload(message);
-    if (!payload) {
+    const frame = parseRelayInboundFrame(message);
+    if (!frame) return;
+    if (frame.type === "auth") {
+      await this.handleAuthChallenge(frame.challenge, generation);
       return;
     }
-
-    let data: unknown;
-    try {
-      data = JSON.parse(payload);
-    } catch {
+    if (frame.type === "event") {
+      this.handleEvent(frame.subId, frame.event as RelayEvent);
       return;
     }
-
-    if (!Array.isArray(data) || data.length === 0) {
+    if (frame.type === "ok") {
+      this.handleOk(frame.eventId, frame.success, frame.message);
       return;
     }
-
-    const [type, ...rest] = data;
-    if (type === "AUTH" && typeof rest[0] === "string") {
-      await this.handleAuthChallenge(rest[0], generation);
+    if (frame.type === "eose") {
+      this.handleEose(frame.subId);
       return;
     }
-    if (type === "EVENT" && typeof rest[0] === "string" && rest[1]) {
-      this.handleEvent(rest[0], rest[1] as RelayEvent);
-      return;
-    }
-
-    if (
-      type === "OK" &&
-      typeof rest[0] === "string" &&
-      typeof rest[1] === "boolean"
-    ) {
-      this.handleOk(
-        rest[0],
-        rest[1],
-        typeof rest[2] === "string" ? rest[2] : "",
-      );
-      return;
-    }
-
-    if (type === "EOSE" && typeof rest[0] === "string") {
-      this.handleEose(rest[0]);
-      return;
-    }
-
-    if (type === "CLOSED" && typeof rest[0] === "string") {
+    if (frame.type === "closed") {
       handleRelayClosed({
         subscriptions: this.subscriptions,
-        subId: rest[0],
-        message: typeof rest[1] === "string" ? rest[1] : "",
+        subId: frame.subId,
+        message: frame.message,
         sendReq: (subId, filter) =>
           this.sendRawWithReconnectRetry(
             ["REQ", subId, filter],
@@ -824,45 +773,29 @@ export class RelayClient {
       });
       return;
     }
-
-    if (type === "NOTICE" && typeof rest[0] === "string") {
-      const notice: string = rest[0];
-      // Relay back-pressure — arm the gate until the window expires.
-      if (notice.startsWith("rate-limited:")) {
-        activateRateLimit(parseRateLimitHint(notice));
-      }
+    if (frame.type === "notice" && frame.notice.startsWith("rate-limited:")) {
+      activateRateLimit(parseRateLimitHint(frame.notice));
     }
   }
 
   private async handleAuthChallenge(challenge: string, generation: number) {
-    if (!this.relayUrl) {
-      this.relayUrl = await getRelayWsUrl();
-    }
-
+    this.relayUrl ??= await getRelayWsUrl();
     const event = await createAuthEvent({
       challenge,
       relayUrl: this.relayUrl,
     });
-
-    if (generation !== this.connectionGeneration || !this.authRequest) {
-      return;
-    }
-
+    if (generation !== this.connectionGeneration || !this.authRequest) return;
     this.authRequest.pendingEventId = event.id;
     await this.sendRaw(["AUTH", event]);
   }
 
   private handleEvent(subId: string, event: RelayEvent) {
     const subscription = this.subscriptions.get(subId);
-    if (!subscription) {
-      return;
-    }
-
+    if (!subscription) return;
     if (subscription.mode === "first") {
       subscription.onEvent(event);
       return;
     }
-
     if (!prepareSubscriptionEvent(subscription, event)) return;
     this.eventBuffer.push({ subId, event });
     this.flushTimeout ??= window.setTimeout(
@@ -900,7 +833,6 @@ export class RelayClient {
       const authRequest = this.authRequest;
       this.authRequest = null;
 
-      // Decision table lives in relayAuthPolicy.ts.
       const decision = this.authOkTracker.record(success, message);
       if (decision === "authenticated") {
         authRequest.resolve();
@@ -909,23 +841,9 @@ export class RelayClient {
         authRequest.reject(error);
         this.resetConnection(error, { reconnect: decision === "retry" });
       }
-
       return;
     }
-
-    const pendingEvent = this.pendingEvents.get(eventId);
-    if (!pendingEvent) {
-      return;
-    }
-
-    window.clearTimeout(pendingEvent.timeout);
-    this.pendingEvents.delete(eventId);
-
-    if (success) {
-      pendingEvent.resolve(pendingEvent.event);
-    } else {
-      pendingEvent.reject(new Error(message || "Relay rejected the event."));
-    }
+    this.publishTracker.handleOk(eventId, success, message);
   }
 
   private hasLiveSubscriptions() {
@@ -1072,11 +990,7 @@ export class RelayClient {
       subscription.resolveReady = undefined;
       clearClosedRetry(subscription);
     }
-    for (const [eventId, pendingEvent] of this.pendingEvents) {
-      window.clearTimeout(pendingEvent.timeout);
-      pendingEvent.reject(error);
-      this.pendingEvents.delete(eventId);
-    }
+    this.publishTracker.rejectAll(error);
     if (options?.reconnect !== false) {
       this.scheduleReconnect();
     }

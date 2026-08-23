@@ -12,6 +12,7 @@ type SettingsSection =
   | "hosted-communities"
   | "tokens"
   | "community-members"
+  | "apps"
   | "mobile"
   | "updates";
 

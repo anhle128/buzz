@@ -13,6 +13,10 @@
 pub mod admin_moderation;
 /// API token storage and lookup.
 pub mod api_token;
+/// Community-scoped App lifecycle rows and transaction-local command helpers.
+pub mod app;
+/// Serialized idempotent admission for App callback deliveries.
+pub mod app_admission;
 /// Relay-scoped archived identity persistence (NIP-IA).
 pub mod archived_identities;
 /// Channel and membership persistence.
@@ -118,7 +122,7 @@ pub async fn insert_mentions(
 /// Insert mention rows on the caller's transaction. Replacement writes use
 /// this so the authoritative event and its discovery index commit or roll back
 /// as one unit.
-async fn insert_mentions_in_transaction(
+pub(crate) async fn insert_mentions_in_transaction(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     community_id: CommunityId,
     event: &nostr::Event,
@@ -1256,6 +1260,43 @@ impl Db {
     /// The transaction holds an owned pool handle, not a borrow.
     pub async fn begin_transaction(&self) -> Result<sqlx::Transaction<'static, sqlx::Postgres>> {
         self.pool.begin().await.map_err(Into::into)
+    }
+
+    /// Load one App in `community_id`, or `None` if it does not exist there.
+    #[datastore_span(name = "get_app", system = "postgresql")]
+    pub async fn get_app(
+        &self,
+        community_id: CommunityId,
+        app_id: Uuid,
+    ) -> Result<Option<app::AppRecord>> {
+        app::get_app(&self.pool, community_id, app_id).await
+    }
+
+    /// List Apps in `community_id` ordered by creation time.
+    #[datastore_span(name = "list_apps", system = "postgresql")]
+    pub async fn list_apps(&self, community_id: CommunityId) -> Result<Vec<app::AppRecord>> {
+        app::list_apps(&self.pool, community_id).await
+    }
+
+    /// Begin serialized idempotent admission for an App callback delivery.
+    #[datastore_span(name = "begin_app_admission", system = "postgresql")]
+    pub async fn begin_app_admission(
+        &self,
+        community_id: CommunityId,
+        app_id: Uuid,
+        idempotency_key_hash: &[u8; 32],
+        payload_hash: &[u8; 32],
+        event_type: &str,
+    ) -> Result<app_admission::BeginAppAdmission> {
+        app_admission::begin_app_admission(
+            &self.pool,
+            community_id,
+            app_id,
+            idempotency_key_hash,
+            payload_hash,
+            event_type,
+        )
+        .await
     }
 
     /// Returns the community mapped to a normalized request host, if one exists.

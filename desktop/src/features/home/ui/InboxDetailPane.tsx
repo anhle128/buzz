@@ -269,6 +269,8 @@ function InboxMessageDetailPane({
       {
         authorLabel: item.senderLabel,
         authorPubkey: item.item.pubkey,
+        isApp: item.isApp,
+        appId: item.appId,
         avatarUrl: item.avatarUrl,
         content: item.preview,
         createdAt: item.item.createdAt,
@@ -709,8 +711,11 @@ function InboxMessageDetailPane({
                 !isAfterSeparator &&
                 !startsNewMessageGroup(message) &&
                 hasSameMessageAuthor(
-                  { pubkey: previousMessage?.authorPubkey },
-                  { pubkey: message.authorPubkey },
+                  {
+                    pubkey: previousMessage?.authorPubkey,
+                    appId: previousMessage?.appId,
+                  },
+                  { pubkey: message.authorPubkey, appId: message.appId },
                 ) &&
                 isWithinGroupingWindow(
                   previousMessage?.createdAt,
@@ -726,6 +731,7 @@ function InboxMessageDetailPane({
                   depth: message.depth,
                   kind: message.kind,
                   pubkey: message.authorPubkey,
+                  isApp: message.isApp,
                   time: message.timeLabel ?? message.fullTimestampLabel,
                 },
                 currentPubkey,

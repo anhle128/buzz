@@ -1,5 +1,6 @@
 import * as React from "react";
 
+import type { AppMetadata } from "@/features/apps/types";
 import { buildIndependentThreadPanel } from "@/features/messages/lib/independentThreadPanel";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
 import type {
@@ -24,6 +25,7 @@ export function useIndependentThreadPanel(args: {
   personaLookup: Map<string, string>;
   respondToLookup: Map<string, RespondToMode>;
   relaySelfPubkey: string | null | undefined;
+  apps: ReadonlyMap<string, AppMetadata>;
 }) {
   // Depend on the individual fields, NOT the `args` object — callers pass a
   // fresh object literal every render, so `[args]` never memoizes and the
@@ -50,6 +52,7 @@ export function useIndependentThreadPanel(args: {
         args.respondToLookup,
         args.relaySelfPubkey,
         args.ownerProfiles,
+        args.apps,
       ),
     [
       args.channelEvents,
@@ -66,6 +69,7 @@ export function useIndependentThreadPanel(args: {
       args.personaLookup,
       args.respondToLookup,
       args.relaySelfPubkey,
+      args.apps,
     ],
   );
 }

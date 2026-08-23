@@ -18,6 +18,8 @@ import { useThreadReplies } from "@/features/messages/useThreadReplies";
 import { MessageThreadPanel } from "@/features/messages/ui/MessageThreadPanel";
 import { MessageThreadPanelSkeleton } from "@/features/messages/ui/MessageThreadPanelSkeleton";
 import type { TimelineMessage } from "@/features/messages/types";
+import { useAppsQuery } from "@/features/apps/hooks/useAppsQuery";
+import { useRelaySelfQuery } from "@/features/moderation/hooks";
 import { useProfileQuery, useUsersBatchQuery } from "@/features/profile/hooks";
 import { useIdentityQuery } from "@/shared/api/hooks";
 import type { SearchHit } from "@/shared/api/searchTypes";
@@ -59,6 +61,8 @@ export function ProjectConversationPanel({
   const channelLabel = activeChannel?.name ?? hit.channelName ?? null;
   const identityQuery = useIdentityQuery();
   const profileQuery = useProfileQuery();
+  const relaySelfPubkey = useRelaySelfQuery().data;
+  const apps = useAppsQuery().data;
   const membersQuery = useChannelMembersQuery(activeChannel?.id ?? null);
   const targetQuery = useQuery({
     queryKey: ["project-conversation-target", hit.eventId],
@@ -155,7 +159,8 @@ export function ProjectConversationPanel({
     members: membersQuery.data,
     personaLookup: EMPTY_PERSONA_LOOKUP,
     respondToLookup: EMPTY_RESPOND_TO_LOOKUP,
-    relaySelfPubkey: null,
+    relaySelfPubkey,
+    apps,
   });
   const sendMessageMutation = useSendMessageMutation(
     activeChannel,

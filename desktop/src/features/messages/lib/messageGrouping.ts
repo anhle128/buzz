@@ -2,6 +2,7 @@ import { getSentFromThreadRootId } from "@/features/messages/lib/sentFromThread"
 
 type MessageAuthorCandidate = {
   pubkey?: string | null;
+  appId?: string | null;
 };
 
 type MessageGroupingCandidate = {
@@ -31,6 +32,14 @@ export function hasSameMessageAuthor(
   previous: MessageAuthorCandidate | null | undefined,
   current: MessageAuthorCandidate | null | undefined,
 ) {
+  const previousAppId = previous?.appId?.trim().toLowerCase();
+  const currentAppId = current?.appId?.trim().toLowerCase();
+  if (previousAppId || currentAppId) {
+    return Boolean(
+      previousAppId && currentAppId && previousAppId === currentAppId,
+    );
+  }
+
   const previousPubkey = previous?.pubkey?.trim().toLowerCase();
   const currentPubkey = current?.pubkey?.trim().toLowerCase();
 

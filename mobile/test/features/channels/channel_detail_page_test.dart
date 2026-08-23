@@ -37,8 +37,12 @@ import 'package:buzz/shared/profile/user_cache_provider.dart';
 import 'package:buzz/shared/profile/user_profile.dart';
 import 'package:buzz/features/profile/user_profile_sheet.dart';
 import 'package:buzz/shared/mentions/agent_identity_provider.dart';
+import 'package:buzz/shared/community/relay_information_provider.dart';
+import 'package:buzz/shared/relay/app_metadata.dart';
+import 'package:buzz/shared/relay/app_metadata_provider.dart';
 import 'package:buzz/shared/relay/relay.dart';
 import 'package:buzz/shared/theme/theme.dart';
+import 'package:buzz/shared/widgets/app_badge.dart';
 import 'package:buzz/shared/widgets/app_list_card.dart';
 import 'package:buzz/shared/widgets/avatar_image.dart';
 import 'package:buzz/shared/widgets/frosted_app_bar.dart';
@@ -46,6 +50,7 @@ import 'package:buzz/shared/widgets/frosted_scaffold.dart';
 import 'package:buzz/shared/widgets/keyboard_dismiss_on_drag.dart';
 import 'package:buzz/shared/widgets/masked_avatar_badge.dart';
 import 'package:buzz/shared/widgets/skeleton.dart';
+import 'package:nostr/nostr.dart' as nostr;
 import 'package:shared_preferences/shared_preferences.dart';
 
 const _channelId = 'test-channel';
@@ -207,6 +212,9 @@ Widget _buildTestable({
   RelaySessionNotifier? relaySessionNotifier,
   http.Client? mediaClient,
   Widget? home,
+  Map<String, AppMetadata> apps = const {},
+  String? relaySelf,
+  UserProfile? currentUser,
 }) {
   final resolvedChannel = channel ?? _testChannel;
   final fakeChannelsNotifier =
@@ -225,7 +233,9 @@ Widget _buildTestable({
       userCacheProvider.overrideWith(
         () => userCacheNotifier ?? _FakeUserCacheNotifier(users),
       ),
-      profileProvider.overrideWith(() => _FakeProfileNotifier()),
+      profileProvider.overrideWith(() => _FakeProfileNotifier(currentUser)),
+      appMetadataProvider.overrideWith((ref) async => apps),
+      relaySelfProvider.overrideWith((ref) async => relaySelf),
       channelsProvider.overrideWith(() => fakeChannelsNotifier),
       channelDetailsProvider(_channelId).overrideWith(
         (ref) async => ChannelDetails.fromChannel(resolvedChannel),
@@ -342,6 +352,10 @@ Widget _buildNavigationTestable({
       ).overrideWith((ref) async => const <ChannelMember>[]),
       userCacheProvider.overrideWith(() => _FakeUserCacheNotifier({})),
       profileProvider.overrideWith(() => _FakeProfileNotifier()),
+      appMetadataProvider.overrideWith(
+        (ref) async => const <String, AppMetadata>{},
+      ),
+      relaySelfProvider.overrideWith((ref) async => null),
       channelsProvider.overrideWith(
         () => _FakeChannelsNotifier([channelA, channelB]),
       ),
@@ -4049,6 +4063,213 @@ void main() {
       expect(findRichText('Hi'), findsOneWidget);
       // Should show first 8 chars of pubkey + ellipsis
       expect(find.text('abcdef12…'), findsOneWidget);
+    });
+  });
+
+  group('App attribution', () {
+    late nostr.Keys relay;
+    const appId = '6eb31227-8ed2-42ec-9024-863497cbeed2';
+    const appIdB = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+
+    setUp(() {
+      relay = nostr.Keys.generate();
+    });
+
+    NostrEvent appMessage({
+      required String id,
+      String app = appId,
+      String content = '✅ build passed',
+      int createdAt = 1000,
+      List<List<String>> extraTags = const [],
+    }) {
+      final event = nostr.Event.from(
+        kind: EventKind.streamMessage,
+        content: content,
+        secretKey: relay.secret,
+        createdAt: createdAt,
+        tags: [
+          ['h', _channelId],
+          ['buzz:app', app],
+          ...extraTags,
+        ],
+        verify: true,
+      );
+      return NostrEvent.fromJson(event.toMap());
+    }
+
+    Map<String, AppMetadata> apps({
+      String name = 'Archon',
+      String? picture = 'https://example.test/archon.png',
+    }) {
+      return {
+        appId: AppMetadata(
+          appId: appId,
+          name: name,
+          picture: picture,
+          status: 'active',
+          eventId: 'ab' * 32,
+          relayPubkey: relay.public.toLowerCase(),
+          updatedAt: 1700000000,
+        ),
+        appIdB: AppMetadata(
+          appId: appIdB,
+          name: 'PagerDuty',
+          status: 'active',
+          eventId: 'cd' * 32,
+          relayPubkey: relay.public.toLowerCase(),
+          updatedAt: 1700000000,
+        ),
+      };
+    }
+
+    testWidgets('renders App name, badge, and picture without a user sheet', (
+      tester,
+    ) async {
+      final event = appMessage(id: 'app-msg');
+      await tester.pumpWidget(
+        _buildTestable(
+          messages: [event],
+          apps: apps(),
+          relaySelf: relay.public,
+          users: {
+            event.pubkey: UserProfile(
+              pubkey: event.pubkey,
+              displayName: 'Relay Bot',
+            ),
+          },
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Archon'), findsOneWidget);
+      expect(find.text('Relay Bot'), findsNothing);
+      expect(find.byType(AppBadge), findsOneWidget);
+      expect(find.text('App'), findsOneWidget);
+      expect(
+        tester.widget<AvatarImage>(find.byType(AvatarImage).first).imageUrl,
+        'https://example.test/archon.png',
+      );
+
+      await tester.tap(find.text('Archon'));
+      await tester.pumpAndSettle();
+      expect(find.byType(UserProfileSheet), findsNothing);
+
+      await tester.tap(find.byType(AvatarImage).first);
+      await tester.pumpAndSettle();
+      expect(find.byType(UserProfileSheet), findsNothing);
+    });
+
+    testWidgets(
+      'falls back to a deterministic avatar when picture is missing',
+      (tester) async {
+        final event = appMessage(id: 'app-msg');
+        await tester.pumpWidget(
+          _buildTestable(
+            messages: [event],
+            apps: apps(picture: null),
+            relaySelf: relay.public,
+            users: {
+              event.pubkey: UserProfile(
+                pubkey: event.pubkey,
+                displayName: 'Relay Bot',
+                avatarUrl: 'https://example.test/relay.png',
+              ),
+            },
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(find.text('Archon'), findsOneWidget);
+        expect(find.text('A'), findsOneWidget);
+        expect(
+          tester.widget<AvatarImage>(find.byType(AvatarImage).first).imageUrl,
+          isNull,
+        );
+      },
+    );
+
+    testWidgets(
+      'does not expose user-only management actions for App messages',
+      (tester) async {
+        final event = appMessage(id: 'app-msg');
+        await tester.pumpWidget(
+          _buildTestable(
+            messages: [event],
+            apps: apps(),
+            relaySelf: relay.public,
+            currentUser: UserProfile(
+              pubkey: relay.public,
+              displayName: 'Relay',
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        await tester.longPress(find.byKey(ValueKey('message-row-${event.id}')));
+        await tester.pumpAndSettle();
+
+        expect(find.text('Edit message'), findsNothing);
+        expect(find.text('Delete message'), findsNothing);
+        final overlay = find.text('Copy text');
+        if (overlay.evaluate().isNotEmpty) {
+          Navigator.of(tester.element(overlay)).pop();
+          await tester.pumpAndSettle();
+        }
+      },
+    );
+
+    testWidgets('does not group two Apps that share a relay signer', (
+      tester,
+    ) async {
+      final first = appMessage(
+        id: 'app-a',
+        content: 'first app',
+        createdAt: 1000,
+      );
+      final second = appMessage(
+        id: 'app-b',
+        app: appIdB,
+        content: 'second app',
+        createdAt: 1060,
+      );
+      await tester.pumpWidget(
+        _buildTestable(
+          messages: [first, second],
+          apps: apps(),
+          relaySelf: relay.public,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Archon'), findsOneWidget);
+      expect(find.text('PagerDuty'), findsOneWidget);
+      expect(find.byType(AppBadge), findsNWidgets(2));
+    });
+
+    testWidgets('keeps human author formatting when Apps are loaded', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        _buildTestable(
+          messages: [
+            _textMsg(
+              id: 'human',
+              pubkey: 'alice',
+              content: 'hello from alice',
+              createdAt: 1000,
+            ),
+          ],
+          apps: apps(),
+          relaySelf: relay.public,
+          users: const {
+            'alice': UserProfile(pubkey: 'alice', displayName: 'Alice'),
+          },
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Alice'), findsOneWidget);
+      expect(find.byType(AppBadge), findsNothing);
     });
   });
 
@@ -9416,9 +9637,13 @@ class _SynchronousReadStateNotifier extends ReadStateNotifier {
 }
 
 class _FakeProfileNotifier extends ProfileNotifier {
+  _FakeProfileNotifier([this.profile]);
+
+  final UserProfile? profile;
+
   @override
   Future<UserProfile?> build() async =>
-      const UserProfile(pubkey: 'self', displayName: 'Self');
+      profile ?? const UserProfile(pubkey: 'self', displayName: 'Self');
 }
 
 class _FakeUserCacheNotifier extends UserCacheNotifier {
