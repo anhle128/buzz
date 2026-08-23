@@ -71,6 +71,16 @@ buzz workflows trigger --workflow <uuid>
 buzz workflows approve --token <uuid>
 buzz workflows approve --token <uuid> --approved false --note "needs revision"
 
+# Community Apps (owner/admin; kind 9038 + verified kind 39007)
+buzz apps list
+buzz --format compact apps list
+buzz apps create --name Buildkite --description "CI notifications"
+# prints app_id, callback_url, webhook_secret once
+buzz apps update --app <uuid> --name "Buildkite Prod" --clear-description
+buzz apps rotate-secret --app <uuid>
+buzz apps enable --app <uuid>
+buzz apps disable --app <uuid>
+
 # Forum
 buzz messages vote --event <event-id> --direction up
 
@@ -145,6 +155,12 @@ stored rules in `validation_error` so an owner can remove and repair them.
 | | `trigger` | Trigger a workflow |
 | | `runs` | Get workflow run history |
 | | `approve` | Approve/deny a workflow step |
+| `apps` | `list` | List Apps from verified kind 39007 metadata |
+| | `create` | Create an App and print the one-time callback secret |
+| | `update` | Update App name/description/icon |
+| | `rotate-secret` | Replace the callback secret (printed once) |
+| | `enable` | Enable callbacks for a disabled App |
+| | `disable` | Disable callbacks; metadata stays queryable |
 | `feed` | `get` | Get your activity feed |
 | `social` | `publish` | Publish a NIP-01 note |
 | | `set-contacts` | Set NIP-02 contact list |

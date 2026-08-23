@@ -420,6 +420,45 @@ buzz workflows approve --token "00000000-0000-0000-0000-000000000000" 2>&1 || tr
 buzz workflows delete --workflow "$WF_ID" | jq .
 ```
 
+### 6.9a Community Apps
+
+Requires an active community owner or admin identity. Kind `9038` is a
+relay-admin command. Listing uses NIP-11 `self` plus verified kind `39007`
+events — there is no App-list HTTP endpoint.
+
+```bash
+# create — secret is printed once
+APP=$(buzz apps create --name "cli-test-app" --description "CLI live test" | jq .)
+echo "$APP"
+APP_ID=$(echo "$APP" | jq -r '.app_id')
+echo "$APP" | jq -e '.webhook_secret and .callback_url'
+# Expected: {"app_id":"<uuid>","callback_url":"http://localhost:3000/hooks/apps/<uuid>","webhook_secret":"..."}
+
+# list (full: also description, icon_url, updated_at)
+buzz apps list | jq .
+buzz --format compact apps list | jq .
+# compact: app_id, name, status, callback_url — no secret
+
+# update
+buzz apps update --app "$APP_ID" --name "cli-test-app-updated" | jq .
+buzz apps update --app "$APP_ID" --clear-description --icon-url "https://example.test/icon.png" | jq .
+# Expected: {"event_id":"...","accepted":true,"message":"..."}
+# --description conflicts with --clear-description; --icon-url with --clear-icon
+# update with no mutation flags is rejected at parse time
+
+# rotate-secret — new secret printed once
+buzz apps rotate-secret --app "$APP_ID" | jq -e '.webhook_secret'
+
+# disable / enable
+buzz apps disable --app "$APP_ID" | jq .
+buzz --format compact apps list | jq ".[] | select(.app_id==\"$APP_ID\")"
+# status: disabled; callback_url still derived
+buzz apps enable --app "$APP_ID" | jq .
+
+# duplicate create/rotate without a secret is exit 5
+# stderr instructs: buzz apps rotate-secret --app <uuid>
+```
+
 ### 6.10 Feed
 
 ```bash
@@ -621,3 +660,9 @@ buzz channels delete --channel "$FORUM_ID" | jq .
 | 60 | `notes ls` | ☐ | Own, --author all, --tag, --limit |
 | 61 | `notes rm` | ☐ | Delete→get 404, double-delete idempotent, missing slug → NotFound |
 | 62 | `users set-status` | ☐ | Text+emoji, text only, emoji-only (`--text ""`), `--clear`, `--clear` + `--text` → exit 1 |
+| 63 | `apps list` | ☐ | Full + `--format compact`; no secret; callback_url derived |
+| 64 | `apps create` | ☐ | Prints app_id, callback_url, webhook_secret once |
+| 65 | `apps update` | ☐ | `--app` required; `--clear-description` / `--clear-icon`; no-mutation rejected |
+| 66 | `apps rotate-secret` | ☐ | New secret printed once; duplicate without secret → exit 5 |
+| 67 | `apps enable` | ☐ | Re-enables callbacks |
+| 68 | `apps disable` | ☐ | Status disabled; metadata remains listable |

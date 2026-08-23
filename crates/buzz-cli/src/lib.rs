@@ -177,6 +177,9 @@ enum Cmd {
     /// Draft owner-reviewed agent creation and updates
     #[command(subcommand)]
     Agents(AgentsCmd),
+    /// Manage community Apps (kind 9038 commands, verified kind 39007 listing)
+    #[command(subcommand)]
+    Apps(AppsCmd),
     /// Send, read, search, and manage messages
     #[command(subcommand)]
     Messages(MessagesCmd),
@@ -365,6 +368,77 @@ Examples:\n  \
 buzz agents archived"
     )]
     Archived,
+}
+
+#[derive(Subcommand)]
+pub enum AppsCmd {
+    /// List Apps from verified relay-signed kind 39007 metadata
+    #[command(after_help = "Examples:\n  buzz apps list\n  buzz --format compact apps list")]
+    List,
+    /// Create an App and print the one-time callback secret
+    #[command(
+        after_help = "Examples:\n  buzz apps create --name Buildkite\n  buzz apps create --name Buildkite --description \"CI notifications\" --icon-url https://example.test/icon.png"
+    )]
+    Create {
+        /// Display name
+        #[arg(long)]
+        name: String,
+        /// Optional public description
+        #[arg(long)]
+        description: Option<String>,
+        /// Optional icon URL (`http://`, `https://`, or `data:image/`)
+        #[arg(long)]
+        icon_url: Option<String>,
+    },
+    /// Update App public metadata (at least one setter or clearer required)
+    #[command(
+        group = clap::ArgGroup::new("mutation").required(true).multiple(true),
+        after_help = "Examples:\n  buzz apps update --app <uuid> --name \"Buildkite Prod\"\n  buzz apps update --app <uuid> --clear-description --clear-icon"
+    )]
+    Update {
+        /// Canonical App UUID
+        #[arg(long)]
+        app: String,
+        /// Replacement display name
+        #[arg(long, group = "mutation")]
+        name: Option<String>,
+        /// Replacement description
+        #[arg(long, group = "mutation")]
+        description: Option<String>,
+        /// Clear the public description
+        #[arg(long, group = "mutation", conflicts_with = "description")]
+        clear_description: bool,
+        /// Replacement icon URL
+        #[arg(long, group = "mutation")]
+        icon_url: Option<String>,
+        /// Clear the icon URL
+        #[arg(long, group = "mutation", conflicts_with = "icon_url")]
+        clear_icon: bool,
+    },
+    /// Replace the App callback secret (prints the new secret once)
+    #[command(
+        name = "rotate-secret",
+        after_help = "Examples:\n  buzz apps rotate-secret --app <uuid>"
+    )]
+    RotateSecret {
+        /// Canonical App UUID
+        #[arg(long)]
+        app: String,
+    },
+    /// Enable callbacks for a disabled App
+    #[command(after_help = "Examples:\n  buzz apps enable --app <uuid>")]
+    Enable {
+        /// Canonical App UUID
+        #[arg(long)]
+        app: String,
+    },
+    /// Disable callbacks while keeping metadata queryable
+    #[command(after_help = "Examples:\n  buzz apps disable --app <uuid>")]
+    Disable {
+        /// Canonical App UUID
+        #[arg(long)]
+        app: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -2049,6 +2123,7 @@ async fn run(cli: Cli) -> Result<(), CliError> {
 
     match cli.command {
         Cmd::Agents(sub) => commands::agents::dispatch(sub, &client).await,
+        Cmd::Apps(sub) => commands::apps::dispatch(sub, &client, &cli.format).await,
         Cmd::Messages(sub) => commands::messages::dispatch(sub, &client, &cli.format).await,
         Cmd::Channels(sub) => commands::channels::dispatch(sub, &client, &cli.format).await,
         Cmd::Canvas(sub) => commands::channels::dispatch_canvas(sub, &client).await,
@@ -2157,6 +2232,7 @@ mod tests {
     fn command_inventory_is_stable() {
         let expected_groups: Vec<&str> = vec![
             "agents",
+            "apps",
             "canvas",
             "channels",
             "dms",
@@ -2227,6 +2303,17 @@ mod tests {
                 "draft-create",
                 "draft-update",
                 "unarchive"
+            ]
+        );
+        assert_eq!(
+            names(&cmd, "apps"),
+            vec![
+                "create",
+                "disable",
+                "enable",
+                "list",
+                "rotate-secret",
+                "update"
             ]
         );
         assert_eq!(
@@ -2365,6 +2452,7 @@ mod tests {
     fn subcommand_counts_are_stable() {
         let expected: Vec<(&str, usize)> = vec![
             ("agents", 5),
+            ("apps", 6),
             ("canvas", 2),
             ("channels", 16),
             ("dms", 4),
@@ -2425,6 +2513,132 @@ mod tests {
         }
 
         violations
+    }
+
+    const APPS_CLI_APP_ID: &str = "6eb31227-8ed2-42ec-9024-863497cbeed2";
+
+    #[test]
+    fn apps_cli_list_parses() {
+        assert!(
+            Cli::try_parse_from(["buzz", "apps", "list"]).is_ok(),
+            "buzz apps list must parse"
+        );
+    }
+
+    #[test]
+    fn apps_cli_format_compact_stays_before_subcommand() {
+        let cli = Cli::try_parse_from(["buzz", "--format", "compact", "apps", "list"])
+            .expect("global --format compact apps list");
+        assert!(matches!(cli.format, OutputFormat::Compact));
+    }
+
+    #[test]
+    fn apps_cli_create_requires_name_and_accepts_optional_fields() {
+        assert!(Cli::try_parse_from(["buzz", "apps", "create"]).is_err());
+        assert!(Cli::try_parse_from(["buzz", "apps", "create", "--name", "Buildkite"]).is_ok());
+        assert!(Cli::try_parse_from([
+            "buzz",
+            "apps",
+            "create",
+            "--name",
+            "Buildkite",
+            "--description",
+            "Build notifications",
+            "--icon-url",
+            "https://example.test/icon.png",
+        ])
+        .is_ok());
+    }
+
+    #[test]
+    fn apps_cli_update_requires_app_flag_and_mutation() {
+        assert!(
+            Cli::try_parse_from(["buzz", "apps", "update", APPS_CLI_APP_ID, "--name", "X"])
+                .is_err(),
+            "positional app id must be rejected; use --app"
+        );
+        assert!(Cli::try_parse_from(["buzz", "apps", "update", "--name", "X"]).is_err());
+        assert!(Cli::try_parse_from(["buzz", "apps", "update", "--app", APPS_CLI_APP_ID]).is_err());
+        assert!(Cli::try_parse_from([
+            "buzz",
+            "apps",
+            "update",
+            "--app",
+            APPS_CLI_APP_ID,
+            "--name",
+            "X"
+        ])
+        .is_ok());
+    }
+
+    #[test]
+    fn apps_cli_update_clear_flags_conflict_with_value_flags() {
+        assert!(
+            Cli::try_parse_from([
+                "buzz",
+                "apps",
+                "update",
+                "--app",
+                APPS_CLI_APP_ID,
+                "--description",
+                "keep",
+                "--clear-description",
+            ])
+            .is_err(),
+            "--description conflicts with --clear-description"
+        );
+        assert!(
+            Cli::try_parse_from([
+                "buzz",
+                "apps",
+                "update",
+                "--app",
+                APPS_CLI_APP_ID,
+                "--icon-url",
+                "https://example.test/icon.png",
+                "--clear-icon",
+            ])
+            .is_err(),
+            "--icon-url conflicts with --clear-icon"
+        );
+        assert!(Cli::try_parse_from([
+            "buzz",
+            "apps",
+            "update",
+            "--app",
+            APPS_CLI_APP_ID,
+            "--name",
+            "X",
+            "--clear-description",
+        ])
+        .is_ok());
+        assert!(Cli::try_parse_from([
+            "buzz",
+            "apps",
+            "update",
+            "--app",
+            APPS_CLI_APP_ID,
+            "--clear-icon",
+        ])
+        .is_ok());
+    }
+
+    #[test]
+    fn apps_cli_rotate_enable_disable_require_app_flag() {
+        for sub in ["rotate-secret", "enable", "disable"] {
+            assert!(
+                Cli::try_parse_from(["buzz", "apps", sub]).is_err(),
+                "{sub} without --app must fail"
+            );
+            assert!(
+                Cli::try_parse_from(["buzz", "apps", sub, APPS_CLI_APP_ID]).is_err(),
+                "{sub} positional app id must fail"
+            );
+            assert!(
+                Cli::try_parse_from(["buzz", "apps", sub, "--app", APPS_CLI_APP_ID]).is_ok(),
+                "{sub} --app <uuid> must parse"
+            );
+        }
     }
 
     /// Every arg whose env var name contains KEY/SECRET/TOKEN/PASSWORD/CRED/AUTH
