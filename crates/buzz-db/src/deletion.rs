@@ -55,6 +55,8 @@ pub const CONTROL_PLANE_TABLES: &[&str] = &[
 /// blocks deletion until this manifest is intentionally updated.
 pub const EXPECTED_SCOPED_TABLES: &[&str] = &[
     "api_tokens",
+    "app_callback_deliveries",
+    "apps",
     "archived_identities",
     "audit_log",
     "channel_members",
@@ -86,6 +88,7 @@ pub const EXPECTED_SCOPED_TABLES: &[&str] = &[
 
 /// Foreign-key-safe child-before-parent order for the PostgreSQL purge.
 pub const PURGE_SCOPED_TABLES: &[&str] = &[
+    "app_callback_deliveries",
     "workflow_approvals",
     "scheduled_workflow_fires",
     "workflow_runs",
@@ -113,6 +116,7 @@ pub const PURGE_SCOPED_TABLES: &[&str] = &[
     "pubkey_allowlist",
     "relay_members",
     "users",
+    "apps",
     "channels",
 ];
 
