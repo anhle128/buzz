@@ -3,7 +3,9 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:buzz/features/channels/channel_window.dart';
 import 'package:buzz/features/channels/timeline_message.dart';
+import 'package:buzz/shared/relay/app_metadata.dart';
 import 'package:buzz/shared/relay/relay.dart';
+import 'package:nostr/nostr.dart' as nostr;
 
 NostrEvent _textMsg({
   required String id,
@@ -739,6 +741,304 @@ void main() {
       final ref = event.threadReference;
       expect(ref.parentId, 'new_parent');
       expect(ref.rootId, 'root1');
+    });
+  });
+
+  group('formatTimeline App attribution', () {
+    late nostr.Keys relay;
+    late nostr.Keys user;
+    const appId = '6eb31227-8ed2-42ec-9024-863497cbeed2';
+    const appIdB = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const attributedUser =
+        '3333333333333333333333333333333333333333333333333333333333333333';
+    const channelId = 'ch1';
+
+    setUp(() {
+      relay = nostr.Keys.generate();
+      user = nostr.Keys.generate();
+    });
+
+    AppMetadata metadata({
+      String id = appId,
+      String name = 'Archon',
+      String status = 'active',
+      String? picture = 'https://example.test/archon.png',
+    }) {
+      return AppMetadata(
+        appId: id,
+        name: name,
+        picture: picture,
+        status: status,
+        eventId: 'ab' * 32,
+        relayPubkey: relay.public.toLowerCase(),
+        updatedAt: 1700000000,
+      );
+    }
+
+    NostrEvent signAppMessage({
+      nostr.Keys? keys,
+      String id = appId,
+      String content = '✅ build passed',
+      List<List<String>> extraTags = const [],
+      int createdAt = 1700000100,
+    }) {
+      final event = nostr.Event.from(
+        kind: EventKind.streamMessage,
+        content: content,
+        secretKey: (keys ?? relay).secret,
+        createdAt: createdAt,
+        tags: [
+          ['h', channelId],
+          ['buzz:app', id],
+          ...extraTags,
+        ],
+        verify: true,
+      );
+      return NostrEvent.fromJson(event.toMap());
+    }
+
+    List<TimelineMessage> formatApp(
+      List<NostrEvent> events, {
+      Map<String, AppMetadata>? apps,
+      String? relaySelf,
+    }) {
+      return formatTimeline(
+        events,
+        relaySelfPubkey: relaySelf ?? relay.public,
+        apps: apps ?? {appId: metadata()},
+      );
+    }
+
+    test('valid App identity is preferred over p-aware author resolution', () {
+      final event = signAppMessage(
+        extraTags: const [
+          ['p', attributedUser],
+        ],
+      );
+      final messages = formatApp([event]);
+      expect(messages, hasLength(1));
+      final message = messages.single;
+      expect(message.isApp, isTrue);
+      expect(message.appId, appId);
+      expect(message.appDisplayName, 'Archon');
+      expect(message.appPicture, 'https://example.test/archon.png');
+      expect(message.pubkey, relay.public.toLowerCase());
+      expect(message.signerPubkey, relay.public.toLowerCase());
+    });
+
+    test('disabled historical App still attributes the App', () {
+      final event = signAppMessage();
+      final message = formatApp(
+        [event],
+        apps: {appId: metadata(status: 'disabled')},
+      ).single;
+      expect(message.isApp, isTrue);
+      expect(message.appId, appId);
+      expect(message.appDisplayName, 'Archon');
+    });
+
+    test('two Apps under one relay keep distinct identities', () {
+      final first = signAppMessage(content: 'first app');
+      final second = signAppMessage(
+        id: appIdB,
+        content: 'second app',
+        createdAt: 1700000101,
+      );
+      final out = formatApp(
+        [first, second],
+        apps: {
+          appId: metadata(),
+          appIdB: metadata(id: appIdB, name: 'PagerDuty'),
+        },
+      );
+      expect(out[0].isApp, isTrue);
+      expect(out[0].appId, appId);
+      expect(out[0].appDisplayName, 'Archon');
+      expect(out[1].isApp, isTrue);
+      expect(out[1].appId, appIdB);
+      expect(out[1].appDisplayName, 'PagerDuty');
+      expect(out[0].pubkey, out[1].pubkey);
+    });
+
+    test('invalid App message signature falls back to the relay signer', () {
+      final signed = signAppMessage(
+        extraTags: const [
+          ['p', attributedUser],
+        ],
+      );
+      final event = NostrEvent(
+        id: signed.id,
+        pubkey: signed.pubkey,
+        createdAt: signed.createdAt,
+        kind: signed.kind,
+        tags: signed.tags,
+        content: 'tampered',
+        sig: signed.sig,
+      );
+      final message = formatApp([event]).single;
+      expect(message.isApp, isFalse);
+      expect(message.appId, isNull);
+      expect(message.pubkey, relay.public.toLowerCase());
+      expect(message.appDisplayName, isNull);
+      expect(message.pubkey, isNot(attributedUser));
+    });
+
+    test('wrong App message signer falls back without inspecting p tags', () {
+      final event = signAppMessage(
+        keys: user,
+        extraTags: const [
+          ['p', attributedUser],
+        ],
+      );
+      final message = formatApp([event]).single;
+      expect(message.isApp, isFalse);
+      expect(message.pubkey, user.public.toLowerCase());
+      expect(message.appDisplayName, isNull);
+      expect(message.pubkey, isNot(attributedUser));
+    });
+
+    test('malformed App UUID falls back to the relay signer', () {
+      final event = signAppMessage(
+        id: 'not-a-uuid',
+        extraTags: const [
+          ['p', attributedUser],
+        ],
+      );
+      final message = formatApp([event]).single;
+      expect(message.isApp, isFalse);
+      expect(message.pubkey, relay.public.toLowerCase());
+      expect(message.appDisplayName, isNull);
+      expect(message.pubkey, isNot(attributedUser));
+    });
+
+    test('missing App metadata falls back to the relay signer', () {
+      final event = signAppMessage(
+        extraTags: const [
+          ['p', attributedUser],
+        ],
+      );
+      final message = formatApp([event], apps: {}).single;
+      expect(message.isApp, isFalse);
+      expect(message.pubkey, relay.public.toLowerCase());
+      expect(message.appDisplayName, isNull);
+      expect(message.pubkey, isNot(attributedUser));
+    });
+
+    test('duplicate buzz:app tags fall back to the relay signer', () {
+      final event = signAppMessage(
+        extraTags: const [
+          ['buzz:app', appIdB],
+        ],
+      );
+      final message = formatApp(
+        [event],
+        apps: {
+          appId: metadata(),
+          appIdB: metadata(id: appIdB, name: 'PagerDuty'),
+        },
+      ).single;
+      expect(message.isApp, isFalse);
+      expect(message.pubkey, relay.public.toLowerCase());
+    });
+
+    test('p-tag spoof cannot replace a valid App timeline actor', () {
+      final event = signAppMessage(
+        extraTags: const [
+          ['p', attributedUser],
+        ],
+      );
+      final message = formatApp([event]).single;
+      expect(message.isApp, isTrue);
+      expect(message.appDisplayName, 'Archon');
+      expect(message.pubkey, relay.public.toLowerCase());
+      expect(message.pubkey, isNot(attributedUser));
+    });
+
+    test('human and agent author formatting remains unchanged', () {
+      final human = nostr.Event.from(
+        kind: EventKind.streamMessage,
+        content: 'hello from a human',
+        secretKey: user.secret,
+        createdAt: 1700000100,
+        tags: [
+          ['h', channelId],
+        ],
+        verify: true,
+      );
+      final agentKeys = nostr.Keys.generate();
+      final agent = nostr.Event.from(
+        kind: EventKind.streamMessage,
+        content: 'hello from an agent',
+        secretKey: agentKeys.secret,
+        createdAt: 1700000101,
+        tags: [
+          ['h', channelId],
+          ['p', user.public],
+        ],
+        verify: true,
+      );
+      final messages = formatApp(
+        [
+          NostrEvent.fromJson(human.toMap()),
+          NostrEvent.fromJson(agent.toMap()),
+        ],
+        apps: {appId: metadata()},
+      );
+      expect(messages, hasLength(2));
+      expect(messages[0].isApp, isFalse);
+      expect(messages[0].pubkey, user.public.toLowerCase());
+      expect(messages[0].content, 'hello from a human');
+      expect(messages[1].isApp, isFalse);
+      expect(messages[1].pubkey, agentKeys.public.toLowerCase());
+      expect(messages[1].content, 'hello from an agent');
+    });
+  });
+
+  group('hasSameMessageAuthor', () {
+    TimelineMessage message({required String pubkey, String? appId}) {
+      return TimelineMessage(
+        id: '$pubkey-${appId ?? 'user'}',
+        pubkey: pubkey,
+        createdAt: 1000,
+        content: 'hi',
+        isApp: appId != null,
+        appId: appId,
+      );
+    }
+
+    const relay =
+        'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const appA = '6eb31227-8ed2-42ec-9024-863497cbeed2';
+    const appB = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+
+    test('matching relay pubkeys with different App UUIDs do not group', () {
+      expect(
+        hasSameMessageAuthor(
+          message(pubkey: relay, appId: appA),
+          message(pubkey: relay, appId: appB),
+        ),
+        isFalse,
+      );
+    });
+
+    test('matching App UUIDs group even under one relay signer', () {
+      expect(
+        hasSameMessageAuthor(
+          message(pubkey: relay, appId: appA),
+          message(pubkey: relay, appId: appA),
+        ),
+        isTrue,
+      );
+    });
+
+    test('an App does not group with a human using the same relay pubkey', () {
+      expect(
+        hasSameMessageAuthor(
+          message(pubkey: relay, appId: appA),
+          message(pubkey: relay),
+        ),
+        isFalse,
+      );
     });
   });
 

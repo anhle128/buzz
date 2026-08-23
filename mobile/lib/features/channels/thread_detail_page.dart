@@ -6,9 +6,12 @@ import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 
+import '../../shared/community/relay_information_provider.dart';
 import '../../shared/mentions/agent_identity_provider.dart';
+import '../../shared/relay/app_metadata_provider.dart';
 import '../../shared/relay/relay.dart';
 import '../../shared/theme/theme.dart';
+import '../../shared/widgets/app_badge.dart';
 import '../../shared/widgets/avatar_image.dart';
 import '../../shared/widgets/frosted_app_bar.dart';
 import '../../shared/widgets/frosted_scaffold.dart';
@@ -120,10 +123,14 @@ class ThreadDetailPage extends HookConsumerWidget {
     final liveChannelEvents =
         ref.watch(channelMessagesProvider(channelId)).value ??
         const <NostrEvent>[];
+    final relaySelf = ref.watch(relaySelfProvider).value;
+    final apps = ref.watch(appMetadataProvider).value ?? const {};
     final replyMessages = repliesState.whenData((events) {
       return formatTimeline(
         mergeThreadEvents(events, liveChannelEvents),
         currentPubkey: currentPubkey,
+        relaySelfPubkey: relaySelf,
+        apps: apps,
       );
     });
 

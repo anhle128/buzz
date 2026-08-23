@@ -1,4 +1,5 @@
 import 'package:buzz/shared/theme/theme.dart';
+import 'package:buzz/shared/widgets/app_badge.dart';
 import 'package:buzz/shared/widgets/message_author_meta.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -131,6 +132,32 @@ void main() {
     );
     expect(nameRichText.textScaler.scale(15), 30);
     expect(timestampRichText.textScaler.scale(13.1), 26.2);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('renders the App badge in the named author slot', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: AppTheme.light(),
+        home: const Scaffold(
+          body: SizedBox(
+            width: 300,
+            child: MessageAuthorMeta(
+              displayName: 'Archon',
+              timestamp: '2m',
+              badge: AppBadge(),
+              nameColor: Colors.black,
+              metadataColor: Colors.grey,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byType(AppBadge), findsOneWidget);
+    expect(find.text('App'), findsOneWidget);
+    expect(find.text('Archon'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 }

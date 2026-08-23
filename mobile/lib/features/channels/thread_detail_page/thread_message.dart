@@ -39,11 +39,17 @@ class _ThreadMessage extends HookConsumerWidget {
     final profile =
         ref.watch(userCacheProvider.select((cache) => cache[pk])) ??
         ref.read(userCacheProvider.notifier).get(pk);
-    final displayName = profile?.label ?? shortPubkey(message.pubkey);
+    final isApp = message.isApp;
+    final displayName = isApp
+        ? (message.appDisplayName?.trim().isNotEmpty == true
+              ? message.appDisplayName!.trim()
+              : 'App')
+        : (profile?.label ?? shortPubkey(message.pubkey));
     final canManageMessage =
-        currentPubkey?.toLowerCase() == pk ||
-        (profile?.ownerPubkey != null &&
-            profile?.ownerPubkey == currentPubkey?.toLowerCase());
+        !isApp &&
+        (currentPubkey?.toLowerCase() == pk ||
+            (profile?.ownerPubkey != null &&
+                profile?.ownerPubkey == currentPubkey?.toLowerCase()));
 
     final userCache = ref.watch(userCacheProvider);
     final knownAgentPubkeys = agentPubkeysWithProfileOwners(
@@ -152,14 +158,23 @@ class _ThreadMessage extends HookConsumerWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         if (showAuthor)
-                          GestureDetector(
-                            onTap: () =>
-                                showUserProfileSheet(context, message.pubkey),
-                            child: _Avatar(
-                              profile: profile,
-                              pubkey: message.pubkey,
-                            ),
-                          )
+                          isApp
+                              ? _Avatar(
+                                  profile: profile,
+                                  pubkey: message.pubkey,
+                                  imageUrl: message.appPicture,
+                                  fallbackLabel: displayName,
+                                )
+                              : GestureDetector(
+                                  onTap: () => showUserProfileSheet(
+                                    context,
+                                    message.pubkey,
+                                  ),
+                                  child: _Avatar(
+                                    profile: profile,
+                                    pubkey: message.pubkey,
+                                  ),
+                                )
                         else
                           const SizedBox(width: messageAvatarSize),
                         const SizedBox(width: messageAvatarContentGap),
@@ -181,20 +196,24 @@ class _ThreadMessage extends HookConsumerWidget {
                                         Expanded(
                                           child: MessageAuthorMeta(
                                             displayName: displayName,
-                                            username: messageUsernameLabel(
-                                              profile,
-                                            ),
+                                            username: isApp
+                                                ? null
+                                                : messageUsernameLabel(profile),
                                             timestamp: formatMessageTime(
                                               message.createdAt,
                                             ),
                                             nameColor: context.colors.onSurface,
                                             metadataColor:
                                                 context.colors.onSurfaceVariant,
-                                            onAuthorTap: () =>
-                                                showUserProfileSheet(
-                                                  context,
-                                                  message.pubkey,
-                                                ),
+                                            onAuthorTap: isApp
+                                                ? null
+                                                : () => showUserProfileSheet(
+                                                    context,
+                                                    message.pubkey,
+                                                  ),
+                                            badge: isApp
+                                                ? const AppBadge()
+                                                : null,
                                             displayNameKey: ValueKey(
                                               'thread-message-author-${message.id}',
                                             ),

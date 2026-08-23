@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 
+import '../../shared/relay/app_metadata.dart';
 import '../../shared/relay/relay.dart';
 import '../../shared/custom_emoji/custom_emoji.dart';
 import 'channel_window.dart';
@@ -177,6 +178,23 @@ class TimelineMessage {
   /// Root event ID of the thread (null for top-level messages).
   final String? rootId;
 
+  /// Cryptographic event signer. Matches [pubkey] except when a future
+  /// resolver overlays a different visible author; App messages keep the
+  /// relay pubkey here.
+  final String signerPubkey;
+
+  /// Whether this row is attributed to a verified community App.
+  final bool isApp;
+
+  /// Canonical App UUID when [isApp] is true.
+  final String? appId;
+
+  /// App metadata name when [isApp] is true.
+  final String? appDisplayName;
+
+  /// Optional App picture URL when [isApp] is true.
+  final String? appPicture;
+
   const TimelineMessage({
     required this.id,
     required this.pubkey,
@@ -190,7 +208,12 @@ class TimelineMessage {
     this.reactions = const [],
     this.parentId,
     this.rootId,
-  });
+    String? signerPubkey,
+    this.isApp = false,
+    this.appId,
+    this.appDisplayName,
+    this.appPicture,
+  }) : signerPubkey = signerPubkey ?? pubkey;
 
   /// Attachment messages stay visually distinct from surrounding messages,
   /// even when several are sent by the same author in quick succession.
@@ -325,6 +348,29 @@ List<List<MainTimelineEntry>> groupMembershipTimelineEntries(
   return result;
 }
 
+/// Whether [current] should continue [previous]'s visual message group.
+///
+/// App identity wins over the shared relay pubkey so two Apps never collapse
+/// into one author row.
+bool hasSameMessageAuthor(TimelineMessage previous, TimelineMessage current) {
+  final previousAppId = previous.appId?.trim().toLowerCase();
+  final currentAppId = current.appId?.trim().toLowerCase();
+  if ((previousAppId != null && previousAppId.isNotEmpty) ||
+      (currentAppId != null && currentAppId.isNotEmpty)) {
+    return previousAppId != null &&
+        previousAppId.isNotEmpty &&
+        currentAppId != null &&
+        currentAppId.isNotEmpty &&
+        previousAppId == currentAppId;
+  }
+
+  final previousPubkey = previous.pubkey.trim().toLowerCase();
+  final currentPubkey = current.pubkey.trim().toLowerCase();
+  return previousPubkey.isNotEmpty &&
+      currentPubkey.isNotEmpty &&
+      previousPubkey == currentPubkey;
+}
+
 /// Process a chronologically-sorted list of [NostrEvent]s into a list of
 /// [TimelineMessage]s, applying deletions, edits, reactions, and system event
 /// parsing.
@@ -334,6 +380,8 @@ List<List<MainTimelineEntry>> groupMembershipTimelineEntries(
 List<TimelineMessage> formatTimeline(
   List<NostrEvent> events, {
   String? currentPubkey,
+  String? relaySelfPubkey,
+  Map<String, AppMetadata>? apps,
 }) {
   // 1. Collect deletion targets. Both kind:5 (NIP-09) and kind:9005
   // (Buzz-native) are deletion markers; mirror desktop's behavior.
@@ -400,6 +448,7 @@ List<TimelineMessage> formatTimeline(
   }
 
   final normalizedCurrentPubkey = currentPubkey?.toLowerCase();
+  final appLookup = apps ?? const <String, AppMetadata>{};
 
   List<TimelineReaction> reactionsFor(String eventId) {
     final emojiMap = reactionMap[eventId];
@@ -480,6 +529,11 @@ List<TimelineMessage> formatTimeline(
       ];
 
       final threadRef = event.threadReference;
+      final actor = resolveAppActor(
+        event: event,
+        apps: appLookup,
+        relaySelfPubkey: relaySelfPubkey,
+      );
 
       result.add(
         TimelineMessage(
@@ -493,6 +547,11 @@ List<TimelineMessage> formatTimeline(
           reactions: reactionsFor(event.id),
           parentId: threadRef.parentId,
           rootId: threadRef.rootId,
+          signerPubkey: event.pubkey,
+          isApp: actor != null,
+          appId: actor?.appId,
+          appDisplayName: actor?.name,
+          appPicture: actor?.picture,
         ),
       );
     }

@@ -171,8 +171,7 @@ class _ThreadMessageList extends StatelessWidget {
                 final showAuthor =
                     previousReply == null ||
                     showDayDivider ||
-                    previousReply.pubkey.toLowerCase() !=
-                        reply.pubkey.toLowerCase() ||
+                    !hasSameMessageAuthor(previousReply, reply) ||
                     (reply.createdAt - previousReply.createdAt) > 300;
 
                 // Check if this reply itself has children (nested thread).

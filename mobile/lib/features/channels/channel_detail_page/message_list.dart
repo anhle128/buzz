@@ -777,8 +777,7 @@ class _MessageList extends HookConsumerWidget {
                         prevMessage == null ||
                         prevMessage.isSystem ||
                         showDayDivider ||
-                        prevMessage.pubkey.toLowerCase() !=
-                            message.pubkey.toLowerCase() ||
+                        !hasSameMessageAuthor(prevMessage, message) ||
                         (message.createdAt - prevMessage.createdAt) > 300);
 
                 return Padding(
