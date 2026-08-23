@@ -192,6 +192,10 @@ test.describe("apps settings", () => {
 
     const credentials = page.getByTestId("apps-credentials-dialog");
     await expect(credentials).toBeVisible();
+    await expect(page.getByTestId("settings-apps")).toHaveAttribute(
+      "data-has-cached-secret",
+      "false",
+    );
     await expect(page.getByTestId("apps-credentials-secret")).toHaveText(
       SECRET,
     );
@@ -206,12 +210,20 @@ test.describe("apps settings", () => {
     await page.getByTestId("apps-credentials-close").click();
     await expect(credentials).toHaveCount(0);
     await expect(page.getByText(SECRET)).toHaveCount(0);
+    await expect(page.getByTestId("settings-apps")).toHaveAttribute(
+      "data-has-cached-secret",
+      "false",
+    );
     await expect(page.getByTestId("apps-row-name")).toHaveText("Pager");
 
     await page.getByTestId("settings-back-to-app").click();
     await openSettings(page, "apps");
     await expect(page.getByText(SECRET)).toHaveCount(0);
     await expect(page.getByTestId("apps-credentials-dialog")).toHaveCount(0);
+    await expect(page.getByTestId("settings-apps")).toHaveAttribute(
+      "data-has-cached-secret",
+      "false",
+    );
   });
 
   test("edit clear icon upload rotate disable and enable", async ({ page }) => {
@@ -242,6 +254,10 @@ test.describe("apps settings", () => {
     );
     await page.getByTestId("apps-credentials-close").click();
     await expect(page.getByText(ROTATED_SECRET)).toHaveCount(0);
+    await expect(page.getByTestId("settings-apps")).toHaveAttribute(
+      "data-has-cached-secret",
+      "false",
+    );
 
     await page.getByTestId("apps-disable-button").click();
     await expect(page.getByTestId("apps-disable-confirm")).toBeVisible();

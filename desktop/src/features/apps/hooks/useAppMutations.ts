@@ -1,15 +1,18 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import * as React from "react";
 
 import { appsQueryKey } from "@/features/apps/hooks/useAppsQuery";
 import {
   type AppAdminCommand,
   type AppCredentials,
+  type AppPublicAck,
   buildCreateCommand,
   buildDisableCommand,
   buildEnableCommand,
   buildRotateSecretCommand,
   buildUpdateCommand,
   parseAppSecretAck,
+  publicAppAck,
   serializeAppCommand,
 } from "@/features/apps/lib/appCommands";
 import { useRelaySelfQuery } from "@/features/moderation/hooks";
@@ -50,22 +53,31 @@ async function publishSecretCommand(
 export function useAppMutations() {
   const queryClient = useQueryClient();
   const relaySelf = useRelaySelfQuery().data ?? null;
+  const oneTimeRef = React.useRef<AppCredentials | null>(null);
 
   const invalidate = async () => {
     await queryClient.invalidateQueries({ queryKey: appsQueryKey(relaySelf) });
   };
 
+  const captureOneTime = (credentials: AppCredentials): AppPublicAck => {
+    oneTimeRef.current = credentials;
+    return publicAppAck(credentials);
+  };
+
   const createMutation = useMutation({
-    mutationFn: (input: {
+    mutationFn: async (input: {
       name: string;
       description?: string;
       iconUrl?: string;
     }) =>
-      publishSecretCommand(
-        buildCreateCommand(input),
-        "Timed out while creating the App.",
-        "Failed to create the App.",
+      captureOneTime(
+        await publishSecretCommand(
+          buildCreateCommand(input),
+          "Timed out while creating the App.",
+          "Failed to create the App.",
+        ),
       ),
+    gcTime: 0,
     onSuccess: invalidate,
   });
 
@@ -87,12 +99,15 @@ export function useAppMutations() {
   });
 
   const rotateMutation = useMutation({
-    mutationFn: (appId: string) =>
-      publishSecretCommand(
-        buildRotateSecretCommand(appId),
-        "Timed out while rotating the App secret.",
-        "Failed to rotate the App secret.",
+    mutationFn: async (appId: string) =>
+      captureOneTime(
+        await publishSecretCommand(
+          buildRotateSecretCommand(appId),
+          "Timed out while rotating the App secret.",
+          "Failed to rotate the App secret.",
+        ),
       ),
+    gcTime: 0,
     onSuccess: invalidate,
   });
 
@@ -116,12 +131,32 @@ export function useAppMutations() {
     onSuccess: invalidate,
   });
 
+  const takeOneTimeCredentials = React.useCallback(() => {
+    const next = oneTimeRef.current;
+    oneTimeRef.current = null;
+    return next;
+  }, []);
+
+  const forgetOneTimeSecret = React.useCallback(() => {
+    oneTimeRef.current = null;
+    createMutation.reset();
+    rotateMutation.reset();
+  }, [createMutation, rotateMutation]);
+
+  React.useEffect(() => {
+    return () => {
+      oneTimeRef.current = null;
+    };
+  }, []);
+
   return {
     createMutation,
     updateMutation,
     rotateMutation,
     enableMutation,
     disableMutation,
+    takeOneTimeCredentials,
+    forgetOneTimeSecret,
     isMutating:
       createMutation.isPending ||
       updateMutation.isPending ||

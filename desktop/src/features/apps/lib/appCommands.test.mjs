@@ -9,8 +9,11 @@ import {
   buildEnableCommand,
   buildRotateSecretCommand,
   buildUpdateCommand,
+  closeAppCredentialCaches,
   createAppCredentialStore,
+  mutationHoldsAppSecret,
   parseAppSecretAck,
+  publicAppAck,
   serializeAppCommand,
 } from "./appCommands.ts";
 
@@ -162,4 +165,44 @@ test("credential helper clears on close and unmount", () => {
   store.set(credentials);
   store.clearOnUnmount();
   assert.equal(store.get(), null);
+});
+
+test("mutation cache result omits the one-time secret", () => {
+  const credentials = parseAppSecretAck(
+    `response:${JSON.stringify({
+      app_id: APP_ID,
+      webhook_secret: "one-time-secret",
+    })}`,
+    RELAY,
+  );
+  const cached = publicAppAck(credentials);
+  assert.deepEqual(cached, {
+    appId: APP_ID,
+    callbackUrl: `${RELAY}/hooks/apps/${APP_ID}`,
+  });
+  assert.equal("webhookSecret" in cached, false);
+  assert.equal(mutationHoldsAppSecret(cached), false);
+  assert.equal(mutationHoldsAppSecret(credentials), true);
+});
+
+test("close clears a leaked secret from mutation cache and dialog store", () => {
+  const store = createAppCredentialStore();
+  const credentials = parseAppSecretAck(
+    `response:${JSON.stringify({
+      app_id: APP_ID,
+      webhook_secret: "one-time-secret",
+    })}`,
+    RELAY,
+  );
+  store.set(credentials);
+  const leakedMutationData = credentials;
+  assert.equal(mutationHoldsAppSecret(leakedMutationData), true);
+
+  const closed = closeAppCredentialCaches({
+    store,
+    mutationData: leakedMutationData,
+  });
+  assert.equal(store.get(), null);
+  assert.equal(closed.mutationData, null);
+  assert.equal(mutationHoldsAppSecret(closed.mutationData), false);
 });

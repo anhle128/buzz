@@ -6,6 +6,7 @@ import { useAppsQuery } from "@/features/apps/hooks/useAppsQuery";
 import {
   appCallbackUrl,
   type AppCredentials,
+  mutationHoldsAppSecret,
 } from "@/features/apps/lib/appCommands";
 import type { AppMetadata } from "@/features/apps/types";
 import { AppCredentialsDialog } from "@/features/apps/ui/AppCredentialsDialog";
@@ -204,13 +205,13 @@ export function AppsSettingsPanel() {
   }
 
   async function handleCreate(values: AppFormValues) {
-    const created = await mutations.createMutation.mutateAsync({
+    await mutations.createMutation.mutateAsync({
       name: values.name,
       description: values.description,
       iconUrl: values.iconUrl,
     });
     setFormMode(null);
-    setCredentials(created);
+    setCredentials(mutations.takeOneTimeCredentials());
   }
 
   async function handleEdit(values: AppFormValues) {
@@ -234,7 +235,16 @@ export function AppsSettingsPanel() {
     mutations.createMutation.isPending || mutations.updateMutation.isPending;
 
   return (
-    <section className="min-w-0" data-testid="settings-apps">
+    <section
+      className="min-w-0"
+      data-has-cached-secret={
+        mutationHoldsAppSecret(mutations.createMutation.data) ||
+        mutationHoldsAppSecret(mutations.rotateMutation.data)
+          ? "true"
+          : "false"
+      }
+      data-testid="settings-apps"
+    >
       <SettingsSectionHeader
         action={
           <Button
@@ -336,7 +346,10 @@ export function AppsSettingsPanel() {
       <AppCredentialsDialog
         credentials={credentials}
         onOpenChange={(open) => {
-          if (!open) setCredentials(null);
+          if (!open) {
+            setCredentials(null);
+            mutations.forgetOneTimeSecret();
+          }
         }}
       />
 
@@ -362,8 +375,8 @@ export function AppsSettingsPanel() {
                 if (!rotateApp) return;
                 void mutations.rotateMutation
                   .mutateAsync(rotateApp.appId)
-                  .then((next) => {
-                    setCredentials(next);
+                  .then(() => {
+                    setCredentials(mutations.takeOneTimeCredentials());
                     setRotateApp(null);
                   });
               }}

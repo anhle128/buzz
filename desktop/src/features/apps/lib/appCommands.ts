@@ -52,6 +52,12 @@ export type AppCredentials = {
   webhookSecret: string;
 };
 
+/** Mutation/query cache payload for create/rotate. Never includes the secret. */
+export type AppPublicAck = {
+  appId: string;
+  callbackUrl: string;
+};
+
 export type AppCredentialStore = {
   get: () => AppCredentials | null;
   set: (credentials: AppCredentials) => void;
@@ -249,4 +255,33 @@ export function createAppCredentialStore(): AppCredentialStore {
     clearOnClose: clear,
     clearOnUnmount: clear,
   };
+}
+
+export function publicAppAck(credentials: AppCredentials): AppPublicAck {
+  return {
+    appId: credentials.appId,
+    callbackUrl: credentials.callbackUrl,
+  };
+}
+
+export function mutationHoldsAppSecret(data: unknown): boolean {
+  if (!data || typeof data !== "object") {
+    return false;
+  }
+  const secret = (data as { webhookSecret?: unknown }).webhookSecret;
+  return typeof secret === "string" && secret.length > 0;
+}
+
+export function closeAppCredentialCaches({
+  store,
+  mutationData,
+}: {
+  store?: AppCredentialStore;
+  mutationData?: unknown;
+}): { mutationData: null } {
+  store?.clearOnClose();
+  if (mutationHoldsAppSecret(mutationData)) {
+    return { mutationData: null };
+  }
+  return { mutationData: null };
 }
