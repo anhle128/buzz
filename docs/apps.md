@@ -193,8 +193,7 @@ Success (new or identical replay):
 }
 ```
 
-Errors use `{"error": "<redacted message>", "code": "<stable_code>"}` except
-transient `503`, which is `{"error": "service unavailable"}` with no `code`.
+Errors use `{"error": "<redacted message>", "code": "<stable_code>"}`.
 
 ## Routing
 
@@ -266,7 +265,7 @@ secrets count toward the quota. `429` includes `Retry-After`.
 | `422` | `project_ambiguous` | More than one claim-valid project. |
 | `422` | `project_channel_invalid` | Missing, malformed, archived, deleted, or cross-community destination channel. |
 | `429` | `rate_limited` | Quota exceeded. `Retry-After` is seconds until the window resets. |
-| `503` | _(none)_ | Transient database, Redis, signer, route-read, or mention-read failure. Retry with the same key. |
+| `503` | `service_unavailable` | Transient database, Redis, signer, route-read, or mention-read failure. Retry with the same key. |
 
 Redacted messages never include candidate repositories, project or channel
 membership, secret hashes, raw bodies, or raw idempotency keys.

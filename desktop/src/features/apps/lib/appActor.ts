@@ -93,7 +93,9 @@ export function resolveAppActor(input: {
     normalizePubkey(event.pubkey) === relayPubkey &&
     (!requireSignature || hasValidSignature(event)) &&
     appId &&
-    metadata
+    metadata &&
+    metadata.appId === appId &&
+    normalizeRelayPubkey(metadata.relayPubkey) === relayPubkey
   ) {
     return {
       type: "app",
@@ -104,9 +106,5 @@ export function resolveAppActor(input: {
     };
   }
 
-  return fallbackUserActor(
-    event,
-    relaySelfPubkey,
-    event.kind === KIND_STREAM_MESSAGE && attemptedApp,
-  );
+  return fallbackUserActor(event, relaySelfPubkey, attemptedApp);
 }

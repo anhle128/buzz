@@ -6,6 +6,7 @@ export const KIND_APP_ADMIN_COMMAND = KIND;
 const APP_NAME_MAX_CHARS = 128;
 const APP_DESCRIPTION_MAX_CHARS = 2_048;
 const APP_ICON_URL_MAX_BYTES = 4_096;
+const INVALID_ICON_URL_CHARACTER = /[\p{Cc}\p{White_Space}]/u;
 const DUPLICATE_NO_SECRET_MSG =
   "duplicate create or rotate returned no secret; use rotate-secret";
 
@@ -97,14 +98,11 @@ function validateIconUrl(iconUrl: string): string {
   if (iconUrl.length === 0) {
     return iconUrl;
   }
-  if (iconUrl.length > APP_ICON_URL_MAX_BYTES) {
+  if (new TextEncoder().encode(iconUrl).byteLength > APP_ICON_URL_MAX_BYTES) {
     throw new Error(`icon_url exceeds ${APP_ICON_URL_MAX_BYTES} UTF-8 bytes`);
   }
-  for (const char of iconUrl) {
-    const code = char.charCodeAt(0);
-    if (code <= 32) {
-      throw new Error("icon_url contains invalid characters");
-    }
+  if (INVALID_ICON_URL_CHARACTER.test(iconUrl)) {
+    throw new Error("icon_url contains invalid characters");
   }
   if (
     iconUrl.startsWith("data:image/") ||

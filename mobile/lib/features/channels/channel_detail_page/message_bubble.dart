@@ -150,7 +150,7 @@ class _MessageBubble extends HookConsumerWidget {
                       if (showAuthor)
                         isApp
                             ? _UserAvatar(
-                                profile: profile,
+                                profile: null,
                                 pubkey: message.pubkey,
                                 imageUrl: message.appPicture,
                                 fallbackLabel: displayName,

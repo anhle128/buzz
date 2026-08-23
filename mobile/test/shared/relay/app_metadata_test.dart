@@ -46,6 +46,25 @@ nostr.Event _signMetadata({
   );
 }
 
+nostr.Event _signMessage({
+  nostr.Keys? keys,
+  String appId = _appId,
+  List<List<String>> extraTags = const [],
+}) {
+  return nostr.Event.from(
+    kind: EventKind.streamMessage,
+    content: 'build passed',
+    secretKey: (keys ?? _relay).secret,
+    createdAt: 1700000100,
+    tags: [
+      ['h', '36411e44-0e2d-4cfe-bd6e-567eb169db9f'],
+      ['buzz:app', appId],
+      ...extraTags,
+    ],
+    verify: true,
+  );
+}
+
 void main() {
   test('parses valid active metadata', () {
     final event = _signMetadata();
@@ -257,5 +276,60 @@ void main() {
     ], _relay.public);
     expect(folded.length, 1);
     expect(folded[_appId]?.name, winner);
+  });
+
+  test('resolves only metadata whose App UUID and relay match the message', () {
+    final event = _fromNostr(_signMessage());
+    final valid = AppMetadata(
+      appId: _appId,
+      name: 'Buildkite',
+      status: 'active',
+      eventId: 'ab' * 32,
+      relayPubkey: _relay.public.toLowerCase(),
+      updatedAt: 1700000000,
+    );
+
+    expect(
+      resolveAppActor(
+        event: event,
+        apps: {_appId: valid},
+        relaySelfPubkey: _relay.public,
+      )?.appId,
+      _appId,
+    );
+    expect(
+      resolveAppActor(
+        event: event,
+        apps: {
+          _appId: AppMetadata(
+            appId: _otherAppId,
+            name: valid.name,
+            status: valid.status,
+            eventId: valid.eventId,
+            relayPubkey: valid.relayPubkey,
+            updatedAt: valid.updatedAt,
+          ),
+        },
+        relaySelfPubkey: _relay.public,
+      ),
+      isNull,
+    );
+    expect(
+      resolveAppActor(
+        event: event,
+        apps: {
+          _appId: AppMetadata(
+            appId: valid.appId,
+            name: valid.name,
+            status: valid.status,
+            eventId: valid.eventId,
+            relayPubkey: _other.public.toLowerCase(),
+            updatedAt: valid.updatedAt,
+          ),
+        },
+        relaySelfPubkey: _relay.public,
+      ),
+      isNull,
+    );
   });
 }

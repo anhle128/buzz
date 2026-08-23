@@ -4168,6 +4168,13 @@ void main() {
             messages: [event],
             apps: apps(picture: null),
             relaySelf: relay.public,
+            users: {
+              event.pubkey: UserProfile(
+                pubkey: event.pubkey,
+                displayName: 'Relay Bot',
+                avatarUrl: 'https://example.test/relay.png',
+              ),
+            },
           ),
         );
         await tester.pumpAndSettle();

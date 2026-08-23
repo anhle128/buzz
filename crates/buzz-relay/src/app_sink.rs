@@ -29,7 +29,7 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
-use crate::api::{api_error, api_error_with_code};
+use crate::api::api_error_with_code;
 use crate::handlers::event::dispatch_persistent_event;
 use crate::message_mentions::resolve_mention_pubkeys;
 use crate::project_route::{
@@ -155,7 +155,12 @@ fn invalid_control_err() -> Response {
 }
 
 fn unavailable_err() -> Response {
-    api_error(StatusCode::SERVICE_UNAVAILABLE, "service unavailable").into_response()
+    json_err(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "service unavailable",
+        "service_unavailable",
+    )
+    .into_response()
 }
 
 fn rate_limited_err(reset_in_secs: u64) -> Response {
@@ -908,6 +913,22 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::net::Ipv4Addr;
+
+    #[tokio::test]
+    async fn unavailable_error_has_stable_code() {
+        let response = unavailable_err();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = to_bytes(response.into_body(), 1024)
+            .await
+            .expect("read response body");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&body).expect("parse response body"),
+            json!({
+                "error": "service unavailable",
+                "code": "service_unavailable",
+            })
+        );
+    }
 
     #[test]
     fn app_callback_rate_limit_key_is_fully_scoped() {

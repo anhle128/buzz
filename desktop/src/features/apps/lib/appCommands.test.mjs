@@ -96,6 +96,28 @@ test("create rejects empty name", () => {
   );
 });
 
+test("icon url limit is measured in UTF-8 bytes", () => {
+  assert.throws(
+    () =>
+      buildCreateCommand({
+        name: "Buildkite",
+        iconUrl: `https://example.test/${"€".repeat(1_400)}`,
+      }),
+    /4096 UTF-8 bytes/,
+  );
+});
+
+test("icon url rejects Unicode whitespace", () => {
+  assert.throws(
+    () =>
+      buildCreateCommand({
+        name: "Buildkite",
+        iconUrl: "https://example.test/icon\u00a0name.png",
+      }),
+    /invalid characters/,
+  );
+});
+
 test("app id must be canonical lowercase uuid", () => {
   assert.throws(
     () => buildRotateSecretCommand(APP_ID.toUpperCase()),

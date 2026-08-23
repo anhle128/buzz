@@ -154,7 +154,7 @@ test("missing metadata falls back without inspecting p tags", () => {
   assert.deepEqual(actor, { type: "user", pubkey: RELAY });
 });
 
-test("non-kind-9 fallback uses signer-aware user resolution", () => {
+test("non-kind-9 App marker falls back to its signer without inspecting p tags", () => {
   const event = signMessage({
     kind: 40002,
     tags: [
@@ -168,7 +168,38 @@ test("non-kind-9 fallback uses signer-aware user resolution", () => {
     apps: APPS,
     relaySelfPubkey: RELAY,
   });
-  assert.deepEqual(actor, { type: "user", pubkey: ATTRIBUTED_USER });
+  assert.deepEqual(actor, { type: "user", pubkey: RELAY });
+});
+
+test("metadata keyed under the wrong App UUID falls back to the signer", () => {
+  const event = signMessage({
+    tags: [
+      ["p", ATTRIBUTED_USER],
+      ["h", CHANNEL_ID],
+      ["buzz:app", APP_ID],
+    ],
+  });
+  const apps = new Map([
+    [
+      APP_ID,
+      { ...APPS.get(APP_ID), appId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
+    ],
+  ]);
+  const actor = resolveAppActor({ event, apps, relaySelfPubkey: RELAY });
+  assert.deepEqual(actor, { type: "user", pubkey: RELAY });
+});
+
+test("metadata from another relay falls back to the signer", () => {
+  const event = signMessage({
+    tags: [
+      ["p", ATTRIBUTED_USER],
+      ["h", CHANNEL_ID],
+      ["buzz:app", APP_ID],
+    ],
+  });
+  const apps = new Map([[APP_ID, { ...APPS.get(APP_ID), relayPubkey: USER }]]);
+  const actor = resolveAppActor({ event, apps, relaySelfPubkey: RELAY });
+  assert.deepEqual(actor, { type: "user", pubkey: RELAY });
 });
 
 test("search and feed modes skip only the unavailable signature check", () => {

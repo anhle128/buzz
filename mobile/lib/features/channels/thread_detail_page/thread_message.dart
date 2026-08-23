@@ -160,7 +160,7 @@ class _ThreadMessage extends HookConsumerWidget {
                         if (showAuthor)
                           isApp
                               ? _Avatar(
-                                  profile: profile,
+                                  profile: null,
                                   pubkey: message.pubkey,
                                   imageUrl: message.appPicture,
                                   fallbackLabel: displayName,

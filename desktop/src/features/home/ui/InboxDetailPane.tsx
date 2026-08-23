@@ -731,6 +731,7 @@ function InboxMessageDetailPane({
                   depth: message.depth,
                   kind: message.kind,
                   pubkey: message.authorPubkey,
+                  isApp: message.isApp,
                   time: message.timeLabel ?? message.fullTimestampLabel,
                 },
                 currentPubkey,

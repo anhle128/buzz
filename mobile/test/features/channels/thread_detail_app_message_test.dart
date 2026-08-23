@@ -72,11 +72,13 @@ void main() {
     return NostrEvent.fromJson(event.toMap());
   }
 
-  Map<String, AppMetadata> apps() => {
+  Map<String, AppMetadata> apps({
+    String? picture = 'https://example.test/archon.png',
+  }) => {
     _appId: AppMetadata(
       appId: _appId,
       name: 'Archon',
-      picture: 'https://example.test/archon.png',
+      picture: picture,
       status: 'active',
       eventId: 'ab' * 32,
       relayPubkey: relay.public.toLowerCase(),
@@ -101,6 +103,7 @@ void main() {
     required List<TimelineMessage> messages,
     List<NostrEvent> liveEvents = const [],
     UserProfile? currentUser,
+    Map<String, UserProfile> users = const {},
   }) {
     return ProviderScope(
       overrides: [
@@ -116,7 +119,7 @@ void main() {
         threadRepliesProvider(
           ThreadRepliesArgs(channelId: _channelId, rootId: head.id),
         ).overrideWith((ref) async => liveEvents),
-        userCacheProvider.overrideWith(() => _FakeUserCacheNotifier(const {})),
+        userCacheProvider.overrideWith(() => _FakeUserCacheNotifier(users)),
         profileProvider.overrideWith(() => _FakeProfileNotifier(currentUser)),
         channelsProvider.overrideWith(() => _FakeChannelsNotifier([_channel])),
         channelDetailsProvider(
@@ -170,6 +173,38 @@ void main() {
     await tester.tap(find.text('Archon'));
     await tester.pumpAndSettle();
     expect(find.byType(UserProfileSheet), findsNothing);
+  });
+
+  testWidgets('thread App without picture ignores the relay profile avatar', (
+    tester,
+  ) async {
+    final root = appMessage(content: 'callback');
+    final messages = formatTimeline(
+      [root],
+      relaySelfPubkey: relay.public,
+      apps: apps(picture: null),
+    );
+    await tester.pumpWidget(
+      buildThread(
+        head: messages.single,
+        messages: messages,
+        users: {
+          relay.public.toLowerCase(): UserProfile(
+            pubkey: relay.public,
+            displayName: 'Relay Bot',
+            avatarUrl: 'https://example.test/relay.png',
+          ),
+        },
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Archon'), findsOneWidget);
+    expect(find.text('A'), findsOneWidget);
+    expect(
+      tester.widget<AvatarImage>(find.byType(AvatarImage).first).imageUrl,
+      isNull,
+    );
   });
 
   testWidgets(

@@ -5,7 +5,7 @@ import 'nostr_models.dart';
 final _relayPubkeyPattern = RegExp(r'^[0-9a-f]{64}$');
 
 /// Verified kind 39007 App metadata head.
-class AppMetadata {
+final class AppMetadata {
   final String appId;
   final String name;
   final String? description;
@@ -188,7 +188,9 @@ AppActor? resolveAppActor({
       _normalizeRelayPubkey(event.pubkey) == relayPubkey &&
       _hasValidEventIdAndSignature(event) &&
       appId != null &&
-      metadata != null) {
+      metadata != null &&
+      metadata.appId == appId &&
+      _normalizeRelayPubkey(metadata.relayPubkey) == relayPubkey) {
     return AppActor(
       appId: metadata.appId,
       name: metadata.name,

@@ -103,7 +103,6 @@ struct CommandOutcome {
     webhook_secret: Option<String>,
     metadata: Option<StoredEvent>,
     audit: AuditAction,
-    name: String,
     status: AppStatus,
 }
 
@@ -114,6 +113,14 @@ impl CommandOutcome {
             body["webhook_secret"] = serde_json::Value::String(secret.clone());
         }
         body
+    }
+
+    fn audit_detail(&self) -> serde_json::Value {
+        serde_json::json!({
+            "app_id": self.app_id,
+            "action": self.audit.as_str(),
+            "status": status_wire(self.status),
+        })
     }
 }
 
@@ -250,7 +257,6 @@ fn outcome(
         webhook_secret,
         metadata,
         audit,
-        name: app.name,
         status: app.status,
     }
 }
@@ -363,11 +369,7 @@ async fn enqueue_lifecycle_audit(
         action: outcome.audit.clone(),
         actor_pubkey: Some(event.pubkey.to_bytes().to_vec()),
         object_id: Some(outcome.app_id.to_string()),
-        detail: serde_json::json!({
-            "app_id": outcome.app_id,
-            "name": outcome.name,
-            "status": status_wire(outcome.status),
-        }),
+        detail: outcome.audit_detail(),
     };
     if let Err(err) = audit_tx.send(entry).await {
         error!(app_id = %outcome.app_id, "Audit channel closed — app lifecycle entry lost: {err}");
@@ -382,6 +384,7 @@ mod tests {
 
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine;
+    use buzz_audit::AuditAction;
     use buzz_auth::Scope;
     use buzz_core::app::AppStatus;
     use buzz_core::kind::{KIND_APP_ADMIN_COMMAND, KIND_APP_METADATA};
@@ -397,6 +400,8 @@ mod tests {
         ingest_event, HttpAuthMethod, IngestAuth, IngestError, IngestResult,
     };
     use crate::state::AppState;
+
+    use super::CommandOutcome;
 
     const TEST_DB_URL: &str = "postgres://buzz:buzz_dev@localhost:5432/buzz"; // sadscan:disable np.postgres.1
 
@@ -522,6 +527,28 @@ mod tests {
 
     fn hash_secret(secret: &[u8]) -> [u8; 32] {
         Sha256::digest(secret).into()
+    }
+
+    #[test]
+    fn app_lifecycle_audit_detail_contains_only_minimized_fields() {
+        let app_id =
+            Uuid::parse_str("6eb31227-8ed2-42ec-9024-863497cbeed2").expect("canonical app id");
+        let outcome = CommandOutcome {
+            app_id,
+            webhook_secret: None,
+            metadata: None,
+            audit: AuditAction::AppCreated,
+            status: AppStatus::Active,
+        };
+
+        assert_eq!(
+            outcome.audit_detail(),
+            json!({
+                "app_id": app_id,
+                "action": "app_created",
+                "status": "active",
+            })
+        );
     }
 
     async fn live_metadata(
