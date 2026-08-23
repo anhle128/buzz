@@ -15,6 +15,8 @@ pub mod admin_moderation;
 pub mod api_token;
 /// Community-scoped App lifecycle rows and transaction-local command helpers.
 pub mod app;
+/// Serialized idempotent admission for App callback deliveries.
+pub mod app_admission;
 /// Relay-scoped archived identity persistence (NIP-IA).
 pub mod archived_identities;
 /// Channel and membership persistence.
@@ -1274,6 +1276,27 @@ impl Db {
     #[datastore_span(name = "list_apps", system = "postgresql")]
     pub async fn list_apps(&self, community_id: CommunityId) -> Result<Vec<app::AppRecord>> {
         app::list_apps(&self.pool, community_id).await
+    }
+
+    /// Begin serialized idempotent admission for an App callback delivery.
+    #[datastore_span(name = "begin_app_admission", system = "postgresql")]
+    pub async fn begin_app_admission(
+        &self,
+        community_id: CommunityId,
+        app_id: Uuid,
+        idempotency_key_hash: &[u8; 32],
+        payload_hash: &[u8; 32],
+        event_type: &str,
+    ) -> Result<app_admission::BeginAppAdmission> {
+        app_admission::begin_app_admission(
+            &self.pool,
+            community_id,
+            app_id,
+            idempotency_key_hash,
+            payload_hash,
+            event_type,
+        )
+        .await
     }
 
     /// Returns the community mapped to a normalized request host, if one exists.
