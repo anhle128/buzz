@@ -4125,19 +4125,23 @@ function getActiveCommunityRelayUrl(config: E2eConfig | undefined): string {
   }
 }
 
+let mockAppMetadataEvents: RelayEvent[] = [];
+
 function getMockAppMetadataEvents(config: E2eConfig | undefined): RelayEvent[] {
   const relayUrl = getActiveCommunityRelayUrl(config);
   return (
     config?.mock?.appMetadataEventsByRelay?.[relayUrl] ??
     config?.mock?.appMetadataEvents ??
-    []
+    mockAppMetadataEvents
   );
 }
 
-let mockAppMetadataEvents: RelayEvent[] = [];
-
 function resetMockApps(config: E2eConfig | undefined) {
-  mockAppMetadataEvents = [...getMockAppMetadataEvents(config)];
+  const events = getMockAppMetadataEvents(config);
+  if (events === mockAppMetadataEvents) {
+    return;
+  }
+  mockAppMetadataEvents = [...events];
 }
 
 function tagValue(event: RelayEvent, name: string): string | undefined {
@@ -4145,11 +4149,11 @@ function tagValue(event: RelayEvent, name: string): string | undefined {
 }
 
 function replaceMockAppMetadata(event: RelayEvent) {
+  const events = getMockAppMetadataEvents(getConfig());
   const appId = tagValue(event, "d");
-  mockAppMetadataEvents = mockAppMetadataEvents.filter(
-    (existing) => tagValue(existing, "d") !== appId,
-  );
-  mockAppMetadataEvents.push(event);
+  const next = events.filter((existing) => tagValue(existing, "d") !== appId);
+  events.length = 0;
+  events.push(...next, event);
 }
 
 function signMockAppMetadata(input: {
@@ -4208,7 +4212,7 @@ function applyMockAppAdmin(event: RelayEvent): string {
   if (!appId) {
     throw new Error("invalid: missing app_id");
   }
-  const current = mockAppMetadataEvents.find(
+  const current = getMockAppMetadataEvents(getConfig()).find(
     (existing) => tagValue(existing, "d") === appId,
   );
   if (command.action === "rotate_secret") {
@@ -10601,7 +10605,7 @@ function sendToMockSocket(args: {
       }
       const authors = filter.authors?.map((author) => author.toLowerCase());
       const deliver = () => {
-        for (const event of mockAppMetadataEvents) {
+        for (const event of getMockAppMetadataEvents(getConfig())) {
           if (authors && !authors.includes(event.pubkey.toLowerCase())) {
             continue;
           }
