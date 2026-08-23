@@ -393,4 +393,48 @@ test.describe("app message attribution", () => {
       "Archon",
     );
   });
+
+  test("Home inbox list and detail render App identity without a user popover", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await expect(page.getByTestId("sidebar-primary-menu")).toBeVisible();
+
+    const event = signAppMessage({
+      content: "Home inbox App attribution",
+    });
+    await emitSignedMessage(page, CHANNEL_RANDOM, event);
+    await page.evaluate(
+      ({ signed, channelId }) => {
+        (window as MockWindow).__BUZZ_E2E_PUSH_MOCK_FEED_ITEM__?.({
+          id: signed.id,
+          kind: 9,
+          pubkey: signed.pubkey,
+          content: signed.content,
+          created_at: signed.created_at,
+          channel_id: channelId,
+          channel_name: "random",
+          channel_type: "stream",
+          tags: signed.tags,
+          category: "mention",
+        });
+      },
+      { signed: event, channelId: RANDOM_CHANNEL_ID },
+    );
+
+    const listItem = page.getByTestId(`home-inbox-item-${event.id}`);
+    await expect(listItem.getByTestId("home-inbox-sender")).toHaveText(
+      "Archon",
+    );
+    await expect(listItem.getByTestId("message-app-badge")).toHaveText("App");
+    await listItem.getByTestId("home-inbox-sender").hover();
+    await expect(page.getByTestId("user-profile-popover")).toHaveCount(0);
+
+    await listItem.click();
+    const detail = page.getByTestId("home-inbox-selected-message");
+    await expect(detail.getByTestId("message-author")).toHaveText("Archon");
+    await expect(detail.getByTestId("message-app-badge")).toHaveText("App");
+    await detail.getByTestId("message-author").hover();
+    await expect(page.getByTestId("user-profile-popover")).toHaveCount(0);
+  });
 });

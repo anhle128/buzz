@@ -269,6 +269,8 @@ function InboxMessageDetailPane({
       {
         authorLabel: item.senderLabel,
         authorPubkey: item.item.pubkey,
+        isApp: item.isApp,
+        appId: item.appId,
         avatarUrl: item.avatarUrl,
         content: item.preview,
         createdAt: item.item.createdAt,

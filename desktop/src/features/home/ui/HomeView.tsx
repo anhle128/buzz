@@ -360,6 +360,7 @@ export function HomeView({
   // biome-ignore lint/correctness/useExhaustiveDependencies: readStateVersion invalidates the stable getChannelReadAt callback
   const inboxItems = React.useMemo(() => {
     const items = buildInboxItems({
+      apps,
       channels,
       currentPubkey,
       feed,
@@ -367,9 +368,11 @@ export function HomeView({
       getMessageReadAt,
       getThreadReadAt,
       profiles: feedProfiles,
+      relaySelfPubkey,
     });
     return filterInboxItems(items);
   }, [
+    apps,
     channels,
     currentPubkey,
     feed,
@@ -378,6 +381,7 @@ export function HomeView({
     getMessageReadAt,
     getThreadReadAt,
     readStateVersion,
+    relaySelfPubkey,
   ]);
   const { effectiveDoneSet, markItemRead, markItemUnread } =
     useHomeInboxReadState({

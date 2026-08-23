@@ -6,7 +6,9 @@ import { useAppNavigation } from "@/app/navigation/useAppNavigation";
 import type { ActiveChannelTurnSummary } from "@/features/agents/activeAgentTurnsStore";
 import { formatElapsed } from "@/features/agents/ui/agentSessionUtils";
 import { useOpenAgentActivity } from "@/features/agents/useOpenAgentActivity";
+import { useAppsQuery } from "@/features/apps/hooks/useAppsQuery";
 import { buildInboxItems, type InboxItem } from "@/features/home/lib/inbox";
+import { useRelaySelfQuery } from "@/features/moderation/hooks";
 import { getGroupedInboxItemIds } from "@/features/home/useHomeInboxReadState";
 import { useUsersBatchQuery } from "@/features/profile/hooks";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
@@ -271,6 +273,8 @@ export function ChannelActivityPopover({
     enabled: open,
   });
   const profiles = profilesQuery.data?.profiles;
+  const apps = useAppsQuery().data;
+  const relaySelfPubkey = useRelaySelfQuery().data;
   const activityReadAtByMessageId = React.useMemo(
     () =>
       new Map(
@@ -284,19 +288,23 @@ export function ChannelActivityPopover({
   const activityItems = React.useMemo(() => {
     if (!open) return [];
     return buildInboxItems({
+      apps,
       channels: [channel],
       currentPubkey: identityQuery.data?.pubkey,
       feed: buildChannelActivityFeed(unreadChannelFeedItems),
       getMessageReadAt: (messageId) =>
         activityReadAtByMessageId.get(messageId) ?? null,
       profiles,
+      relaySelfPubkey,
     });
   }, [
+    apps,
     channel,
     activityReadAtByMessageId,
     identityQuery.data?.pubkey,
     open,
     profiles,
+    relaySelfPubkey,
     unreadChannelFeedItems,
   ]);
   const hasContent =

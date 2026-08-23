@@ -14,6 +14,14 @@ import {
 } from "./MessageHeader";
 import { MessageTimestamp } from "./MessageTimestamp";
 
+export function MessageAppBadge() {
+  return (
+    <Badge data-testid="message-app-badge" variant="secondary">
+      App
+    </Badge>
+  );
+}
+
 export function renderMessageAuthorIdentity({
   hideAgentAccessBadge = false,
   isDisplayedAsContinuation,
@@ -125,11 +133,7 @@ export function renderMessageAuthorIdentity({
         ownerPubkey={message.ownerPubkey}
       />
     ) : null;
-  const appBadgeNode = message.isApp ? (
-    <Badge data-testid="message-app-badge" variant="secondary">
-      App
-    </Badge>
-  ) : null;
+  const appBadgeNode = message.isApp ? <MessageAppBadge /> : null;
 
   const statusMetadataNode =
     message.pending || message.edited ? (
