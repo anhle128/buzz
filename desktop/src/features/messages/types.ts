@@ -25,6 +25,10 @@ export type TimelineMessage = {
    */
   signerPubkey?: string;
   author: string;
+  /** True when the displayed author is a verified community App. */
+  isApp?: boolean;
+  /** Canonical App UUID when `isApp` is true. */
+  appId?: string;
   /** True when the displayed author is known to be an agent. */
   isAgent?: boolean;
   /** Verified owner pubkey for an agent author, when available. */

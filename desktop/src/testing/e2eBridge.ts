@@ -33,6 +33,7 @@ import {
 } from "@/shared/api/customEmoji";
 import {
   KIND_AGENT_OBSERVER_FRAME,
+  KIND_APP_METADATA,
   KIND_CHANNEL_THREAD_SUMMARY,
   KIND_CHANNEL_WINDOW_BOUNDS,
   KIND_DM_VISIBILITY,
@@ -442,6 +443,10 @@ type E2eConfig = {
     // equals this is treated as a moderation DM (composer disabled). Absent →
     // fail open (no mod-DM detection), matching the Rust command's contract.
     relaySelf?: string | null;
+    /** Signed kind 39007 events served to `useAppsQuery`. */
+    appMetadataEvents?: RelayEvent[];
+    /** Community-scoped kind 39007 events keyed by relay URL. */
+    appMetadataEventsByRelay?: Record<string, RelayEvent[]>;
     oaOwnerIsMe?: boolean;
     /** Whether the mock relay advertises NIP-43 membership support. Defaults to false. */
     relayRequiresMembership?: boolean;
@@ -1196,6 +1201,8 @@ declare global {
       pending?: boolean;
       /** 64-hex id required for the event to be a valid reaction target. */
       id?: string;
+      /** Real signature for App attribution verification. */
+      sig?: string;
     }) => RelayEvent;
     /** Prepend `count` synthetic older messages to a channel's mock store so
      *  an older-history fetch has something to paginate. Mirrors how the real
@@ -4086,6 +4093,30 @@ function getRelayWsUrl(config: E2eConfig | undefined): string {
   return config?.relayWsUrl ?? DEFAULT_RELAY_WS_URL;
 }
 
+function getActiveCommunityRelayUrl(config: E2eConfig | undefined): string {
+  try {
+    const activeId = window.localStorage.getItem("buzz-active-community-id");
+    const communities = JSON.parse(
+      window.localStorage.getItem("buzz-communities") ?? "[]",
+    ) as { id: string; relayUrl: string }[];
+    return (
+      communities.find((community) => community.id === activeId)?.relayUrl ??
+      getRelayWsUrl(config)
+    );
+  } catch {
+    return getRelayWsUrl(config);
+  }
+}
+
+function getMockAppMetadataEvents(config: E2eConfig | undefined): RelayEvent[] {
+  const relayUrl = getActiveCommunityRelayUrl(config);
+  return (
+    config?.mock?.appMetadataEventsByRelay?.[relayUrl] ??
+    config?.mock?.appMetadataEvents ??
+    []
+  );
+}
+
 /**
  * Mirror of the backend's `assert_expected_relay_scope`: a caller-captured
  * tenant scope must still match the active community when the command runs.
@@ -4845,8 +4876,25 @@ function emitMockChannelMessage(
   createdAt?: number,
   pending?: boolean,
   id?: string,
+  sig?: string,
 ) {
   const eventKind = kind ?? 9;
+  if (sig) {
+    const tags = extraTags ? [...extraTags] : [];
+    const event = createMockEvent(
+      eventKind,
+      content,
+      tags,
+      pubkey,
+      createdAt,
+      id,
+      sig,
+    );
+    if (pending) event.pending = true;
+    recordMockMessage(channelId, event);
+    emitMockLiveEvent(channelId, event);
+    return event;
+  }
   if (!parentEventId) {
     const tags = buildTopLevelMessageTags(
       channelId,
@@ -4861,6 +4909,7 @@ function emitMockChannelMessage(
       pubkey,
       createdAt,
       id,
+      sig,
     );
     if (pending) event.pending = true;
     recordMockMessage(channelId, event);
@@ -4894,6 +4943,7 @@ function emitMockChannelMessage(
     authorPubkey,
     createdAt,
     id,
+    sig,
   );
   if (pending) event.pending = true;
   recordMockMessage(channelId, event);
@@ -6063,6 +6113,7 @@ function createMockEvent(
   // 64 hex chars like a real event id — share-link builders reject shorter
   // ids, so copy-link buttons only render with full-length ids.
   id = (crypto.randomUUID() + crypto.randomUUID()).replace(/-/g, ""),
+  sig?: string,
 ): RelayEvent {
   return {
     id,
@@ -6071,7 +6122,7 @@ function createMockEvent(
     kind,
     tags,
     content,
-    sig: "mocksig".repeat(20).slice(0, 128),
+    sig: sig ?? "mocksig".repeat(20).slice(0, 128),
   };
 }
 
@@ -10378,6 +10429,18 @@ function sendToMockSocket(args: {
       return;
     }
 
+    if (filter.kinds?.includes(KIND_APP_METADATA)) {
+      const authors = filter.authors?.map((author) => author.toLowerCase());
+      for (const event of getMockAppMetadataEvents(getConfig())) {
+        if (authors && !authors.includes(event.pubkey.toLowerCase())) {
+          continue;
+        }
+        sendWsText(socket.handler, ["EVENT", subId, event]);
+      }
+      sendWsText(socket.handler, ["EOSE", subId]);
+      return;
+    }
+
     // Project queries: NIP-34 kinds, or kind:1 comments scoped by repo `a`
     // tag or by issue/PR root `e` tag (discussions, approvals, review
     // requests, assignment operations). Channel messages are kind 9, so a
@@ -10972,6 +11035,7 @@ export function maybeInstallE2eTauriMocks() {
     createdAt,
     pending,
     id,
+    sig,
   }) => {
     const channel = mockChannels.find(
       (candidate) => candidate.name === channelName,
@@ -10991,6 +11055,7 @@ export function maybeInstallE2eTauriMocks() {
       createdAt,
       pending,
       id,
+      sig,
     );
   };
   window.__BUZZ_E2E_PREPEND_MOCK_HISTORY__ = prependMockHistory;

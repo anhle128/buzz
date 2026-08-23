@@ -709,8 +709,11 @@ function InboxMessageDetailPane({
                 !isAfterSeparator &&
                 !startsNewMessageGroup(message) &&
                 hasSameMessageAuthor(
-                  { pubkey: previousMessage?.authorPubkey },
-                  { pubkey: message.authorPubkey },
+                  {
+                    pubkey: previousMessage?.authorPubkey,
+                    appId: previousMessage?.appId,
+                  },
+                  { pubkey: message.authorPubkey, appId: message.appId },
                 ) &&
                 isWithinGroupingWindow(
                   previousMessage?.createdAt,

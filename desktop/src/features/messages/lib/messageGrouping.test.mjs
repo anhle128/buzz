@@ -36,6 +36,38 @@ test("hasSameMessageAuthor: missing pubkeys never match", () => {
   assert.equal(hasSameMessageAuthor({ pubkey: "" }, { pubkey: "" }), false);
 });
 
+const RELAY =
+  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const APP_A = "6eb31227-8ed2-42ec-9024-863497cbeed2";
+const APP_B = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+
+test("hasSameMessageAuthor: matching relay pubkeys with different App UUIDs do not group", () => {
+  assert.equal(
+    hasSameMessageAuthor(
+      { pubkey: RELAY, appId: APP_A },
+      { pubkey: RELAY, appId: APP_B },
+    ),
+    false,
+  );
+});
+
+test("hasSameMessageAuthor: matching App UUIDs group even under one relay signer", () => {
+  assert.equal(
+    hasSameMessageAuthor(
+      { pubkey: RELAY, appId: APP_A },
+      { pubkey: RELAY, appId: APP_A },
+    ),
+    true,
+  );
+});
+
+test("hasSameMessageAuthor: an App does not group with a human using the same relay pubkey", () => {
+  assert.equal(
+    hasSameMessageAuthor({ pubkey: RELAY, appId: APP_A }, { pubkey: RELAY }),
+    false,
+  );
+});
+
 test("isWithinGroupingWindow: at or under the boundary is in window", () => {
   const base = 1_000_000;
   assert.equal(isWithinGroupingWindow(base, base), true);

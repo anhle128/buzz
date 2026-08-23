@@ -69,6 +69,8 @@ export type InboxTypeLabel = {
 export type InboxReply = {
   authorLabel: string;
   authorPubkey: string;
+  isApp?: boolean;
+  appId?: string;
   isAgent?: boolean;
   ownerLabel?: string | null;
   ownerPubkey?: string | null;

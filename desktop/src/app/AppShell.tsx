@@ -1,5 +1,4 @@
 import * as React from "react";
-import { useQueryClient } from "@tanstack/react-query";
 import { Outlet, useLocation } from "@tanstack/react-router";
 import { deriveShellRoute, markAllReadSources } from "@/app/AppShell.helpers";
 import { useTerminalContext } from "@/app/useTerminalContext";
@@ -16,7 +15,7 @@ import { useAppNavigation } from "@/app/navigation/useAppNavigation";
 import { useBackForwardControls } from "@/app/navigation/useBackForwardControls";
 import { useCommunityNavigationTransitions } from "@/app/useCommunityNavigationTransitions";
 import { useLiveHomeFeedActions } from "@/app/useLiveHomeFeedActions";
-import { useChannelBrowserDialog } from "@/app/useChannelBrowserDialog";
+import { useAppShellChannelCreation } from "@/app/useAppShellChannelCreation";
 import { useMarkAsReadShortcuts } from "@/app/useMarkAsReadShortcuts";
 import { useSettingsShortcuts } from "@/app/useSettingsShortcuts";
 import { useAppShellKeyboardShortcuts } from "@/app/useAppShellKeyboardShortcuts";
@@ -28,13 +27,13 @@ import { useWebviewZoomShortcuts } from "@/app/useWebviewZoomShortcuts";
 import { useHuddlePresentation } from "@/app/useHuddlePresentation";
 import { shouldShowSidebarChannel } from "@/app/huddleChannelVisibility";
 import {
-  channelsQueryKey,
   useChannelsQuery,
-  useCreateChannelMutation,
   useHideDmMutation,
   useOpenDmMutation,
 } from "@/features/channels/hooks";
+import { useAppsQuery } from "@/features/apps/hooks/useAppsQuery";
 import { useUnreadChannels } from "@/features/channels/useUnreadChannels";
+import { useRelaySelfQuery } from "@/features/moderation/hooks";
 import { useMembershipNotifications } from "@/features/channels/useMembershipNotifications";
 import { useFeedItemState } from "@/features/home/useFeedItemState";
 import { useThreadFollows } from "@/features/messages/lib/useThreadFollows";
@@ -87,14 +86,12 @@ import {
   saveCommunityDestination,
 } from "@/features/communities/communityNavigationStorage";
 import { useAddCommunityDialogState } from "@/features/communities/addCommunityPrefill";
-import { useApplyTemplate } from "@/features/channel-templates/useApplyTemplate";
 import { relayClient } from "@/shared/api/relayClient";
 import { useIdentityQuery } from "@/shared/api/hooks";
 import { useRelayAutoHeal } from "@/shared/api/useRelayAutoHeal";
 import { useDeferredStartup } from "@/shared/hooks/useDeferredStartup";
 import { useWebviewScrollBoundaryLock } from "@/shared/hooks/useWebviewScrollBoundaryLock";
-import { joinChannel } from "@/shared/api/tauri";
-import type { Channel, ChannelVisibility, SearchHit } from "@/shared/api/types";
+import type { Channel, SearchHit } from "@/shared/api/types";
 import { ChannelNavigationProvider } from "@/shared/context/ChannelNavigationContext";
 import { useAppDeepLinks } from "@/shared/useAppDeepLinks";
 import { SidebarProvider } from "@/shared/ui/sidebar";
@@ -135,11 +132,9 @@ export function AppShell() {
   const [searchFocusRequest, setSearchFocusRequest] = React.useState(0);
   const [scopeSearchFocusRequest, setScopeSearchFocusRequest] =
     React.useState(0);
-  const [isCreateChannelOpen, setIsCreateChannelOpen] = React.useState(false);
   const [isSendFeedbackOpen, setIsSendFeedbackOpen] = React.useState(false);
   const mainInsetRef = React.useRef<HTMLElement>(null);
   const location = useLocation();
-  const queryClient = useQueryClient();
   useManagedAgentRuntimeReconciliation(communitiesHook.communities); // sync storage snapshot
   const {
     goAgents,
@@ -448,6 +443,8 @@ export function AppShell() {
     unreadThreadFeedItems,
   ]);
 
+  const relaySelfPubkey = useRelaySelfQuery().data;
+  const apps = useAppsQuery().data;
   const { homeBadgeCount, homeBadgeCountExcludingHighPriority } =
     useHomeFeedNotificationState(
       homeFeedQuery.data,
@@ -467,6 +464,8 @@ export function AppShell() {
       getMessageReadAt,
       channels,
       huddleBackingChannelIds,
+      apps,
+      relaySelfPubkey,
     );
   const dueReminderBadge = useDueReminderBadgeCount(
     identityQuery.data?.pubkey,
@@ -504,17 +503,25 @@ export function AppShell() {
     [unfollowThread, muteThread],
   );
 
-  const createChannelMutation = useCreateChannelMutation(),
-    createForumMutation = useCreateChannelMutation();
-  const { applyCanvas, applyAgents } = useApplyTemplate();
-  const openDmMutation = useOpenDmMutation();
-  const hideDmMutation = useHideDmMutation();
   const {
     browseDialogType,
-    openBrowseChannels: handleOpenBrowseChannels,
-    onBrowseDialogOpenChange: handleBrowseDialogOpenChange,
-    getCreateSuccess,
-  } = useChannelBrowserDialog(() => void refetchChannels());
+    createChannelMutation,
+    createForumMutation,
+    handleBrowseChannelCreate,
+    handleBrowseChannelJoin,
+    handleBrowseDialogOpenChange,
+    handleCreateChannel,
+    handleCreateForum,
+    handleOpenBrowseChannels,
+    handleOpenCreateChannel,
+    isCreateChannelOpen,
+    setIsCreateChannelOpen,
+  } = useAppShellChannelCreation({
+    goChannel,
+    refetchChannels,
+  });
+  const openDmMutation = useOpenDmMutation();
+  const hideDmMutation = useHideDmMutation();
   const handleOpenSearch = React.useCallback(() => {
     setSearchFocusRequest((request) => request + 1);
     void refetchChannels();
@@ -523,99 +530,6 @@ export function AppShell() {
     setScopeSearchFocusRequest((request) => request + 1);
     void refetchChannels();
   }, [refetchChannels]);
-
-  const handleBrowseChannelJoin = React.useCallback(
-    async (channelId: string) => {
-      await joinChannel(channelId);
-      await queryClient.invalidateQueries({ queryKey: channelsQueryKey });
-    },
-    [queryClient],
-  );
-
-  const handleCreateChannel = React.useCallback(
-    async (
-      {
-        description,
-        name,
-        visibility,
-        ttlSeconds,
-        templateId,
-      }: {
-        name: string;
-        description?: string;
-        visibility: ChannelVisibility;
-        ttlSeconds?: number;
-        templateId?: string;
-      },
-      onCreated?: (channelId: string) => void,
-    ) => {
-      const createdChannel = await createChannelMutation.mutateAsync({
-        name,
-        description,
-        channelType: "stream",
-        visibility,
-        ttlSeconds,
-      });
-
-      await applyCanvas(templateId, createdChannel.id, name);
-      await goChannel(createdChannel.id);
-      onCreated?.(createdChannel.id);
-      void applyAgents(templateId, createdChannel.id);
-    },
-    [applyAgents, applyCanvas, createChannelMutation, goChannel],
-  );
-  const handleCreateForum = React.useCallback(
-    async ({
-      description,
-      name,
-      visibility,
-      ttlSeconds,
-      templateId,
-    }: {
-      name: string;
-      description?: string;
-      visibility: ChannelVisibility;
-      ttlSeconds?: number;
-      templateId?: string;
-    }) => {
-      const createdForum = await createForumMutation.mutateAsync({
-        name,
-        description,
-        channelType: "forum",
-        visibility,
-        ttlSeconds,
-      });
-
-      await applyCanvas(templateId, createdForum.id, name);
-      await goChannel(createdForum.id);
-      void applyAgents(templateId, createdForum.id);
-    },
-    [applyAgents, applyCanvas, createForumMutation, goChannel],
-  );
-
-  // The channel browser can create either a stream or a forum depending on
-  // which section opened it. Route to the matching handler.
-  const handleBrowseChannelCreate = React.useCallback(
-    async (input: {
-      name: string;
-      description?: string;
-      visibility: ChannelVisibility;
-      ttlSeconds?: number;
-      templateId?: string;
-    }) => {
-      if (browseDialogType === "forum") {
-        await handleCreateForum(input);
-      } else {
-        await handleCreateChannel(input, getCreateSuccess() ?? undefined);
-      }
-    },
-    [
-      browseDialogType,
-      handleCreateChannel,
-      handleCreateForum,
-      getCreateSuccess,
-    ],
-  );
 
   const handleHideDm = React.useCallback(
     async (channelId: string) => {
@@ -665,10 +579,6 @@ export function AppShell() {
   });
   // Dispatch `buzz://` deep links only from the main window; the companion is dedicated to its active Huddle route.
   useAppDeepLinks(!isHuddleRoom);
-  const handleOpenCreateChannel = React.useCallback(
-    () => setIsCreateChannelOpen(true),
-    [],
-  );
   useAppShellKeyboardShortcuts({
     activeChannelId: selectedView === "channel" ? selectedChannelId : null,
     canSearchCurrentChannel:

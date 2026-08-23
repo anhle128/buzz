@@ -158,6 +158,10 @@ type MockBridgeOptions = {
   projectHeadBranch?: string;
   /** Relay NIP-11 identity used to sign authoritative repository state. */
   relaySelf?: string | null;
+  /** Signed kind 39007 events served to `useAppsQuery`. */
+  appMetadataEvents?: RelayEvent[];
+  /** Community-scoped kind 39007 events keyed by relay URL. */
+  appMetadataEventsByRelay?: Record<string, RelayEvent[]>;
   /** Native-like huddle state seeded from authoritative role-bearing membership. */
   huddle?: MockHuddleSeed;
   /** Builderlab account returned by hosted-community onboarding. Null/omitted = signed out. */

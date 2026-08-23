@@ -44,7 +44,6 @@ import {
 import { buildMessageComposerEditTarget } from "@/features/messages/lib/draftMentionRefs";
 import { formatTimelineMessages } from "@/features/messages/lib/formatTimelineMessages";
 import { DeleteMessageConfirmDialog } from "@/features/messages/ui/DeleteMessageConfirmDialog";
-import { getThreadReference } from "@/features/messages/lib/threading";
 import {
   resolveTimelineLoadingLatch,
   selectTimelineLoadingState,
@@ -54,9 +53,10 @@ import { useIndependentThreadPanel } from "@/features/messages/useIndependentThr
 import { useThreadReplies } from "@/features/messages/useThreadReplies";
 import { useChannelTyping } from "@/features/messages/useChannelTyping";
 import type { TimelineMessage } from "@/features/messages/types";
+import { useAppsQuery } from "@/features/apps/hooks/useAppsQuery";
 import { useUsersBatchQuery } from "@/features/profile/hooks";
 import { useRelaySelfQuery } from "@/features/moderation/hooks";
-import type { RelayEvent, RespondToMode } from "@/shared/api/types";
+import type { RespondToMode } from "@/shared/api/types";
 import { ChannelScreenLoadingFallback } from "@/features/channels/ui/ChannelScreenLoadingFallback";
 import {
   useHuddleChannelMessages,
@@ -82,7 +82,10 @@ import { useChannelRouteTarget } from "./useChannelRouteTarget";
 import { useChannelOpenReadState } from "./useChannelOpenReadState";
 import { useChannelUnreadState } from "./useChannelUnreadState";
 import type { ChannelScreenProps } from "./ChannelScreen.types";
-const EMPTY_RELAY_EVENTS: RelayEvent[] = [];
+import {
+  EMPTY_RELAY_EVENTS,
+  getLatestActiveMessage,
+} from "./ChannelScreen.helpers";
 export function ChannelScreen({
   activeChannel,
   autoSendDraftKey,
@@ -165,6 +168,7 @@ export function ChannelScreen({
   const activeChannelId = activeChannel?.id ?? null;
   const isHuddleTranscript = useIsHuddleTranscript(activeChannelId);
   const relaySelfPubkey = useRelaySelfQuery(activeChannel !== null).data;
+  const apps = useAppsQuery().data;
   const effectiveOpenThreadHeadId = useHuddleThreadIsolation({
     closeThread: setOpenThreadHeadId,
     isHuddleTranscript,
@@ -198,15 +202,10 @@ export function ChannelScreen({
   useChannelSubscription(activeChannel);
   const { fetchOlder, hasOlderMessages, historyExhausted, isFetchingOlder } =
     useFetchOlderMessages(activeChannel);
-  const latestActiveMessage = React.useMemo(() => {
-    const messages = messagesQuery.data;
-    if (!messages) return null;
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
-      if (getThreadReference(messages[index].tags).parentId === null)
-        return messages[index];
-    }
-    return null;
-  }, [messagesQuery.data]);
+  const latestActiveMessage = React.useMemo(
+    () => getLatestActiveMessage(messagesQuery.data),
+    [messagesQuery.data],
+  );
   const activeReadAt = latestActiveMessage
     ? new Date(latestActiveMessage.created_at * 1_000).toISOString()
     : null;
@@ -397,9 +396,11 @@ export function ChannelScreen({
         respondToLookup,
         relaySelfPubkey,
         messageOwnerProfiles,
+        apps,
       ),
     [
       activeChannel,
+      apps,
       channelMembers,
       currentProfile?.avatarUrl,
       currentPubkey,
@@ -426,6 +427,7 @@ export function ChannelScreen({
     personaLookup,
     respondToLookup,
     relaySelfPubkey,
+    apps,
   });
   const {
     firstUnreadMessageId,

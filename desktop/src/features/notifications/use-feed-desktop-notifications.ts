@@ -1,5 +1,7 @@
 import * as React from "react";
 
+import type { AppMetadata } from "@/features/apps/types";
+import { resolveFeedActor } from "@/features/notifications/lib/feedActor";
 import { truncatePubkey } from "@/shared/lib/pubkey";
 import {
   resolveUserLabel,
@@ -29,6 +31,7 @@ import type { NotificationSettings } from "./hooks";
 
 const HOME_FEED_SEEN_STORAGE_KEY = "buzz-home-feed-seen.v1";
 const HOME_FEED_SEEN_MAX_ITEMS = 500;
+const EMPTY_APPS = new Map<string, AppMetadata>();
 
 function homeFeedSeenStorageKey(pubkey: string) {
   return `${HOME_FEED_SEEN_STORAGE_KEY}:${pubkey}`;
@@ -79,6 +82,8 @@ export function useFeedDesktopNotifications(
   mutedChannelIds?: ReadonlySet<string>,
   channels: readonly NotificationChannel[] = [],
   silentChannelIds?: ReadonlySet<string>,
+  apps?: ReadonlyMap<string, AppMetadata>,
+  relaySelfPubkey?: string | null,
 ) {
   const normalizedPubkey = pubkey?.trim().toLowerCase() ?? "";
   const seenItemIdsRef = React.useRef<Set<string>>(
@@ -205,18 +210,28 @@ export function useFeedDesktopNotifications(
     }
 
     for (const item of newItems) {
-      const resolvedLabel = profiles
-        ? resolveUserLabel({
-            pubkey: item.pubkey,
-            profiles,
-            preferResolvedSelfLabel: true,
-          })
-        : undefined;
+      const actor = resolveFeedActor({
+        item,
+        apps: apps ?? EMPTY_APPS,
+        relaySelfPubkey,
+      });
+      const resolvedLabel =
+        actor.type === "app"
+          ? actor.name
+          : profiles
+            ? resolveUserLabel({
+                pubkey: actor.pubkey,
+                profiles,
+                preferResolvedSelfLabel: true,
+              })
+            : undefined;
       // Only use real display names, not truncated pubkey fallbacks.
       const senderName =
-        resolvedLabel && resolvedLabel !== truncatePubkey(item.pubkey)
-          ? resolvedLabel
-          : undefined;
+        actor.type === "app"
+          ? actor.name
+          : resolvedLabel && resolvedLabel !== truncatePubkey(item.pubkey)
+            ? resolvedLabel
+            : undefined;
       void deliverFeedNotification(item, senderName);
     }
   }, [
@@ -229,5 +244,7 @@ export function useFeedDesktopNotifications(
     settings.desktopEnabled,
     settings.slotAlertsEnabled.mention,
     settings.slotAlertsEnabled.needs_action,
+    apps,
+    relaySelfPubkey,
   ]);
 }
