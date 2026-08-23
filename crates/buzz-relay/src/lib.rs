@@ -50,8 +50,8 @@ pub mod tunnel;
 pub mod webhook_secret;
 /// Serialized webhook admission for project-channel routing.
 mod workflow_admission;
-/// Webhook repository identity resolution and project claim authorization.
-pub mod workflow_route;
+/// Repository identity resolution and project claim authorization.
+pub mod project_route;
 /// Workflow action sink — relay-side implementation of [`buzz_workflow::ActionSink`].
 pub mod workflow_sink;
 
