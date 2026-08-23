@@ -162,6 +162,22 @@ type MockBridgeOptions = {
   appMetadataEvents?: RelayEvent[];
   /** Community-scoped kind 39007 events keyed by relay URL. */
   appMetadataEventsByRelay?: Record<string, RelayEvent[]>;
+  /** Hex-encoded relay secret used to sign kind 39007 after kind 9038 mutations. */
+  appRelaySecret?: string;
+  /** One-time secret returned by mocked App create. */
+  appCreateSecret?: string;
+  /** One-time secret returned by mocked App rotate. */
+  appRotateSecret?: string;
+  /** Delay EOSE for kind 39007 App metadata queries. */
+  appMetadataEoseDelayMs?: number;
+  /** CLOSED the kind 39007 App metadata query. */
+  appMetadataQueryError?: boolean;
+  /** Delay kind 9038 OK so mutation-pending UI is observable. */
+  appAdminDelayMs?: number;
+  /** Reject kind 9038 EVENT messages with this OK message. */
+  appAdminReject?: string;
+  /** Delay `relay_requires_membership` so membership stays pending. */
+  relayRequiresMembershipDelayMs?: number;
   /** Native-like huddle state seeded from authoritative role-bearing membership. */
   huddle?: MockHuddleSeed;
   /** Builderlab account returned by hosted-community onboarding. Null/omitted = signed out. */

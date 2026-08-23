@@ -157,6 +157,7 @@ export default defineConfig({
         "**/agent-numeric-tuning.spec.ts",
         "**/needs-restart-screenshots.spec.ts",
         "**/apps-attribution.spec.ts",
+        "**/apps-settings.spec.ts",
       ],
       use: {
         ...devices["Desktop Chrome"],

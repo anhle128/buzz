@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
+  AppWindow,
   Archive,
   BellRing,
   Bot,
@@ -28,6 +29,7 @@ import type {
   NotificationSettings,
 } from "@/features/notifications/hooks";
 import type { SoundName, SoundSlot } from "@/features/notifications/lib/sound";
+import { AppsSettingsPanel } from "@/features/apps/ui/AppsSettingsPanel";
 import { CommunityMembersSettingsCard } from "@/features/community-members/ui/CommunityMembersSettingsCard";
 import { CustomEmojiSettingsCard } from "@/features/custom-emoji/ui/CustomEmojiSettingsCard";
 import { LocalArchiveSettingsCard } from "@/features/local-archive/ui/LocalArchiveSettingsCard";
@@ -93,6 +95,7 @@ export type SettingsSection =
   | "shortcuts"
   | "hosted-communities"
   | "community-members"
+  | "apps"
   | "moderation"
   | "custom-emoji"
   | "local-archive"
@@ -113,6 +116,7 @@ const SETTINGS_SECTION_VALUES: readonly SettingsSection[] = [
   "shortcuts",
   "hosted-communities",
   "community-members",
+  "apps",
   "moderation",
   "custom-emoji",
   "local-archive",
@@ -207,6 +211,11 @@ export const settingsSections: SettingsSectionDescriptor[] = [
     value: "community-members",
     label: "Invites",
     icon: Ticket,
+  },
+  {
+    value: "apps",
+    label: "Apps",
+    icon: AppWindow,
   },
   {
     value: "moderation",
@@ -848,6 +857,8 @@ export function renderSettingsSection(
       return (
         <CommunityMembersSettingsCard currentPubkey={props.currentPubkey} />
       );
+    case "apps":
+      return <AppsSettingsPanel />;
     case "moderation":
       return <ModerationQueueCard />;
     case "custom-emoji":

@@ -33,6 +33,7 @@ import {
 } from "@/shared/api/customEmoji";
 import {
   KIND_AGENT_OBSERVER_FRAME,
+  KIND_APP_ADMIN_COMMAND,
   KIND_APP_METADATA,
   KIND_CHANNEL_THREAD_SUMMARY,
   KIND_CHANNEL_WINDOW_BOUNDS,
@@ -447,6 +448,22 @@ type E2eConfig = {
     appMetadataEvents?: RelayEvent[];
     /** Community-scoped kind 39007 events keyed by relay URL. */
     appMetadataEventsByRelay?: Record<string, RelayEvent[]>;
+    /** Hex-encoded relay secret used to sign kind 39007 after kind 9038 mutations. */
+    appRelaySecret?: string;
+    /** One-time secret returned by mocked App create. */
+    appCreateSecret?: string;
+    /** One-time secret returned by mocked App rotate. */
+    appRotateSecret?: string;
+    /** Delay EOSE for kind 39007 App metadata queries. */
+    appMetadataEoseDelayMs?: number;
+    /** CLOSED the kind 39007 App metadata query. */
+    appMetadataQueryError?: boolean;
+    /** Delay kind 9038 OK so mutation-pending UI is observable. */
+    appAdminDelayMs?: number;
+    /** Reject kind 9038 EVENT messages with this OK message. */
+    appAdminReject?: string;
+    /** Delay `relay_requires_membership` so membership stays pending. */
+    relayRequiresMembershipDelayMs?: number;
     oaOwnerIsMe?: boolean;
     /** Whether the mock relay advertises NIP-43 membership support. Defaults to false. */
     relayRequiresMembership?: boolean;
@@ -4115,6 +4132,150 @@ function getMockAppMetadataEvents(config: E2eConfig | undefined): RelayEvent[] {
     config?.mock?.appMetadataEvents ??
     []
   );
+}
+
+let mockAppMetadataEvents: RelayEvent[] = [];
+
+function resetMockApps(config: E2eConfig | undefined) {
+  mockAppMetadataEvents = [...getMockAppMetadataEvents(config)];
+}
+
+function tagValue(event: RelayEvent, name: string): string | undefined {
+  return event.tags.find((tag) => tag[0] === name)?.[1];
+}
+
+function replaceMockAppMetadata(event: RelayEvent) {
+  const appId = tagValue(event, "d");
+  mockAppMetadataEvents = mockAppMetadataEvents.filter(
+    (existing) => tagValue(existing, "d") !== appId,
+  );
+  mockAppMetadataEvents.push(event);
+}
+
+function signMockAppMetadata(input: {
+  appId: string;
+  name: string;
+  status: "active" | "disabled";
+  description: string;
+  picture?: string;
+}): RelayEvent {
+  const secretHex = getConfig()?.mock?.appRelaySecret;
+  if (!secretHex) {
+    throw new Error("mock app relay secret missing");
+  }
+  const tags: string[][] = [
+    ["d", input.appId],
+    ["name", input.name],
+    ["status", input.status],
+  ];
+  if (input.picture) {
+    tags.push(["picture", input.picture]);
+  }
+  return finalizeEvent(
+    {
+      kind: KIND_APP_METADATA,
+      created_at: Math.floor(Date.now() / 1000),
+      content: input.description,
+      tags,
+    },
+    hexToBytes(secretHex),
+  );
+}
+
+function applyMockAppAdmin(event: RelayEvent): string {
+  const command = JSON.parse(event.content) as {
+    action?: string;
+    app_id?: string;
+    name?: string;
+    description?: string;
+    icon_url?: string;
+  };
+  if (command.action === "create") {
+    const appId = crypto.randomUUID();
+    replaceMockAppMetadata(
+      signMockAppMetadata({
+        appId,
+        name: command.name ?? "Untitled",
+        status: "active",
+        description: command.description ?? "",
+        picture: command.icon_url || undefined,
+      }),
+    );
+    const secret = getConfig()?.mock?.appCreateSecret ?? "one-time-secret";
+    return `response:${JSON.stringify({ app_id: appId, webhook_secret: secret })}`;
+  }
+  const appId = command.app_id;
+  if (!appId) {
+    throw new Error("invalid: missing app_id");
+  }
+  const current = mockAppMetadataEvents.find(
+    (existing) => tagValue(existing, "d") === appId,
+  );
+  if (command.action === "rotate_secret") {
+    const secret = getConfig()?.mock?.appRotateSecret ?? "rotated-secret";
+    return `response:${JSON.stringify({ app_id: appId, webhook_secret: secret })}`;
+  }
+  if (!current) {
+    throw new Error("invalid: unknown app");
+  }
+  const currentName = tagValue(current, "name") ?? "Untitled";
+  const currentPicture = tagValue(current, "picture");
+  const currentStatus =
+    tagValue(current, "status") === "disabled" ? "disabled" : "active";
+  if (command.action === "update") {
+    const nextDescription =
+      command.description === undefined ? current.content : command.description;
+    const nextPicture =
+      command.icon_url === undefined
+        ? currentPicture
+        : command.icon_url || undefined;
+    replaceMockAppMetadata(
+      signMockAppMetadata({
+        appId,
+        name: command.name ?? currentName,
+        status: currentStatus,
+        description: nextDescription,
+        picture: nextPicture,
+      }),
+    );
+    return `response:${JSON.stringify({ app_id: appId })}`;
+  }
+  if (command.action === "enable" || command.action === "disable") {
+    replaceMockAppMetadata(
+      signMockAppMetadata({
+        appId,
+        name: currentName,
+        status: command.action === "enable" ? "active" : "disabled",
+        description: current.content,
+        picture: currentPicture,
+      }),
+    );
+    return `response:${JSON.stringify({ app_id: appId })}`;
+  }
+  throw new Error("invalid: unknown app action");
+}
+
+async function handleMockAppAdmin(event: RelayEvent, socket: MockSocket) {
+  const delayMs = getConfig()?.mock?.appAdminDelayMs ?? 0;
+  if (delayMs > 0) {
+    await new Promise((resolve) => window.setTimeout(resolve, delayMs));
+  }
+  const reject = getConfig()?.mock?.appAdminReject;
+  if (reject) {
+    sendWsText(socket.handler, ["OK", event.id, false, reject]);
+    return;
+  }
+  try {
+    const message = applyMockAppAdmin(event);
+    sendWsText(socket.handler, ["OK", event.id, true, message]);
+  } catch (error) {
+    sendWsText(socket.handler, [
+      "OK",
+      event.id,
+      false,
+      error instanceof Error ? error.message : "invalid: app command",
+    ]);
+  }
 }
 
 /**
@@ -10430,14 +10591,30 @@ function sendToMockSocket(args: {
     }
 
     if (filter.kinds?.includes(KIND_APP_METADATA)) {
-      const authors = filter.authors?.map((author) => author.toLowerCase());
-      for (const event of getMockAppMetadataEvents(getConfig())) {
-        if (authors && !authors.includes(event.pubkey.toLowerCase())) {
-          continue;
-        }
-        sendWsText(socket.handler, ["EVENT", subId, event]);
+      if (getConfig()?.mock?.appMetadataQueryError) {
+        sendWsText(socket.handler, [
+          "CLOSED",
+          subId,
+          "mock app metadata query failure",
+        ]);
+        return;
       }
-      sendWsText(socket.handler, ["EOSE", subId]);
+      const authors = filter.authors?.map((author) => author.toLowerCase());
+      const deliver = () => {
+        for (const event of mockAppMetadataEvents) {
+          if (authors && !authors.includes(event.pubkey.toLowerCase())) {
+            continue;
+          }
+          sendWsText(socket.handler, ["EVENT", subId, event]);
+        }
+        sendWsText(socket.handler, ["EOSE", subId]);
+      };
+      const delayMs = getConfig()?.mock?.appMetadataEoseDelayMs ?? 0;
+      if (delayMs > 0) {
+        window.setTimeout(deliver, delayMs);
+      } else {
+        deliver();
+      }
       return;
     }
 
@@ -10532,6 +10709,11 @@ function sendToMockSocket(args: {
 
     if (event.kind === 9033) {
       sendWsText(socket.handler, ["OK", event.id, true, ""]);
+      return;
+    }
+
+    if (event.kind === KIND_APP_ADMIN_COMMAND) {
+      void handleMockAppAdmin(event, socket);
       return;
     }
 
@@ -10966,6 +11148,7 @@ export function maybeInstallE2eTauriMocks() {
     ? { ...config.mock.globalAgentConfig }
     : null;
   resetMockRelayMembers(config);
+  resetMockApps(config);
   resetMockRelayAgents(config);
   resetMockManagedAgents(config);
   resetMockPersonas(config);
@@ -13168,8 +13351,13 @@ export function maybeInstallE2eTauriMocks() {
       }
       case "get_relay_http_url":
         return getRelayHttpUrl(activeConfig);
-      case "relay_requires_membership":
+      case "relay_requires_membership": {
+        const delayMs = activeConfig?.mock?.relayRequiresMembershipDelayMs ?? 0;
+        if (delayMs > 0) {
+          await new Promise((resolve) => window.setTimeout(resolve, delayMs));
+        }
         return activeConfig?.mock?.relayRequiresMembership ?? false;
+      }
       case "discover_acp_providers":
         return handleDiscoverAcpRuntimes(activeConfig);
       case "save_custom_harness":
