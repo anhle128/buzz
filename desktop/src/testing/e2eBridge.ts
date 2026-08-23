@@ -855,6 +855,7 @@ type RawSearchHit = {
   channel_name: string | null;
   created_at: number;
   score: number;
+  tags: string[][];
 };
 
 type RawSearchResponse = {
@@ -9342,6 +9343,7 @@ async function handleSearchMessages(
         channel_name: "general",
         created_at: now - 60,
         score: 8.5,
+        tags: [["h", "9a1657ac-f7aa-5db0-b632-d8bbeb6dfb50"]],
       },
       {
         event_id: "mock-engineering-shipped",
@@ -9353,6 +9355,7 @@ async function handleSearchMessages(
         channel_name: "engineering",
         created_at: now - 42 * 60,
         score: 7.2,
+        tags: [["h", "1c7e1c02-87bb-5e88-b2da-5a7a9432d0c9"]],
       },
       {
         event_id: "mock-design-critique",
@@ -9364,6 +9367,7 @@ async function handleSearchMessages(
         channel_name: "design",
         created_at: now - 75 * 60,
         score: 6.6,
+        tags: [["h", "b5e2f8a1-3c44-5912-9e67-4a8d1f2b3c4e"]],
       },
       {
         event_id: "mock-forum-release-thread",
@@ -9375,6 +9379,7 @@ async function handleSearchMessages(
         channel_name: "watercooler",
         created_at: now - 90 * 60,
         score: 5.8,
+        tags: [["h", "a27e1ee9-76a6-5bdf-a5d5-1d85610dad11"]],
       },
       {
         event_id: "mock-forum-release-reply",
@@ -9385,6 +9390,7 @@ async function handleSearchMessages(
         channel_name: "watercooler",
         created_at: now - 80 * 60,
         score: 5.2,
+        tags: [["h", "a27e1ee9-76a6-5bdf-a5d5-1d85610dad11"]],
       },
     ];
     for (const [channelId, events] of mockMessages) {
@@ -9401,6 +9407,7 @@ async function handleSearchMessages(
           channel_name: channel?.name ?? null,
           created_at: event.created_at,
           score: 1,
+          tags: event.tags ?? [],
         });
       }
     }
@@ -10702,9 +10709,6 @@ function createDefaultE2eGithubIssueStore(): E2eGithubIssueStore {
     authenticatedUser: { login: "test-user", avatar_url: "" },
   };
 }
-
-
-
 
 function e2eGithubIssueStore(): E2eGithubIssueStore {
   window.__BUZZ_E2E_GITHUB_ISSUE_STORE__ ??= createDefaultE2eGithubIssueStore();

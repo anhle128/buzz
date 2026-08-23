@@ -137,6 +137,7 @@ export function toSearchHit(
     channelName: target.channelName ?? null,
     createdAt: target.createdAt ?? Math.floor(Date.now() / 1_000),
     score: 0,
+    tags: [],
     threadRootId: target.threadRootId ?? null,
   };
 }

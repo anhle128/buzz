@@ -19,6 +19,7 @@ export type SearchHit = {
   channelName: string | null;
   createdAt: number;
   score: number;
+  tags: string[][];
   threadRootId?: string | null;
 };
 

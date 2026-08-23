@@ -323,6 +323,30 @@ fn search_response_single_hit_full_score() {
 }
 
 #[test]
+fn search_response_preserves_tags() {
+    let app_id = "6eb31227-8ed2-42ec-9024-863497cbeed2";
+    let mentioned = "33".repeat(32);
+    let e = ev(
+        9,
+        "app notification",
+        vec![
+            vec!["h", "chan"],
+            vec!["buzz:app", app_id],
+            vec!["p", &mentioned],
+            vec!["buzz:app-event", "workflow.run.completed"],
+        ],
+    );
+    let expected: Vec<Vec<String>> = e.tags.iter().map(|t| t.as_slice().to_vec()).collect();
+    let r = search_response_from_events(std::slice::from_ref(&e));
+    assert_eq!(r.hits.len(), 1);
+    assert_eq!(r.hits[0].tags, expected);
+    assert!(r.hits[0]
+        .tags
+        .iter()
+        .any(|tag| tag == &["buzz:app".to_string(), app_id.to_string()]));
+}
+
+#[test]
 fn agents_overwrites_pubkey_from_event_author() {
     let e = ev(10100, r#"{"pubkey":"forged","name":"agent-1"}"#, vec![]);
     let v = agents_from_events(std::slice::from_ref(&e));
