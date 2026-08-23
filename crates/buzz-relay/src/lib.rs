@@ -29,6 +29,8 @@ pub mod mesh_boot;
 pub mod metrics;
 /// NIP-11 relay information document.
 pub mod nip11;
+/// Repository identity resolution and project claim authorization.
+pub mod project_route;
 /// NIP-01 client/relay message parsing.
 pub mod protocol;
 /// Durable NIP-PL matcher and delivery worker.
@@ -50,8 +52,6 @@ pub mod tunnel;
 pub mod webhook_secret;
 /// Serialized webhook admission for project-channel routing.
 mod workflow_admission;
-/// Repository identity resolution and project claim authorization.
-pub mod project_route;
 /// Workflow action sink — relay-side implementation of [`buzz_workflow::ActionSink`].
 pub mod workflow_sink;
 
