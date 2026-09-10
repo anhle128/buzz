@@ -89,6 +89,10 @@ jobs:
         run: scripts/test-mobile-worktree-overrides.sh
       - name: File size policy
         run: just file-size-check
+      - name: Compose deploy scripts
+        run: |
+          deploy/compose/test-bootstrap-local.sh
+          deploy/compose/test-redeploy.sh
 
   rust-lint:
     name: Rust Lint

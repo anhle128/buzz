@@ -11,8 +11,7 @@ For a local relay that uses a Tailscale Funnel, run these commands:
 cd deploy/compose
 export RELAY_OWNER_PUBKEY='<64-character-hex-pubkey>'
 ./run.sh bootstrap-local my-server.example.ts.net "${RELAY_OWNER_PUBKEY}"
-docker build -t buzz-local:current ../..
-./run.sh start
+./redeploy.sh
 tailscale funnel --bg 3000
 ```
 
@@ -60,6 +59,27 @@ It requires an existing owner public key and does not handle the owner private k
   `<bucket>.minio`. It is not configurable for an external S3 provider through
   `.env`; use the Helm chart or a custom Compose configuration for providers
   such as new Railway Storage Buckets that require `virtual` addressing.
+
+## Re-deploy
+
+Rebuild the relay from this checkout and recreate the relay container. Postgres,
+Redis, MinIO, and git volumes are kept:
+
+```bash
+cd deploy/compose
+./redeploy.sh
+```
+
+`./run.sh redeploy` is the same command.
+
+- Local image names such as `buzz-local:current` (the bootstrap default) are
+  built from the repo `Dockerfile`.
+- Registry names such as `ghcr.io/block/buzz:main` are pulled.
+- `--build` forces a source build, `--pull` forces a registry pull, and
+  `--skip-build` recreates the relay with the image already on the host.
+
+For a published-image upgrade of the whole stack, `./run.sh upgrade` still
+pulls every service and restarts.
 
 Run `./run.sh backup-hint` for the backup checklist.
 
