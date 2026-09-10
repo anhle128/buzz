@@ -29,6 +29,15 @@ export function isRelayConnectionDegraded(state: ConnectionState): boolean {
   );
 }
 
+/**
+ * Aggregate cap on explicit `#h` channel values the relay accepts across one
+ * REQ's filters before rejecting it as `restricted: too many explicit
+ * channels`. Mirrors `MAX_EXPLICIT_CHANNEL_VALUES` in
+ * `crates/buzz-relay/src/handlers/req.rs`. A subscription over more hidden DMs
+ * than this must be split into multiple REQs, each within the cap.
+ */
+export const MAX_EXPLICIT_CHANNEL_VALUES = 128;
+
 export type RelaySubscriptionFilter = {
   ids?: string[];
   kinds: number[];
@@ -36,14 +45,19 @@ export type RelaySubscriptionFilter = {
   authors?: string[];
   since?: number;
   until?: number;
+  /** Relay extension: composite pagination tiebreak paired with `until`. */
+  before_id?: string;
 } & Partial<Record<`#${string}`, string[]>>;
 
 type HistorySubscription = {
   mode: "history";
+  filter: RelaySubscriptionFilter;
   events: RelayEvent[];
   resolve: (events: RelayEvent[]) => void;
   reject: (error: Error) => void;
   timeout: number;
+  timeoutMs: number;
+  closedRetryAttempt?: number;
 };
 
 type FirstEventSubscription = {
@@ -73,6 +87,13 @@ type LiveSubscription = {
    * `min(pendingReplaySince, cursor window)`.
    */
   pendingReplaySince?: number;
+  /** Dispatch-level duplicate suppression shared by restored-live and repair. */
+  reconnectReplay?: {
+    generation: number;
+    seenEventIds: Set<string>;
+    liveEose: boolean;
+    repairDone: boolean;
+  };
   closedRetryAttempt?: number;
   closedRetryTimeout?: number;
 };
@@ -88,6 +109,12 @@ export type RelaySubscription =
   | HistorySubscription
   | FirstEventSubscription
   | LiveSubscription;
+
+export type SubscriptionEventBufferItem = {
+  subId: string;
+  event: RelayEvent;
+  generation: number;
+};
 
 export function sortEvents(events: RelayEvent[]) {
   return [...events].sort((left, right) => {

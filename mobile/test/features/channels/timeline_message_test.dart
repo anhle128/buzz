@@ -389,6 +389,10 @@ void main() {
           EventKind.huddleEnded,
         ]),
       );
+      expect(
+        EventKind.channelTimelineContentKinds,
+        containsAll([EventKind.huddleStarted, EventKind.huddleEnded]),
+      );
     });
 
     test('passes through text messages', () {
@@ -564,8 +568,16 @@ void main() {
       expect(result, hasLength(2));
       expect(result[0].isSystem, isTrue);
       expect(result[0].systemEvent!.type, SystemEventType.huddleStarted);
+      expect(
+        result[0].systemEvent!.ephemeralChannelId,
+        '8d764100-fd8f-44cf-9c98-6d8fbd739b8c',
+      );
       expect(result[1].isSystem, isTrue);
       expect(result[1].systemEvent!.type, SystemEventType.huddleEnded);
+      expect(
+        result[1].systemEvent!.ephemeralChannelId,
+        '8d764100-fd8f-44cf-9c98-6d8fbd739b8c',
+      );
     });
 
     test('huddle participant events are lifecycle metadata only', () {

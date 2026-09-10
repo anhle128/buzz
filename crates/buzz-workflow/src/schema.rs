@@ -104,6 +104,9 @@ pub enum ActionDef {
         /// Optional channel UUID override. Must be a valid UUID string.
         #[serde(default)]
         channel: Option<String>,
+        /// Reply to the triggering message in its thread.
+        #[serde(default)]
+        reply_in_thread: bool,
     },
     /// Send a direct message to a user.
     SendDm {
@@ -247,6 +250,26 @@ impl WorkflowDef {
                         "send_message.channel is invalid when routing.mode is project_channel_by_repository"
                             .into(),
                     ));
+                }
+            }
+        }
+
+        let trigger_has_message = matches!(
+            self.trigger,
+            TriggerDef::MessagePosted { .. }
+                | TriggerDef::ReactionAdded { .. }
+                | TriggerDef::DiffPosted { .. }
+        );
+        if !trigger_has_message {
+            for step in &self.steps {
+                if matches!(
+                    step.action,
+                    ActionDef::SendMessage { reply_in_thread: true, .. }
+                ) {
+                    return Err(WorkflowError::InvalidDefinition(format!(
+                        "step '{}': reply_in_thread requires a message-based trigger",
+                        step.id
+                    )));
                 }
             }
         }

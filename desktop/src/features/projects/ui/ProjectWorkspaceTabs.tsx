@@ -483,6 +483,8 @@ export function WorkspaceTabs({
                   onSelectedCommitHashChange(commit.hash)
                 }
                 profiles={profiles}
+                project={project}
+                projectId={projectId}
                 pullRequests={pullRequests}
                 repoContributors={displayedContributors}
                 snapshot={displayedSnapshot}
@@ -539,7 +541,7 @@ export function WorkspaceTabs({
             profiles={profiles}
             project={project}
             pullRequests={pullRequests}
-            selectedPullRequestId={selectedPullRequestId}
+            selectedPullRequest={selectedPullRequest}
           />
         </TabsContent>
 

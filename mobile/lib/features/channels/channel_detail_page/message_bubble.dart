@@ -33,17 +33,14 @@ class _MessageBubble extends HookConsumerWidget {
     final profile =
         ref.watch(userCacheProvider.select((cache) => cache[pk])) ??
         ref.read(userCacheProvider.notifier).get(pk);
-    final isApp = message.isApp;
-    final displayName = isApp
-        ? (message.appDisplayName?.trim().isNotEmpty == true
-              ? message.appDisplayName!.trim()
-              : 'App')
-        : (profile?.label ?? shortPubkey(message.pubkey));
+    final displayName = profile?.label ?? shortPubkey(message.pubkey);
+    final isAgent =
+        ref.watch(agentMentionPubkeysProvider(currentChannelId)).contains(pk) ||
+        profile?.ownerPubkey != null;
     final canManageMessage =
-        !isApp &&
-        (currentPubkey?.toLowerCase() == pk ||
-            (profile?.ownerPubkey != null &&
-                profile?.ownerPubkey == currentPubkey?.toLowerCase()));
+        currentPubkey?.toLowerCase() == pk ||
+        (profile?.ownerPubkey != null &&
+            profile?.ownerPubkey == currentPubkey?.toLowerCase());
 
     // Watch only profiles referenced by this message. A batched profile fetch
     // should not rebuild every visible message just because an unrelated user
@@ -148,23 +145,15 @@ class _MessageBubble extends HookConsumerWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       if (showAuthor)
-                        isApp
-                            ? _UserAvatar(
-                                profile: null,
-                                pubkey: message.pubkey,
-                                imageUrl: message.appPicture,
-                                fallbackLabel: displayName,
-                              )
-                            : GestureDetector(
-                                onTap: () => showUserProfileSheet(
-                                  context,
-                                  message.pubkey,
-                                ),
-                                child: _UserAvatar(
-                                  profile: profile,
-                                  pubkey: message.pubkey,
-                                ),
-                              )
+                        GestureDetector(
+                          onTap: () =>
+                              showUserProfileSheet(context, message.pubkey),
+                          child: _UserAvatar(
+                            profile: profile,
+                            pubkey: message.pubkey,
+                            isAgent: isAgent,
+                          ),
+                        )
                       else
                         const SizedBox(width: messageAvatarSize),
                       const SizedBox(width: messageAvatarContentGap),
@@ -186,24 +175,20 @@ class _MessageBubble extends HookConsumerWidget {
                                       Expanded(
                                         child: MessageAuthorMeta(
                                           displayName: displayName,
-                                          username: isApp
-                                              ? null
-                                              : messageUsernameLabel(profile),
+                                          username: messageUsernameLabel(
+                                            profile,
+                                          ),
                                           timestamp: formatMessageTime(
                                             message.createdAt,
                                           ),
                                           nameColor: context.colors.onSurface,
                                           metadataColor:
                                               context.colors.onSurfaceVariant,
-                                          onAuthorTap: isApp
-                                              ? null
-                                              : () => showUserProfileSheet(
-                                                  context,
-                                                  message.pubkey,
-                                                ),
-                                          badge: isApp
-                                              ? const AppBadge()
-                                              : null,
+                                          onAuthorTap: () =>
+                                              showUserProfileSheet(
+                                                context,
+                                                message.pubkey,
+                                              ),
                                           displayNameKey: ValueKey(
                                             'message-author-${message.id}',
                                           ),
@@ -337,26 +322,21 @@ Widget _messageTimestamp(BuildContext context, int createdAt, {Key? key}) {
 class _UserAvatar extends StatelessWidget {
   final UserProfile? profile;
   final String pubkey;
+  final bool isAgent;
   final double size;
-  final String? imageUrl;
-  final String? fallbackLabel;
 
   const _UserAvatar({
     required this.profile,
     required this.pubkey,
+    required this.isAgent,
     this.size = messageAvatarSize,
-    this.imageUrl,
-    this.fallbackLabel,
   });
 
   @override
   Widget build(BuildContext context) {
-    final label = fallbackLabel?.trim();
-    final initial = label != null && label.isNotEmpty
-        ? label[0].toUpperCase()
-        : profile?.initial ??
-              (pubkey.isNotEmpty ? pubkey[0].toUpperCase() : '?');
-    final avatarUrl = imageUrl ?? profile?.avatarUrl;
+    final initial =
+        profile?.initial ?? (pubkey.isNotEmpty ? pubkey[0].toUpperCase() : '?');
+    final avatarUrl = profile?.avatarUrl;
 
     return AvatarImage(
       imageUrl: avatarUrl,
@@ -373,6 +353,7 @@ class _UserAvatar extends StatelessWidget {
                   fontWeight: FontWeight.w600,
                 ),
       ),
+      isAgent: isAgent,
     );
   }
 }

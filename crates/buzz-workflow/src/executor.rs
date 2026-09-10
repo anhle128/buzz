@@ -404,9 +404,14 @@ pub fn resolve_step_templates(
     };
 
     match &step.action {
-        SendMessage { text, channel } => Ok(SendMessage {
+        SendMessage {
+            text,
+            channel,
+            reply_in_thread,
+        } => Ok(SendMessage {
             text: t(text)?,
             channel: t_opt(channel)?,
+            reply_in_thread: *reply_in_thread,
         }),
         SendDm { to, text } => Ok(SendDm {
             to: t(to)?,
@@ -569,7 +574,11 @@ pub async fn dispatch_action(
     let result = serving_write
         .protect(async {
             match action {
-                SendMessage { text, channel } => {
+                SendMessage {
+                    text,
+                    channel,
+                    reply_in_thread,
+                } => {
                     // Look up workflow metadata for destination validation and
                     // attribution, scoped to the run's community — the same run/workflow
                     // UUID may exist in another community, so a bare-id lookup could
@@ -616,18 +625,40 @@ pub async fn dispatch_action(
                         (None, _) => None,
                     };
                     let owner_pubkey_hex = hex::encode(&workflow.owner_pubkey);
+                    let reply_to = if *reply_in_thread {
+                        if trigger_ctx.message_id.is_empty() {
+                            return Err(WorkflowError::InvalidDefinition(
+                                "SendMessage: reply_in_thread is set but the trigger has no message_id to reply to".into(),
+                            ));
+                        }
+                        Some(trigger_ctx.message_id.as_str())
+                    } else {
+                        None
+                    };
+                    let authored_text = match &step.action {
+                        SendMessage { text, .. } => text.as_str(),
+                        _ => unreachable!("resolved action must match authored step"),
+                    };
 
                     info!(
                         run_id = %run_id,
                         step = step_id,
                         channel = %channel_id,
-                        dynamic_route = route.is_some(),
+                        dynamic_route = route.is_some(), reply_in_thread = *reply_in_thread,
                         "SendMessage"
                     );
 
                     let event_id = engine
                         .action_sink()?
-                        .send_message(community_id, &channel_id, text, &owner_pubkey_hex, route)
+                        .send_message(
+                            community_id,
+                            &channel_id,
+                            text,
+                            authored_text,
+                            &owner_pubkey_hex,
+                            reply_to,
+                            route,
+                        )
                         .await
                         .map_err(WorkflowError::from)?;
 

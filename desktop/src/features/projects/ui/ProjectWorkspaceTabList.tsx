@@ -1,4 +1,4 @@
-import * as React from "react";
+import type * as React from "react";
 import { Glasses } from "lucide-react";
 
 import { cn } from "@/shared/lib/cn";
@@ -54,7 +54,6 @@ export function ProjectTabsList({ prsActive }: { prsActive?: boolean }) {
   );
 }
 
-
 /** Tabs for pull request detail view: Conversation, Commits, Files changed */
 export function PullRequestTabsList({
   conversationCount,
@@ -71,13 +70,19 @@ export function PullRequestTabsList({
 }) {
   return (
     <TabsList className="h-full min-w-0 max-w-full flex-none justify-start gap-1.5 overflow-x-auto bg-transparent p-0 scrollbar-none">
-      <TabsTrigger className={PROJECT_TAB_TRIGGER_CLASS} value="pr-conversation">
+      <TabsTrigger
+        className={PROJECT_TAB_TRIGGER_CLASS}
+        value="pr-conversation"
+      >
         <ProjectTabLabel>
-          Conversation{conversationCount !== undefined ? ` (${conversationCount})` : ""}
+          Conversation
+          {conversationCount !== undefined ? ` (${conversationCount})` : ""}
         </ProjectTabLabel>
       </TabsTrigger>
       <TabsTrigger className={PROJECT_TAB_TRIGGER_CLASS} value="pr-commits">
-        <ProjectTabLabel>Commits ({pullRequest.updateCount ?? 1})</ProjectTabLabel>
+        <ProjectTabLabel>
+          Commits ({pullRequest.updateCount ?? 1})
+        </ProjectTabLabel>
       </TabsTrigger>
       {!hideFiles && (
         <TabsTrigger className={PROJECT_TAB_TRIGGER_CLASS} value="pr-files">

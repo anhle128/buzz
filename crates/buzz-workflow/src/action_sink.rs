@@ -10,22 +10,24 @@ use buzz_core::tenant::CommunityId;
 use nostr::Tag;
 use uuid::Uuid;
 
-/// Server-resolved dynamic destination used for a workflow `send_message`.
-///
-/// Captured from the admitted run snapshot. The sink revalidates this exact
-/// route immediately before constructing the kind `9` event.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkflowMessageRoute {
-    /// Workflow run that produced this side effect.
     pub run_id: Uuid,
-    /// Workflow definition that owns the run.
     pub workflow_id: Uuid,
-    /// Workflow home channel used as the standing-authority boundary.
     pub home_channel_id: Uuid,
-    /// Canonical `30617:<owner>:<d>` repository coordinate.
     pub repository_coordinate: String,
-    /// Canonical `30621:<signer>:<d>` project coordinate.
     pub project_coordinate: String,
+}
+
+pub fn route_provenance_tags(route: &WorkflowMessageRoute) -> Result<[Tag; 3], ActionSinkError> {
+    Ok([
+        Tag::parse(["a", &route.repository_coordinate])
+            .map_err(|e| ActionSinkError::EventBuild(format!("repository a tag: {e}")))?,
+        Tag::parse(["a", &route.project_coordinate])
+            .map_err(|e| ActionSinkError::EventBuild(format!("project a tag: {e}")))?,
+        Tag::parse(["buzz:workflow-run", &route.run_id.to_string()])
+            .map_err(|e| ActionSinkError::EventBuild(format!("workflow-run tag: {e}")))?,
+    ])
 }
 
 /// Errors from action sink operations.
@@ -49,33 +51,12 @@ pub enum ActionSinkError {
     /// Message content is empty or whitespace-only.
     #[error("empty message content")]
     EmptyContent,
-    /// Dynamic route lost authority between admission and the side effect.
-    #[error("route is no longer valid")]
-    RouteStale,
 }
 
 impl From<ActionSinkError> for crate::WorkflowError {
     fn from(e: ActionSinkError) -> Self {
-        match e {
-            ActionSinkError::RouteStale => crate::WorkflowError::RouteStale,
-            other => crate::WorkflowError::WebhookError(other.to_string()),
-        }
+        crate::WorkflowError::WebhookError(e.to_string())
     }
-}
-
-/// Provenance tags for a successful dynamic `send_message`.
-///
-/// Exactly one repository `a`, one project `a`, and one `buzz:workflow-run`.
-/// Does not include the raw idempotency key, alias map, or callback body.
-pub fn route_provenance_tags(route: &WorkflowMessageRoute) -> Result<[Tag; 3], ActionSinkError> {
-    Ok([
-        Tag::parse(["a", &route.repository_coordinate])
-            .map_err(|e| ActionSinkError::EventBuild(format!("repository a tag: {e}")))?,
-        Tag::parse(["a", &route.project_coordinate])
-            .map_err(|e| ActionSinkError::EventBuild(format!("project a tag: {e}")))?,
-        Tag::parse(["buzz:workflow-run", &route.run_id.to_string()])
-            .map_err(|e| ActionSinkError::EventBuild(format!("workflow-run tag: {e}")))?,
-    ])
 }
 
 /// Interface for workflow actions that produce side effects.
@@ -95,11 +76,15 @@ pub trait ActionSink: Send + Sync {
     ///   carries its owning community so a workflow in community B posts into B
     ///   even though the side effect has no inbound connection to bind.
     /// - `channel_id`: UUID string of the target channel
-    /// - `text`: message body (must not be empty/whitespace-only)
+    /// - `text`: rendered message body (must not be empty/whitespace-only)
+    /// - `authored_text`: the workflow owner's stored, unrendered step template;
+    ///   consumers must use this rather than trigger-controlled rendered output
+    ///   when attaching authority-bearing metadata
     /// - `author_pubkey`: hex-encoded pubkey of the workflow owner (used for
     ///   the `p` attribution tag; the relay keypair signs the event)
-    /// - `route`: admitted dynamic destination, when the run was routed by
-    ///   `project_channel_by_repository`. `None` keeps static send behavior.
+    /// - `reply_to`: when `Some(event_id_hex)`, the message is posted as a
+    ///   threaded reply to that event (NIP-10 root/reply tags + real thread
+    ///   metadata); when `None`, it is a top-level channel message.
     ///
     /// Returns the event ID hex string on success.
     fn send_message(
@@ -107,7 +92,9 @@ pub trait ActionSink: Send + Sync {
         community_id: CommunityId,
         channel_id: &str,
         text: &str,
+        authored_text: &str,
         author_pubkey: &str,
+        reply_to: Option<&str>,
         route: Option<WorkflowMessageRoute>,
     ) -> Pin<Box<dyn Future<Output = Result<String, ActionSinkError>> + Send + '_>>;
 }

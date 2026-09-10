@@ -3,6 +3,8 @@
 //! NIP-01 WebSocket relay for Buzz private team communication.
 
 mod admission;
+mod build_info;
+mod rejection;
 
 /// REST API route handlers.
 pub mod api;
@@ -25,6 +27,8 @@ pub mod error;
 pub mod handlers;
 /// Stateless HMAC-signed relay invite tokens (mint/verify).
 pub mod invite_token;
+/// Fixed-schema evidence for the relay's earliest startup steps.
+pub mod lifecycle;
 /// Inter-relay mesh startup wiring (`BUZZ_MESH` seam).
 pub mod mesh_boot;
 /// Shared `@Name` mention resolver for relay-signed messages.
@@ -39,6 +43,7 @@ pub mod project_route;
 pub mod protocol;
 /// Durable NIP-PL matcher and delivery worker.
 pub mod push_runtime;
+mod readiness;
 /// Axum router construction.
 pub mod router;
 /// Shared application state.
@@ -50,6 +55,8 @@ pub mod subscription;
 pub mod telemetry;
 /// Row-zero host binding: resolve the request community from the connection host.
 pub mod tenant;
+#[cfg(test)]
+mod test_support;
 /// Relay-side tunnel session directory and routing.
 pub mod tunnel;
 /// Webhook secret generation and constant-time comparison.
